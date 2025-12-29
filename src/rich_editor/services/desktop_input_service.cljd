@@ -1,0 +1,126 @@
+(ns rich-editor.services.desktop-input-service
+  (:require
+   ["package:flutter/services.dart" :as service]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter/foundation.dart" :as foundation]
+   ["package:mgl_editor_core/desktop_text_input_client.dart" :refer [DesktopTextInputClient]]
+   [rich-editor.model.node :as node]
+   [rich-editor.command.text-commands :as cmd]
+   [rich-editor.state :as state]
+   [rich-editor.model.selection :as sel]
+   [rich-editor.utils.delta :as delta-utils]))
+
+;; =============================================================
+;; Desktop Text Input Service
+;; Handles TextInputConnection for desktop platforms using Dart Client
+;; =============================================================
+
+(defonce ^:private text-input-connection (atom nil))
+(defonce ^:private ^DesktopTextInputClient text-input-client-instance (atom nil))
+(defonce ^:private last-attached-path (atom nil))
+
+(defn- get-current-text []
+  (let [editor-state @state/!editor-state
+        selection (:selection editor-state)]
+    (if selection
+      (let [normalized (sel/normalize selection)
+            path (:path (:start normalized))
+            ks (node/path->ks path)
+            delta-ks (if (some #{:delta} path) ks (conj ks :data :delta))
+            delta (get-in (:doc editor-state) delta-ks)]
+        (if delta (delta-utils/delta->text delta) ""))
+      "")))
+
+(defn- get-current-selection []
+  (let [editor-state @state/!editor-state
+        selection (:selection editor-state)]
+    (if selection
+      (let [normalized (sel/normalize selection)
+            start-offset (:offset (:start normalized))
+            end-offset (:offset (:end normalized))
+            text (get-current-text)
+            text-len (count text)]
+        (w/TextSelection
+         :baseOffset (max 0 (min start-offset text-len))
+         :extentOffset (max 0 (min end-offset text-len))))
+      (w/TextSelection.collapsed :offset 0))))
+
+(defn- init-client! []
+  (when (nil? @text-input-client-instance)
+    (reset! text-input-client-instance
+            (DesktopTextInputClient
+             .onInsertText (fn [text] (cmd/insert-text! text))
+             .onDeleteSelection (fn [] (cmd/delete-selection!))
+             .onDeleteBackward (fn [] (cmd/delete-backward!))
+             .onDeleteForward (fn [] (cmd/delete-forward!))))))
+
+(defn detach! []
+  (when-let [conn @text-input-connection]
+    (when (.-attached conn) (.close conn))
+    (reset! text-input-connection nil)
+    (reset! last-attached-path nil)))
+
+(defn attach! []
+  (when-not foundation/kIsWeb
+    (let [editor-state @state/!editor-state
+          selection (:selection editor-state)]
+      (when selection
+        (init-client!)
+        (let [normalized (sel/normalize selection)
+              current-path (:path (:start normalized))
+              existing-conn @text-input-connection]
+          (when (and existing-conn (not= @last-attached-path current-path))
+            (detach!))
+          
+          (let [conn @text-input-connection
+                client ^DesktopTextInputClient @text-input-client-instance]
+            (when (or (nil? conn) (not (.-attached conn)))
+              (let [text (get-current-text)
+                    text-selection (get-current-selection)
+                    editing-value (w/TextEditingValue .text text .selection text-selection)
+                    config (service/TextInputConfiguration
+                            :inputAction service/TextInputAction.newline
+                            :inputType service/TextInputType.multiline
+                            :enableDeltaModel true)
+                    new-conn (service.TextInput/attach client config)]
+                (reset! text-input-connection new-conn)
+                (reset! last-attached-path current-path)
+                (set! (.-updatingFromEditor client) true)
+                (try
+                  (.updateState client editing-value)
+                  (.setEditingState new-conn editing-value)
+                  (.show new-conn)
+                  (finally
+                    (set! (.-updatingFromEditor client) false)))))))))))
+
+(defn update-editing-state! []
+  (let [editor-state @state/!editor-state
+        selection (:selection editor-state)]
+    (when (and selection (some? @text-input-connection))
+      (let [normalized (sel/normalize selection)
+            current-path (:path (:start normalized))
+            client ^DesktopTextInputClient @text-input-client-instance]
+        (if (not= @last-attached-path current-path)
+          (attach!)
+          (when-let [conn @text-input-connection]
+            (when (and (.-attached conn) client)
+              (let [text (get-current-text)
+                    text-selection (get-current-selection)
+                    editing-value (w/TextEditingValue :text text :selection text-selection)
+                    current-value (.-currentTextEditingValue client)]
+                (when (or (nil? current-value)
+                          (not= (.-text current-value) text)
+                          (not= (.-baseOffset (.-selection current-value)) (.-baseOffset text-selection))
+                          (not= (.-extentOffset (.-selection current-value)) (.-extentOffset text-selection)))
+                  (set! (.-updatingFromEditor client) true)
+                  (try
+                    (.updateState client editing-value)
+                    (.setEditingState conn editing-value)
+                    (finally
+                      (set! (.-updatingFromEditor client) false))))))))))))
+
+(defn update-caret-position! [size transform rect]
+  (when-let [conn @text-input-connection]
+    (when (.-attached conn)
+      (.setEditableSizeAndTransform conn size transform)
+      (.setCaretRect conn rect))))

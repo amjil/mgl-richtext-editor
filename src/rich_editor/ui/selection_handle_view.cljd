@@ -1,0 +1,25 @@
+(ns rich-editor.ui.selection-handle-view
+  (:require
+   ["package:flutter/material.dart" :as m]))
+
+(defn selection-handle-widget [{:keys [type global-offset on-drag]}]
+  (m/Positioned
+   :left (- (.-dx global-offset) 15) ;; center handle (sensitive area width 30)
+   :top (if (= type :start)
+          (- (.-dy global-offset) 30) ;; start handle is above
+          (.-dy global-offset))       ;; end handle is below
+   :child
+   (m/GestureDetector
+    :onPanUpdate (fn [details]
+                   (on-drag (.-globalPosition details) type))
+    :child
+    ;; reaction area
+    (m/Container
+     :width 30.0 :height 30.0
+     :color m/Colors.transparent
+     :child (m/Center
+             :child (m/Container
+                     :width 12.0 :height 12.0
+                     :decoration (m/BoxDecoration
+                                  :color m/Colors.blue
+                                  :shape m/BoxShape.circle)))))))

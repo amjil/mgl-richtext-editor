@@ -1,0 +1,37 @@
+(ns rich-editor.utils.history)
+
+;; define the maximum depth of the history record
+(def max-history-depth 50)
+
+(defn push-history [state new-doc & {:keys [new-selection]}]
+  (let [undo-stack (:undo-stack state [])
+        ;; Store both doc and selection in history
+        snapshot (select-keys state [:doc :selection])]
+    (assoc state
+           :undo-stack (vec (take-last max-history-depth (conj undo-stack snapshot)))
+           :redo-stack []
+           :doc new-doc
+           :selection (or new-selection (:selection state)))))
+
+(defn undo [state]
+  (let [undo-stack (:undo-stack state)
+        current-snapshot (select-keys state [:doc :selection])]
+    (if (empty? undo-stack)
+      state
+      (let [previous-snapshot (peek undo-stack)]
+        (merge state
+               {:undo-stack (pop undo-stack)
+                :redo-stack (conj (:redo-stack state []) current-snapshot)}
+               previous-snapshot)))))
+
+(defn redo [state]
+  (let [redo-stack (:redo-stack state)
+        current-snapshot (select-keys state [:doc :selection])]
+    (if (empty? redo-stack)
+      state
+      (let [next-snapshot (peek redo-stack)]
+        (merge state
+               {:redo-stack (pop redo-stack)
+                :undo-stack (conj (:undo-stack state []) current-snapshot)}
+               next-snapshot)))))
+

@@ -1,0 +1,75 @@
+(ns rich-editor.services.slash-command-service
+  (:require [rich-editor.state :as state]
+            [rich-editor.command.text-commands :as text-cmd]
+            [clojure.string :as str]))
+
+;; =============================================================
+;; State Management
+;; =============================================================
+;; Note: Slash command state is now stored in state/!editor-state
+;; under :slash-command-active and :slash-command-query keys
+
+;; Commands are defined in rich-editor.command.text-commands
+;; to avoid circular dependency. This service only manages state and execution.
+(defn- commands
+  "Get commands list from text-commands namespace"
+  []
+  (text-cmd/get-slash-commands))
+
+;; =============================================================
+;; Command Filtering
+;; =============================================================
+
+(defn filter-commands
+  "Filter commands based on query string"
+  [query]
+  (let [cmds (commands)]
+    (if (empty? query)
+      cmds
+      (let [query-lower (str/lower-case query)]
+        (filter (fn [cmd]
+                  (or (str/includes? (str/lower-case (:label cmd)) query-lower)
+                      (some #(str/includes? (str/lower-case %) query-lower) (:keywords cmd))))
+                cmds)))))
+
+;; =============================================================
+;; Command State Management
+;; =============================================================
+
+(defn activate-slash-command!
+  "Activate slash command mode"
+  []
+  (swap! state/!editor-state assoc :slash-command-active true :slash-command-query ""))
+
+(defn deactivate-slash-command!
+  "Deactivate slash command mode"
+  []
+  (swap! state/!editor-state assoc :slash-command-active false :slash-command-query ""))
+
+(defn update-slash-command-query!
+  "Update query string"
+  [query]
+  (swap! state/!editor-state assoc :slash-command-query query))
+
+;; =============================================================
+;; Command Execution
+;; =============================================================
+
+(defn execute-command!
+  "Execute the specified command"
+  [command-id]
+  (let [cmds (commands)]
+    (when-let [cmd (first (filter #(= (:id %) command-id) cmds))]
+      (when-let [action (:action cmd)]
+        (try
+          (action)
+          (catch Exception e
+            (println "Error executing command:" command-id e))))
+      (deactivate-slash-command!))))
+
+(defn get-filtered-commands
+  "Get filtered command list (for UI display)"
+  []
+  (let [query (:slash-command-query @state/!editor-state)]
+    (filter-commands query)))
+

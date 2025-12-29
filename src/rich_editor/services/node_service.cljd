@@ -1,0 +1,120 @@
+(ns rich-editor.services.node-service
+  (:require ["package:flutter/rendering.dart" :as r]))
+
+;; --- global node registry ---
+;; storage structure: {path-vector {:render-box RenderBox :selectable SelectableMixin :focus-node FocusNode}}
+(defonce !node-registry (atom {}))
+(defonce !nodes-by-top-level (atom {}))
+(defonce !sorted-top-levels (atom []))
+
+(defn- rebuild-cache! [new-registry]
+  (let [grouped (group-by (comp first key) new-registry)
+        sorted-keys (vec (sort (keys grouped)))]
+    (reset! !nodes-by-top-level grouped)
+    (reset! !sorted-top-levels sorted-keys)))
+
+;; Keep cache in sync
+(add-watch !node-registry :node-cache
+  (fn [_ _ _ new-registry]
+    (rebuild-cache! new-registry)))
+
+;; Initial sync for hot-reloads
+(rebuild-cache! @!node-registry)
+
+;; --- register and unregister ---
+
+(defn register-node!
+  "when the MongolRichText component is mounted or rendered, cache its render object"
+  [path render-box selectable focus-node]
+  (swap! !node-registry assoc path {:render-box render-box
+                                    :selectable selectable
+                                    :focus-node focus-node}))
+
+(defn unregister-node!
+  "when the component is destroyed, prevent memory leaks"
+  [path]
+  (swap! !node-registry dissoc path))
+
+(defn focus-node! [path]
+  (when-let [node (get @!node-registry path)]
+    (when-let [focus-node (:focus-node node)]
+      (.requestFocus focus-node))))
+
+;; --- core query functions ---
+
+(defn get-node-at-offset
+  "find the node data corresponding to the global coordinate (Offset) using binary search for efficiency"
+  [global-offset]
+  (let [top-indices @!sorted-top-levels
+        nodes-map @!nodes-by-top-level
+        target-x (.-dx global-offset)
+        target-y (.-dy global-offset)
+        n (count top-indices)]
+    (if (zero? n)
+      nil
+      (loop [low 0
+             high (dec n)
+             best-node nil
+             min-dist 1.7976931348623157e+308]
+        (if (<= low high)
+          (let [mid (quot (+ low high) 2)
+                top-idx (nth top-indices mid)
+                block-nodes (get nodes-map top-idx)
+                
+                ;; 1. Check all nodes in this top-level block
+                block-result
+                (loop [entries (seq block-nodes)
+                       b-best nil
+                       b-min 1.7976931348623157e+308]
+                  (if-let [entry (first entries)]
+                    (let [[path {:keys [render-box selectable]}] entry]
+                      (if (and render-box (.-attached render-box))
+                        (let [size (.-size render-box)
+                              global-origin (.localToGlobal render-box r/Offset.zero)
+                              left (.-dx global-origin)
+                              right (+ left (.-width size))
+                              top (.-dy global-origin)
+                              bottom (+ top (.-height size))
+                              inside? (and (>= target-x left) (<= target-x right)
+                                           (>= target-y top) (<= target-y bottom))]
+                          (if inside?
+                            {:found {:path path :selectable selectable :render-box render-box}}
+                            (let [dist-x (cond
+                                           (< target-x left) (- left target-x)
+                                           (> target-x right) (- target-x right)
+                                           :else 0.0)]
+                              (if (< dist-x b-min)
+                                (recur (rest entries) {:path path :selectable selectable :render-box render-box} dist-x)
+                                (recur (rest entries) b-best b-min)))))
+                        (recur (rest entries) b-best b-min)))
+                    {:best b-best :min-dist b-min}))]
+            
+            (if-let [found (:found block-result)]
+              found
+              (let [b-best (:best block-result)
+                    b-min (:min-dist block-result)
+                    ;; Decide direction based on the first node of the block
+                    representative (second (first block-nodes))
+                    rb (:render-box representative)
+                    go (when (and rb (.-attached rb)) (.localToGlobal rb r/Offset.zero))
+                    left (if go (.-dx go) 0.0)]
+                (if (< target-x left)
+                  (recur low (dec mid) (if (< b-min min-dist) b-best best-node) (min b-min min-dist))
+                  (recur (inc mid) high (if (< b-min min-dist) b-best best-node) (min b-min min-dist))))))
+          
+          ;; Final result
+          (when (and best-node (< min-dist 200.0))
+            best-node))))))
+
+(defn get-selectable-by-path
+  "get the render interface of the node directly by path"
+  [path]
+  (get @!node-registry path))
+
+;; --- helper tools ---
+
+(defn clear-registry! []
+  (reset! !node-registry {}))
+
+(defn all-selectable-nodes []
+  (vals @!node-registry))

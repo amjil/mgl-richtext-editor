@@ -1,0 +1,51 @@
+(ns rich-editor.ui.selection-handles-layer
+  (:require [cljd.flutter :as f]
+            [rich-editor.services.node-service :as node-service]
+            [rich-editor.services.selection-geometry :as geom]
+            [rich-editor.selection-utils :as sel-util]
+            [rich-editor.ui.selection-handle-view :refer [selection-handle-widget]]
+            [rich-editor.services.selection-service :as sel-service]
+            ["package:flutter/material.dart" :as m]))
+
+(defn selection-handles-overlay [!editor-state]
+  (f/widget
+   :watch [sel (f/$ (some-> (f/<! !editor-state) :selection))]
+   (if (or (nil? sel) (= (:start sel) (:end sel)))
+     (m/SizedBox.shrink)
+
+     (let [;; 1. get the render objects of the start and end nodes
+           start-path (get-in sel [:start :path])
+           end-path (get-in sel [:end :path])
+           start-node (node-service/get-selectable-by-path start-path)
+           end-node (node-service/get-selectable-by-path end-path)]
+
+       (if (and start-node end-node)
+         (let [;; 2. calculate the global position of the start node
+               start-render (:render-box start-node)
+               start-selectable (:selectable start-node)
+               start-len (.-length (.toPlainText (.-text start-selectable)))
+               start-flutter-sel (sel-util/to-text-selection start-path sel start-len)
+               start-rects (.getBoxesForSelection start-selectable start-flutter-sel)
+               start-local (geom/calculate-handle-offsets start-rects :start)
+               start-global (.localToGlobal start-render start-local)
+
+               ;; 3. calculate the global position of the end node
+               end-render (:render-box end-node)
+               end-selectable (:selectable end-node)
+               end-len (.-length (.toPlainText (.-text end-selectable)))
+               end-flutter-sel (sel-util/to-text-selection end-path sel end-len)
+               end-rects (.getBoxesForSelection end-selectable end-flutter-sel)
+               end-local (geom/calculate-handle-offsets end-rects :end)
+               end-global (.localToGlobal end-render end-local)]
+
+           (m/Stack
+            :children
+            [(selection-handle-widget
+              {:type :start
+               :global-offset start-global
+               :on-drag #(sel-service/handle-handle-drag! !editor-state %1 :start)})
+             (selection-handle-widget
+              {:type :end
+               :global-offset end-global
+               :on-drag #(sel-service/handle-handle-drag! !editor-state %1 :end)})]))
+         (m/SizedBox.shrink))))))

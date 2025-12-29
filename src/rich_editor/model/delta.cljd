@@ -1,0 +1,346 @@
+(ns rich-editor.model.delta
+  (:require ["package:flutter/services.dart" :as services]))
+
+(defn op-type [op] 
+  (cond 
+    (:insert op) :insert 
+    (:delete op) :delete 
+    (:retain op) :retain 
+    :else nil))
+
+(defn op-len [op] 
+  (let [v (or (:insert op) (:delete op) (:retain op))] 
+    (cond 
+      (string? v) (count v) 
+      (number? v) v 
+      :else 0)))
+
+(defn- slice-op [op start end]
+  (if (nil? op)
+    nil
+    (let [type (op-type op) 
+          len (- end start)]
+      (if (or (<= len 0) (< start 0) (> end (op-len op)))
+        nil
+        (case type
+          :insert (update op :insert #(if (string? %) (subs % start end) %))
+          :retain (assoc op :retain len)
+          :delete (assoc op :delete len)
+          nil)))))
+
+(defn compose-attributes [a b]
+  (let [merged (merge (or a {}) (or b {}))
+        clean (into {} (remove #(nil? (val %)) merged))]
+    (if (empty? clean) nil clean)))
+
+(defn compact [ops]
+  (if (empty? ops)
+    []
+    (loop [remaining (remove nil? ops)
+           acc []]
+      (if (empty? remaining)
+        acc
+        (let [next-op (first remaining)
+              last-op (last acc)]
+          (if (and last-op 
+                   (= (op-type last-op) (op-type next-op)) 
+                   (= (:attributes last-op) (:attributes next-op)))
+            (let [t (op-type last-op)
+                  merged-op (if (= t :insert) 
+                             (update last-op :insert str (:insert next-op)) 
+                             (update last-op t + (op-len next-op)))]
+              (recur (rest remaining) (conj (pop acc) merged-op)))
+            (recur (rest remaining) (conj acc next-op))))))))
+
+(defn compose [delta-a delta-b]
+  (let [ops-a (if (map? delta-a) (or (:operations delta-a) []) (or delta-a []))
+        ops-b (if (map? delta-b) (or (:operations delta-b) []) (or delta-b []))]
+    (loop [ops-a (vec ops-a) 
+           ops-b (vec ops-b) 
+           result []]
+      (cond
+        (and (empty? ops-a) (empty? ops-b))
+        {:operations (compact result)}
+        
+        (empty? ops-b)
+        {:operations (compact (concat result ops-a))}
+        
+        (and (empty? ops-a) (some #(:insert %) ops-b))
+        ;; Only allow inserts if ops-a is empty
+        (let [op-b (first ops-b)]
+          (if (:insert op-b)
+            (recur ops-a (subvec ops-b 1) (conj result op-b))
+            {:operations (compact result)})) ;; Ignore retain/delete if nothing left to process
+        
+        (empty? ops-a)
+        {:operations (compact result)}
+
+        :else
+        (let [op-a (first ops-a) 
+              op-b (first ops-b)
+              len-a (op-len op-a)
+              len-b (op-len op-b)
+              take-len (min len-a len-b)]
+          (cond
+            (:insert op-b) 
+            (recur ops-a (subvec ops-b 1) (conj result op-b))
+            
+            (:delete op-a) 
+            (recur (subvec ops-a 1) ops-b (conj result op-a))
+            
+            :else
+            (let [cur-a (slice-op op-a 0 take-len) 
+                  cur-b (slice-op op-b 0 take-len)
+                  rem-a (if (> len-a take-len) 
+                          (cons (slice-op op-a take-len len-a) (rest ops-a)) 
+                          (rest ops-a))
+                  rem-b (if (> len-b take-len) 
+                          (cons (slice-op op-b take-len len-b) (rest ops-b)) 
+                          (rest ops-b))
+                  merged (cond 
+                           (and (:retain cur-a) (:retain cur-b)) 
+                           {:retain take-len :attributes (compose-attributes (:attributes cur-a) (:attributes cur-b))}
+                           
+                           (and (:insert cur-a) (:retain cur-b)) 
+                           {:insert (:insert cur-a) :attributes (compose-attributes (:attributes cur-a) (:attributes cur-b))}
+                           
+                           (and (:retain cur-a) (:delete cur-b)) 
+                           cur-b 
+                           
+                           :else nil)]
+              (recur (vec rem-a) (vec rem-b) (conj result merged)))))))))
+
+;; =============================================================
+;; Delta Slicing and Formatting Functions
+;; =============================================================
+
+(defn slice-delta
+  "Slice a delta at the given start and end offsets.
+   Returns a new delta containing only the operations within the range."
+  [delta start-offset end-offset]
+  (let [start-offset (max 0 (or start-offset 0))
+        end-offset (max start-offset (or end-offset 0))]
+    (if (or (nil? delta) (empty? (:operations delta)) (= start-offset end-offset))
+      {:operations []}
+      (let [ops (:operations delta)]
+        (loop [remaining-ops ops
+               current-offset 0
+               result []]
+          (if (empty? remaining-ops)
+            {:operations result}
+            (let [op (first remaining-ops)
+                  cur-op-len (op-len op)
+                  op-start current-offset
+                  op-end (+ op-start cur-op-len)]
+              (cond
+                (<= op-end start-offset)
+                (recur (rest remaining-ops) op-end result)
+                
+                (>= op-start end-offset)
+                (recur (rest remaining-ops) op-end result)
+                
+                :else
+                (let [slice-start (max 0 (- start-offset op-start))
+                      slice-end (min cur-op-len (- end-offset op-start))
+                      sliced-op (slice-op op slice-start slice-end)]
+                  (if (and sliced-op (pos? (op-len sliced-op)))
+                    (recur (rest remaining-ops) op-end (conj result sliced-op))
+                    (recur (rest remaining-ops) op-end result)))))))))))
+
+(defn format-delta-range
+  "Apply format attributes to a specific range in delta operations."
+  [delta start-offset end-offset attributes]
+  (let [start-offset (max 0 (or start-offset 0))
+        end-offset (max start-offset (or end-offset 0))]
+    (if (or (nil? delta) (empty? (:operations delta)) (= start-offset end-offset))
+      delta
+      (let [ops (:operations delta)]
+        (loop [remaining-ops ops
+               current-offset 0
+               result []]
+          (if (empty? remaining-ops)
+            {:operations (compact result)}
+            (let [op (first remaining-ops)
+                  cur-op-len (op-len op)
+                  op-start current-offset
+                  op-end (+ op-start cur-op-len)]
+              (cond
+                (<= op-end start-offset)
+                (recur (rest remaining-ops) op-end (conj result op))
+                
+                (>= op-start end-offset)
+                (recur (rest remaining-ops) op-end (conj result op))
+                
+                :else
+                (let [before-len (max 0 (- start-offset op-start))
+                      range-start (max op-start start-offset)
+                      range-end (min op-end end-offset)
+                      range-len (- range-end range-start)
+                      after-len (max 0 (- cur-op-len (- end-offset op-start)))
+                      result-with-before (if (pos? before-len)
+                                           (conj result (slice-op op 0 before-len))
+                                           result)
+                      result-with-formatted (if (pos? range-len)
+                                              (let [formatted-op (slice-op op before-len (+ before-len range-len))
+                                                    merged-attrs (compose-attributes (:attributes formatted-op) attributes)]
+                                                (conj result-with-before (assoc formatted-op :attributes merged-attrs)))
+                                              result-with-before)
+                      final-result (if (pos? after-len)
+                                     (conj result-with-formatted (slice-op op (+ before-len range-len) cur-op-len))
+                                     result-with-formatted)]
+                  (recur (rest remaining-ops) op-end final-result))))))))))
+
+(defn insert-text-into-delta
+  "Insert text at a specific offset in a delta."
+  [delta offset text]
+  (let [offset (max 0 (or offset 0))]
+    (if (or (nil? delta) (empty? (:operations delta)))
+      {:operations [{:insert text}]}
+      (let [ops (:operations delta)]
+        (loop [remaining-ops ops
+               current-offset 0
+               result []
+               inserted false]
+          (if (empty? remaining-ops)
+            {:operations (compact (if inserted result (conj result {:insert text})))}
+            (let [op (first remaining-ops)
+                  cur-op-len (op-len op)
+                  op-start current-offset
+                  op-end (+ op-start cur-op-len)]
+              (cond
+                (and (not inserted) (<= offset op-start))
+                (recur (rest remaining-ops) op-end (conj (conj result {:insert text}) op) true)
+                
+                (and (not inserted) (< op-start offset) (< offset op-end))
+                (let [before-op (slice-op op 0 (- offset op-start))
+                      after-op (slice-op op (- offset op-start) cur-op-len)
+                      result-with-before (if (and before-op (pos? (op-len before-op))) (conj result before-op) result)
+                      result-with-insert (conj result-with-before {:insert text})
+                      final-result (if (and after-op (pos? (op-len after-op))) (conj result-with-insert after-op) result-with-insert)]
+                  (recur (rest remaining-ops) op-end final-result true))
+                
+                :else
+                (recur (rest remaining-ops) op-end (conj result op) inserted)))))))))
+
+(defn delete-delta-range
+  "Delete a range from a delta."
+  [delta start-offset end-offset]
+  (let [start-offset (max 0 (or start-offset 0))
+        end-offset (max start-offset (or end-offset 0))]
+    (if (or (nil? delta) (empty? (:operations delta)) (= start-offset end-offset))
+      delta
+      (let [ops (:operations delta)]
+        (loop [remaining-ops ops
+               current-offset 0
+               result []]
+          (if (empty? remaining-ops)
+            {:operations (compact result)}
+            (let [op (first remaining-ops)
+                  cur-op-len (op-len op)
+                  op-start current-offset
+                  op-end (+ op-start cur-op-len)]
+              (cond
+                (<= op-end start-offset)
+                (recur (rest remaining-ops) op-end (conj result op))
+                
+                (>= op-start end-offset)
+                (recur (rest remaining-ops) op-end (conj result op))
+                
+                :else
+                (let [before-len (max 0 (- start-offset op-start))
+                      after-start-in-op (max 0 (- end-offset op-start))
+                      after-len (max 0 (- cur-op-len after-start-in-op))
+                      result-with-before (if (pos? before-len) (conj result (slice-op op 0 before-len)) result)
+                      final-result (if (pos? after-len) (conj result-with-before (slice-op op after-start-in-op cur-op-len)) result-with-before)]
+                  (recur (rest remaining-ops) op-end final-result))))))))))
+
+;; =============================================================
+;; Unicode Rune Position Functions
+;; =============================================================
+
+(defn delta->plain-text [delta]
+  (if (or (nil? delta) (empty? (:operations delta)))
+    ""
+    (apply str (map :insert (filter #(string? (:insert %)) (:operations delta))))))
+
+(defn concat-deltas [delta-a delta-b]
+  (let [ops-a (if (map? delta-a) (or (:operations delta-a) []) (or delta-a []))
+        ops-b (if (map? delta-b) (or (:operations delta-b) []) (or delta-b []))]
+    {:operations (compact (concat ops-a ops-b))}))
+
+(defn prev-rune-position [delta pos]
+  (if (<= pos 0)
+    -1
+    (let [content (delta->plain-text delta)
+          boundary (services/CharacterBoundary. content)]
+      ;; To find PREVIOUS character, we must check (pos - 1)
+      (if-let [result (.getLeadingTextBoundaryAt boundary (dec pos))]
+        result
+        (dec pos)))))
+
+(defn next-rune-position [delta pos]
+  (let [content (delta->plain-text delta)
+        content-len (count content)]
+    (if (>= pos content-len)
+      content-len
+      (let [boundary (services/CharacterBoundary. content)]
+        ;; To find NEXT character, we look at the trailing boundary of the current code unit
+        (if-let [result (.getTrailingTextBoundaryAt boundary pos)]
+          result
+          (min content-len (inc pos)))))))
+
+(defn text-length-in-code-units [text] (count text))
+
+(defn insert [text & [attributes]]
+  (if attributes
+    {:insert text :attributes attributes}
+    {:insert text}))
+
+(defn delete [len]
+  {:delete len})
+
+(defn retain [len & [attributes]]
+  (if attributes
+    {:retain len :attributes attributes}
+    {:retain len}))
+
+(defn calculate-insert-position [offset inserted-text]
+  (+ offset (count inserted-text)))
+
+;; =============================================================
+;; Word Boundary Functions
+;; =============================================================
+
+(defn- word-char? [ch]
+  (if (nil? ch) false (not (nil? (re-matches #"\w" (str ch))))))
+
+(defn- get-leading-word-boundary [content pos]
+  (let [len (count content)]
+    (if (<= pos 0)
+      0
+      (let [target-pos (if (>= pos len) (dec len) pos)
+            is-starting-in-word (word-char? (nth content target-pos))]
+        (loop [i target-pos]
+          (cond
+            (<= i 0) 0
+            (and is-starting-in-word (not (word-char? (nth content (dec i))))) i
+            (and (not is-starting-in-word) (word-char? (nth content (dec i)))) i
+            :else (recur (dec i))))))))
+
+(defn- get-trailing-word-boundary [content pos]
+  (let [len (count content)]
+    (if (>= pos len)
+      len
+      (let [is-starting-in-word (word-char? (nth content pos))]
+        (loop [i pos]
+          (cond
+            (>= i (dec len)) len
+            (and is-starting-in-word (not (word-char? (nth content (inc i))))) (inc i)
+            (and (not is-starting-in-word) (word-char? (nth content (inc i)))) (inc i)
+            :else (recur (inc i))))))))
+
+(defn find-word-boundary-backward [delta pos]
+  (get-leading-word-boundary (delta->plain-text delta) pos))
+
+(defn find-word-boundary-forward [delta pos]
+  (get-trailing-word-boundary (delta->plain-text delta) pos))

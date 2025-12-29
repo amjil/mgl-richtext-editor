@@ -1,0 +1,22 @@
+(ns rich-editor.ui.buttons.redo-undo
+  (:require
+   [cljd.flutter :as f]
+   [rich-editor.utils.history :as hist]
+   [rich-editor.state :as state]
+   ["package:flutter/material.dart" :as m]))
+
+
+(defn redo-undo-buttons []
+(m/Row
+  :children
+  [(f/widget
+     :watch [can-undo? (f/$ (not-empty (:undo-stack (f/<! state/!editor-state))))]
+     (m/IconButton
+       :icon (m/Icon m/Icons.undo)
+       :onPressed (when can-undo? #(swap! state/!editor-state hist/undo))))
+   (f/widget
+     :watch [can-redo? (f/$ (not-empty (:redo-stack (f/<! state/!editor-state))))]
+     (m/IconButton
+       :icon (m/Icon m/Icons.redo)
+       :onPressed (when can-redo? #(swap! state/!editor-state hist/redo))))]))
+ 

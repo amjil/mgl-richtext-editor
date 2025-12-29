@@ -1,0 +1,14 @@
+name: mgl_editor_core
+description: Core Dart widgets for Mongol RichText Editor.
+version: 0.0.1
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.3.2 <4.0.0'
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mongol: ^9.0.0
+

@@ -1,0 +1,67 @@
+(ns rich-editor.utils.markdown-export
+  (:require [clojure.string :as str]))
+
+(defn- delta->markdown [delta]
+  (let [ops (or (:operations delta) [])]
+    (apply str
+      (map (fn [op]
+             (let [text (:insert op)
+                   attrs (:attributes op)]
+               (if (string? text)
+                 (let [bold? (:bold attrs)
+                       italic? (:italic attrs)
+                       strike? (:strikethrough attrs)
+                       code? (:code attrs)
+                       link (:link attrs)
+                       
+                       t text
+                       t (if code? (str "`" t "`") t)
+                       t (if bold? (str "**" t "**") t)
+                       t (if italic? (str "*" t "*") t)
+                       t (if strike? (str "~~" t "~~") t)
+                       t (if link (str "[" t "](" link ")") t)]
+                   t)
+                 "")))
+           ops))))
+
+(defn- table->markdown [rows]
+  (if (empty? rows)
+    ""
+    (let [header (first rows)
+          rest-rows (rest rows)
+          header-text (str "| " (str/join " | " (map #(delta->markdown (get-in % [:data :delta])) (:cells header))) " |")
+          separator (str "| " (str/join " | " (repeat (count (:cells header)) "---")) " |")
+          body-text (str/join "\n" (map (fn [row]
+                                           (str "| " (str/join " | " (map #(delta->markdown (get-in % [:data :delta])) (:cells row))) " |"))
+                                         rest-rows))]
+      (str header-text "\n" separator "\n" body-text))))
+
+(defn block->markdown [block]
+  (let [type (:type block)
+        data (:data block)
+        delta (:delta data)
+        text (if delta (delta->markdown delta) "")]
+    (case type
+      :paragraph text
+      :h1 (str "# " text)
+      :h2 (str "## " text)
+      :h3 (str "### " text)
+      :bulleted-list (let [level (or (:level data) 0)
+                            indent (apply str (repeat level "  "))]
+                        (str indent "- " text))
+      :numbered-list (let [level (or (:level data) 0)
+                            indent (apply str (repeat level "  "))
+                            index (or (:index data) 1)]
+                        (str indent index ". " text))
+      :quote (str "> " text)
+      :todo (str "- [" (if (:checked data) "x" " ") "] " text)
+      :divider "---"
+      :code-block (str "```\n" (:code data) "\n```")
+      :image (str "![" (or (:alt data) "") "](" (or (:src data) "") ")")
+      :table (table->markdown (or (:rows data) []))
+      "")))
+
+(defn doc->markdown [doc]
+  (let [blocks (:children doc)]
+    (str/join "\n\n" (map block->markdown blocks))))
+

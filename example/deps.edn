@@ -2,9 +2,9 @@
  :deps {tensegritics/clojuredart
         {:git/url "https://github.com/tensegritics/ClojureDart.git"
          :sha "9385be3c88ab6593350fdda50d86af985224971b"}
-        amjil/mongol-virtual-keyboard
-        {:git/url "https://github.com/amjil/mongol-virtual-keyboard.git"
-         :sha "ab43a23db57bd7739a89989ca8b7ad739f9db509"}}
-       
+        amjil/mgl-richtext-editor
+        {:local/root "../"}}
+
  :aliases {:cljd {:main-opts ["-m" "cljd.build"]}}
- }
+ :cljd/opts {:kind :flutter
+             :main editor-test.main}}

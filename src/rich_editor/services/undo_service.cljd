@@ -1,0 +1,53 @@
+(ns rich-editor.services.undo-service
+  (:require [rich-editor.model.delta :as delta]))
+
+;; --- Core logic ---
+
+(defn- invert-op 
+  "Given an operation, calculate its inverse operation"
+  [op]
+  (let [type (delta/op-type op)]
+    (case type
+      :insert (delta/delete (delta/op-len op))
+      :delete (delta/insert (get-in op [:attributes :original-text] "")) ;; need to store the original text when executing
+      :retain (delta/retain (delta/op-len op) (:old-attributes op)))))
+
+(defn- invert-delta 
+  "Calculate the inverse Delta of the entire Delta"
+  [delta]
+  (mapv invert-op (reverse delta)))
+
+;; --- State maintenance ---
+
+(defn push-undo! 
+  "When the user performs an operation, push the inverse operation into the undo stack"
+  [!editor-state change-delta]
+  (swap! !editor-state (fn [state]
+                         (-> state
+                             (update :undo-stack conj (invert-delta change-delta))
+                             (assoc :redo-stack []))))) ;; new operation will clear the redo stack
+
+(defn undo! 
+  "Execute undo"
+  [!editor-state]
+  (let [state @!editor-state
+        undo-op (last (:undo-stack state))]
+    (when undo-op
+      (swap! !editor-state (fn [s]
+                             (-> s
+                                 (update :undo-stack pop)
+                                 (update :redo-stack conj (invert-delta undo-op))
+                                 ;; here apply the undo-op to the current document content
+                                 (update :document-delta #(delta/compose % undo-op))))))))
+
+(defn redo! 
+  "Execute redo"
+  [!editor-state]
+  (let [state @!editor-state
+        redo-op (last (:redo-stack state))]
+    (when redo-op
+      (swap! !editor-state (fn [s]
+                             (-> s
+                                 (update :redo-stack pop)
+                                 (update :undo-stack conj (invert-delta redo-op))
+                                 (update :document-delta #(delta/compose % redo-op))))))))

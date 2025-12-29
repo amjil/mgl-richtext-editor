@@ -1,0 +1,98 @@
+(ns rich-editor.ui.selection-menu
+  (:require [cljd.flutter :as f]
+            [rich-editor.state :as state]
+            [rich-editor.command.text-commands :as text-cmd]
+            [rich-editor.model.selection :as sel]
+            ["package:flutter/material.dart" :as m]
+            ["package:flutter/foundation.dart" :as foundation]))
+
+;; =============================================================
+;; Selection menu commands
+;; =============================================================
+
+(defn show-selection-menu! [position]
+  (swap! state/!editor-state
+    (fn [curr]
+      (-> curr
+          (assoc-in [:selection-menu :show?] true)
+          (assoc-in [:selection-menu :position] position)))))
+
+(defn hide-selection-menu! []
+  (swap! state/!editor-state
+    (fn [curr]
+      (-> curr
+          (assoc-in [:selection-menu :show?] false)
+          (assoc-in [:selection-menu :position] nil)))))
+
+;; =============================================================
+;; Selection menu UI component
+;; =============================================================
+
+(defn format-button [icon label on-pressed]
+  (f/widget
+   (m/TextButton.icon
+    :icon (m/Icon icon :size 20.0)
+    :label (m/Text label :style (m/TextStyle :fontSize 14.0))
+    :onPressed on-pressed
+    :style (m/ButtonStyle
+            :padding (m/MaterialStateProperty.all
+                     (m/EdgeInsets.symmetric :horizontal 12.0 :vertical 8.0))))))
+
+(defn selection-menu-content []
+  (f/widget
+   :context ctx
+   :watch [editor-state (f/$ (f/<! state/!editor-state))]
+   :let [selection (:selection editor-state)
+         is-mobile? (not foundation/kIsWeb)
+         screen-width (.-width (.-size (m/MediaQuery.of ctx)))
+         is-small-screen? (< screen-width 600.0)
+         use-vertical-layout? (or is-mobile? is-small-screen?)
+         has-selection? (and selection (not (sel/collapsed? selection)))]
+   
+   (if (or has-selection? (some? (:focused-path editor-state)))
+     (m/Container
+      :constraints (m/BoxConstraints :maxWidth (- screen-width 32.0))
+      :padding (m/EdgeInsets.all 4.0)
+      :decoration (m/BoxDecoration
+                   :color (.-surface (-> m/Theme (.of ctx) .-colorScheme))
+                   :borderRadius (m/BorderRadius.circular 8.0)
+                   :boxShadow [(m/BoxShadow
+                                :color (m/Colors.black26)
+                                :blurRadius 8.0
+                                :offset (m/Offset. 0.0 2.0))])
+      :child
+      (m/SingleChildScrollView
+       :scrollDirection (if use-vertical-layout? m/Axis.vertical m/Axis.horizontal)
+       :child
+       (let [items (filter some?
+                           [(when has-selection?
+                              (format-button m/Icons.copy "Copy"
+                                             (fn [] (text-cmd/copy-selection!) (hide-selection-menu!))))
+                            (when has-selection?
+                              (format-button m/Icons.content_cut "Cut"
+                                             (fn [] (text-cmd/cut-selection!) (hide-selection-menu!))))
+                            (format-button m/Icons.paste "Paste"
+                                           (fn [] (text-cmd/paste-selection!) (hide-selection-menu!)))
+                            (format-button m/Icons.select_all "Select All"
+                                           (fn [] (text-cmd/select-all!) (hide-selection-menu!)))])]
+         (if use-vertical-layout?
+           (m/Column
+            :mainAxisSize m/MainAxisSize.min
+            :crossAxisAlignment m/CrossAxisAlignment.start
+            :children items)
+           (m/Row
+            :mainAxisSize m/MainAxisSize.min
+            :children items)))))
+     (m/SizedBox.shrink))))
+
+(defn selection-menu
+  []
+  (f/widget
+   :watch [show? (f/$ (get-in (f/<! state/!editor-state) [:selection-menu :show?]))
+           position (f/$ (get-in (f/<! state/!editor-state) [:selection-menu :position]))]
+   (if (and show? position)
+     (m/Positioned
+      :left (.-dx position)
+      :top (.-dy position)
+      :child (selection-menu-content))
+     (m/SizedBox.shrink))))

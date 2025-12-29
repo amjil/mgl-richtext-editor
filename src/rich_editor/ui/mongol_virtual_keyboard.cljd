@@ -1,0 +1,324 @@
+(ns rich-editor.ui.mongol-virtual-keyboard
+  (:require [cljd.flutter :as f]
+            [rich-editor.services.keyboard-service :as kb-service]
+            [rich-editor.state :as state]
+   [rich-editor.ui.link-dialog :as link-dialog]
+   [rich-editor.command.text-commands :as text-cmd]
+   [rich-editor.model.selection :as sel]
+   [rich-editor.model.delta :as delta-model]
+   [rich-editor.utils.delta :as delta-utils]
+   [virtual-keyboard.keyboard :as keyboard]
+            [virtual-keyboard.options :as keyboard-options]
+            ["package:flutter/material.dart" :as m]))
+
+;; =============================================================
+;; Mongolian virtual keyboard component
+;; Integrates m-v-k virtual keyboard, references mgl-notes-app implementation
+;; =============================================================
+
+(defn format-button
+  "Format button component, references m-v-k's action-key-container style"
+  [{:keys [icon label on-pressed active? disabled?]}]
+  (f/widget
+   :context ctx
+   :let [theme (-> m/Theme (.of ctx))
+         color-scheme (.-colorScheme theme)]
+   (m/Container
+    :clipBehavior m/Clip.hardEdge
+    :height 40.0
+    :margin (m/EdgeInsets.symmetric :horizontal 4.0)
+    :decoration (m/BoxDecoration
+                 :color (if active?
+                          (.-primary color-scheme)
+                          (.-surfaceVariant color-scheme))
+                 :borderRadius (m/BorderRadius.circular 8.0))
+    :child (m/Material
+            :color m/Colors.transparent
+            :child (m/InkWell
+                    :onTap (when (and on-pressed (not disabled?)) on-pressed)
+                    :child (m/Padding
+                            :padding (m/EdgeInsets.symmetric :horizontal 12.0 :vertical 8.0)
+                            :child (m/Row
+                                    :mainAxisSize m/MainAxisSize.min
+                                    :mainAxisAlignment m/MainAxisAlignment.center
+                                    :children
+                                    [(m/Icon icon
+                                             :size 20.0
+                                             :color (if active?
+                                                      (.-onPrimary color-scheme)
+                                                      (if disabled?
+                                                        (.-onSurfaceVariant color-scheme)
+                                                        (.-onSurface color-scheme))))
+                                     (when label
+                                       (m/Padding
+                                        :padding (m/EdgeInsets.only :left 4.0)
+                                        :child (m/Text label
+                                                       :style (m/TextStyle
+                                                               :fontSize 14.0
+                                                               :color (if active?
+                                                                        (.-onPrimary color-scheme)
+                                                                        (if disabled?
+                                                                          (.-onSurfaceVariant color-scheme)
+                                                                          (.-onSurface color-scheme)))))))])))))))
+
+(defn- get-block-at-path [doc path]
+  (get-in doc [:children (first path)]))
+
+(defn get-selected-text [editor-state]
+  (let [selection (:selection editor-state)]
+    (if (and selection (not (sel/collapsed? selection)))
+      (let [normalized (sel/normalize selection)
+            start-path (:path (:start normalized))
+            end-path (:path (:end normalized))
+            start-offset (:offset (:start normalized))
+            end-offset (:offset (:end normalized))]
+        (if (= start-path end-path)
+          (let [block (get-block-at-path (:doc editor-state) start-path)
+                current-delta (get-in block [:data :delta])
+                sliced (delta-model/slice-delta current-delta start-offset end-offset)]
+            (delta-utils/delta->text sliced))
+          ""))
+      "")))
+
+(defn virtual-keyboard-toolbar
+  "Virtual keyboard toolbar, displays formatting buttons
+   References mgl-notes-app's search-panel layout"
+  []
+  (f/widget
+   :context ctx
+   :watch [editor-state (f/$ (f/<! state/!editor-state))]
+   :let [has-selection (some? (:selection editor-state))
+         focused-path (:focused-path editor-state)
+         block-index (when focused-path (first focused-path))
+         current-block (when block-index (get-in editor-state [:doc :children block-index]))
+         is-table? (= (:type current-block) :table)
+         theme (-> m/Theme (.of ctx))
+         color-scheme (.-colorScheme theme)]
+
+   (m/Container
+    .padding (m/EdgeInsets.symmetric .horizontal 8.0 .vertical 8.0)
+    .decoration (m/BoxDecoration
+                 .color (.-surfaceVariant color-scheme)
+                 .border (m/Border .top (m/BorderSide
+                                         .color (.-outlineVariant color-scheme)
+                                         .width 1.0)))
+    .child (m/SingleChildScrollView
+            .scrollDirection m/Axis.horizontal
+            .child (m/Row
+                    .mainAxisAlignment m/MainAxisAlignment.start
+                    .children
+                    (->> [(format-button
+                           {:icon m/Icons.format_bold
+                            :label "Bold"
+                            :on-pressed (when has-selection #(kb-service/handle-virtual-key! :bold))
+                            :active? false
+                            :disabled? (not has-selection)})
+
+                          (format-button
+                           {:icon m/Icons.format_italic
+                            :label "Italic"
+                            :on-pressed (when has-selection #(kb-service/handle-virtual-key! :italic))
+                            :active? false
+                            :disabled? (not has-selection)})
+
+                          (format-button
+                           {:icon m/Icons.format_underlined
+                            :label "Underline"
+                            :on-pressed (when has-selection #(kb-service/handle-virtual-key! :underline))
+                            :active? false
+                            :disabled? (not has-selection)})
+
+                          (format-button
+                           {:icon m/Icons.strikethrough_s
+                            :label "Strikethrough"
+                            :on-pressed (when has-selection #(kb-service/handle-virtual-key! :strikethrough))
+                            :active? false
+                            :disabled? (not has-selection)})
+
+                          (m/Container
+                           :width 1.0
+                           :height 30.0
+                           :margin (m/EdgeInsets.symmetric :horizontal 8.0)
+                           :color (.-outlineVariant color-scheme))
+
+                          (format-button
+                           {:icon m/Icons.undo
+                            :label "Undo"
+                            :on-pressed #(kb-service/handle-virtual-key! :undo)
+                            :active? false
+                            :disabled? false})
+
+                          (format-button
+                           {:icon m/Icons.redo
+                            :label "Redo"
+                            :on-pressed #(kb-service/handle-virtual-key! :redo)
+                            :active? false
+                            :disabled? false})
+
+                          (format-button
+                           {:icon m/Icons.link
+                            :label "Link"
+                            :on-pressed (when has-selection
+                                          (fn []
+                                            (let [current-url (text-cmd/get-link-at-selection)
+                                                  selected-text (get-selected-text editor-state)]
+                                              (link-dialog/show-link-dialog ctx selected-text current-url
+                                                                            (fn [text url]
+                                                                              (text-cmd/insert-link! text url))))))
+                            :active? false
+                            :disabled? (not has-selection)})
+
+                          (m/Container
+                           :width 1.0
+                           :height 30.0
+                           :margin (m/EdgeInsets.symmetric :horizontal 8.0)
+                           :color (.-outlineVariant color-scheme))
+
+                          (format-button
+                           {:icon m/Icons.notes
+                            :label "Paragraph"
+                            :on-pressed #(kb-service/handle-virtual-key! :paragraph)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.title
+                            :label "H1"
+                            :on-pressed #(kb-service/handle-virtual-key! :h1)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.format_list_numbered
+                            :label "Numbered"
+                            :on-pressed #(kb-service/handle-virtual-key! :numbered-list)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.format_list_bulleted
+                            :label "Bulleted"
+                            :on-pressed #(kb-service/handle-virtual-key! :bulleted-list)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.format_quote
+                            :label "Quote"
+                            :on-pressed #(kb-service/handle-virtual-key! :quote)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.check_box
+                            :label "Todo"
+                            :on-pressed #(kb-service/handle-virtual-key! :todo)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.table_chart
+                            :label "Table"
+                            :on-pressed #(kb-service/handle-virtual-key! :table)
+                            :active? false})
+
+                          (m/Container
+                           :width 1.0
+                           :height 30.0
+                           :margin (m/EdgeInsets.symmetric :horizontal 8.0)
+                           :color (.-outlineVariant color-scheme))
+
+                          (format-button
+                           {:icon m/Icons.arrow_downward
+                            :label "Indent"
+                            :on-pressed #(kb-service/handle-virtual-key! :indent)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.arrow_upward
+                            :label "Outdent"
+                            :on-pressed #(kb-service/handle-virtual-key! :outdent)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.arrow_back
+                            :label "Left"
+                            :on-pressed #(kb-service/handle-virtual-key! :move-up)
+                            :active? false})
+
+                          (format-button
+                           {:icon m/Icons.arrow_forward
+                            :label "Right"
+                            :on-pressed #(kb-service/handle-virtual-key! :move-down)
+                            :active? false})
+
+                          (if is-table?
+                            (format-button
+                             {:icon m/Icons.add
+                              :label "Row"
+                              :on-pressed #(kb-service/handle-virtual-key! :add-table-row)
+                              :active? false})
+                            nil)
+                          (if is-table?
+                            (format-button
+                             {:icon m/Icons.add_circle
+                              :label "Col"
+                              :on-pressed #(kb-service/handle-virtual-key! :add-table-col)
+                              :active? false})
+                            nil)]
+                         (remove nil?)
+                         vec))))))
+
+(defn virtual-keyboard-component
+  "Actual Mongolian virtual keyboard component
+   Uses keyboard provided by m-v-k library"
+  []
+  (f/widget
+   :context ctx
+   :let [theme (-> m/Theme (.of ctx))
+         color-scheme (.-colorScheme theme)
+         info (merge keyboard-options/keyboard-option
+                     {:keyboard/key-cap-border-radius 6
+                      :keyboard/font-size 18
+                      :keyboard/key-container-color (.-surfaceVariant color-scheme)
+                      :keyboard/mongol-font-family "OnonSoninSans"})]
+   :bind {:info info}
+   (keyboard/keyboard {:custom-fns {}})))
+
+(defn candidates-panel
+  "Candidates panel component"
+  []
+  (f/widget
+   (keyboard/candidates nil)))
+
+(defn virtual-keyboard-wrapper
+  "Wrapper component, displays virtual keyboard on mobile
+   References mgl-notes-app's search-panel Column layout"
+  [{:keys [child show-keyboard?]}]
+  (f/widget
+   (m/Stack
+    :children
+    [(m/Column
+      :mainAxisSize m/MainAxisSize.max
+      :crossAxisAlignment m/CrossAxisAlignment.stretch
+      :children
+      [(m/Expanded :child (or child (m/SizedBox.shrink)))
+       (if show-keyboard?
+         (m/Column
+          :mainAxisSize m/MainAxisSize.min
+          :children
+          [(virtual-keyboard-toolbar)
+           (virtual-keyboard-component)])
+         (m/SizedBox.shrink))])
+     ;; Candidates panel (floating display)
+     (if show-keyboard?
+       (candidates-panel)
+       (m/SizedBox.shrink))])))
+
+(defn toolbar
+  "Toolbar wrapper function, references m-v-k's toolbar function
+   Used for conditional toolbar display"
+  [widget]
+  (f/widget
+   :watch [editor-state (f/$ (f/<! state/!editor-state))]
+   :let [has-selection (some? (:selection editor-state))
+         has-focus (some? (:focused-path editor-state))
+         visible (or has-selection has-focus)]
+   (m/Visibility
+    :visible visible
+    :child widget)))
+

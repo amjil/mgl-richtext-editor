@@ -1,0 +1,26 @@
+(ns rich-editor.registry
+  (:require
+   ["package:flutter/widgets.dart" :as w]))
+
+;; store {path MongolRenderParagraph}
+(defonce !render-registry (atom {}))
+
+(defn register! [path render-obj]
+  (swap! !render-registry assoc path render-obj))
+
+(defn unregister! [path]
+  (swap! !render-registry dissoc path))
+
+;; global hit test: find the RenderObject at the coordinate using GlobalKey collection
+(defn find-at-offset [global-offset text-keys-atom]
+  (some (fn [[path text-key]]
+          (when-let [current-ctx (.-currentContext text-key)]
+            (let [ro (.findRenderObject current-ctx)]
+              (when (and ro (.-attached ro))
+                (let [box-pos (.localToGlobal ro w/Offset.zero)
+                      size (.-size ro)
+                      rect (w/Rect.fromLTWH (.-dx box-pos) (.-dy box-pos) 
+                                            (.-width size) (.-height size))]
+                  (when (.contains rect global-offset)
+                    {:path path :render-obj ro}))))))
+        @text-keys-atom))

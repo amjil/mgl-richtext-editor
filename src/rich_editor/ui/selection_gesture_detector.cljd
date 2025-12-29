@@ -1,0 +1,40 @@
+(ns rich-editor.ui.selection-gesture-detector
+  (:require
+   [cljd.flutter :as f]
+   [rich-editor.services.selection-service :as sel-service]
+   ["package:flutter/material.dart" :as m]
+   ["package:flutter/gestures.dart" :as g]))
+
+(defn selection-gesture-detector [{:keys [!editor-state scroll-controller child]}]
+  (f/widget
+   :get [m/MediaQuery]
+   ;; get the viewport size, for automatic scrolling calculation
+   :let [viewport-size (.-size media-query)]
+
+   (m/GestureDetector
+    ;; 1. handle the tap down (determine the starting point)
+    :onTapDown (fn [^m/TapDownDetails details]
+                 (sel-service/handle-tap-down! !editor-state details))
+
+    ;; 2. handle the drag update (cross-block selection + automatic scrolling)
+    :onPanUpdate (fn [^m/DragUpdateDetails details]
+                   (sel-service/handle-pan-update!
+                    !editor-state
+                    details
+                    viewport-size
+                    scroll-controller))
+
+    ;; 3. handle the drag end (clean the state)
+    :onPanEnd (fn [^m/DragEndDetails details]
+                (sel-service/handle-pan-end! !editor-state details))
+
+    ;; 4. double click to select a word (optional)
+    :onDoubleTapDown (fn [^g/TapDownDetails details]
+                       (sel-service/handle-double-tap!
+                        !editor-state
+                        (.-globalPosition details)))
+
+    :onSecondaryTapDown (fn [^m/TapDownDetails details]
+                          (sel-service/handle-secondary-tap-down! !editor-state details))
+
+    :child child)))

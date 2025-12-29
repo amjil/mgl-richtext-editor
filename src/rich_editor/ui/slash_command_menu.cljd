@@ -1,0 +1,71 @@
+(ns rich-editor.ui.slash-command-menu
+  (:require [cljd.flutter :as f]
+            [rich-editor.services.slash-command-service :as slash-cmd]
+            [rich-editor.state :as state]
+            ["package:flutter/material.dart" :as m]))
+
+;; =============================================================
+;; Slash Command Menu UI Component
+;; =============================================================
+
+(defn slash-command-menu [{:keys [position on-command-selected]}]
+  (f/widget
+   :watch [editor-state (f/$ (f/<! state/!editor-state))]
+   :let [active (:slash-command-active editor-state)
+         _query (:slash-command-query editor-state)]
+   
+   (if (and active (seq (slash-cmd/get-filtered-commands)))
+     (let [filtered-commands (slash-cmd/get-filtered-commands)]
+       (m/Positioned
+        .left (.-dx position)
+        .top (.-dy position)
+        .child
+        (m/Container
+         :width 300.0
+         :constraints (m/BoxConstraints :maxHeight 300.0)
+         :decoration (m/BoxDecoration
+                     :color m/Colors.white
+                     :borderRadius (m/BorderRadius.circular 8.0)
+                     :boxShadow [(m/BoxShadow
+                                  :color (m/Colors.black12)
+                                  :blurRadius 8.0
+                                  :offset (m/Offset. 0 4))])
+         :child
+         (m/ListTileTheme
+          :style m/ListTileStyle.list
+          :child
+          (m/ListView
+           :shrinkWrap true
+           :padding (m/EdgeInsets.zero)
+           :children
+           (map-indexed
+            (fn [_idx cmd]
+              (m/InkWell
+               :onTap (fn [] 
+                        (when on-command-selected
+                          (on-command-selected (:id cmd))))
+               :child
+               (m/Padding
+                :padding (m/EdgeInsets.symmetric :horizontal 16.0 :vertical 12.0)
+                :child
+                (m/Row
+                 :children
+                 [(m/Icon
+                   (case (:id cmd)
+                     :heading1 m/Icons.title
+                     :heading2 m/Icons.title
+                     :bullet-list m/Icons.format_list_bulleted
+                     :numbered-list m/Icons.format_list_numbered
+                     :quote m/Icons.format_quote
+                     :code-block m/Icons.code
+                     :divider m/Icons.horizontal_rule
+                     :table m/Icons.table_chart
+                     m/Icons.text_fields)
+                   :size 20.0
+                   :color m/Colors.grey)
+                  (m/SizedBox :width 12.0)
+                  (m/Text (:label cmd)
+                          :style (m/TextStyle :fontSize 14.0))]))))
+            filtered-commands))))))
+     (m/SizedBox.shrink))))
+

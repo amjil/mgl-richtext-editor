@@ -1,0 +1,92 @@
+(ns rich-editor.model.node
+  (:require [clojure.string :as str]))
+
+;; =============================================================
+;; Node constructor
+;; =============================================================
+
+(defn make-node
+  "Create a document node.
+   id: unique identifier (String/UUID)
+   type: node type (e.g. :paragraph, :heading, :image)
+   data: node content (e.g. {:text \"...\"})
+   children: child node list (Vector of Nodes)
+   attributes: styles or metadata (e.g. {:align :center})"
+  ([id type data]
+   (make-node id type data [] {}))
+  ([id type data children]
+   (make-node id type data children {}))
+  ([id type data children attributes]
+   {:id id
+    :type type
+    :data data
+    :children (vec children)
+    :attributes attributes}))
+
+;; =============================================================
+;; Query and attribute operations (pure functions)
+;; =============================================================
+
+(defn text-content
+  "Get the text content of the node (recursively get the text content of all child nodes)"
+  [node]
+  (let [own-text (get-in node [:data :text] "")]
+    (if (empty? (:children node))
+      own-text
+      (str own-text (str/join "" (map text-content (:children node)))))))
+
+(defn get-attribute
+  "Get the attribute of the node"
+  [node k default]
+  (get-in node [:attributes k] default))
+
+(defn update-data [node k f]
+  (update-in node [:data k] f))
+
+;; =============================================================
+;; Document tree path lookup (Path Operations)
+;; =============================================================
+
+(defn get-node-at-path
+  "Find a node in the tree by the path vector. For example, path [0 1] represents the 0th child of the root node and the 1st child of the 0th child."
+  [root path]
+  (if (empty? path)
+    root
+    (let [child-idx (first path)]
+      (if-let [child (get-in root [:children child-idx])]
+        (recur child (rest path))
+        nil))))
+
+
+
+;; =============================================================
+;; Auxiliary conversion
+;; =============================================================
+
+(defn to-json-map
+  "Serialize the node to a plain Map,JSON-friendly"
+  [node]
+  {:id (:id node)
+   :type (name (:type node))
+   :data (:data node)
+   :attributes (:attributes node)
+   :children (mapv to-json-map (:children node))})
+
+(defn path->ks
+  "Convert a path vector [0 1] to a keyword sequence [:children 0 :children 1] for use with get-in/assoc-in.
+   If the path already contains keywords (structural path), prepend :children to the first index."
+  [path]
+  (if (empty? path)
+    []
+    (if (some keyword? path)
+      (vec (cons :children path))
+      (vec (concat [:children] (interpose :children path))))))
+
+(defn from-json-map
+  "Restore the node structure from the Map,JSON-friendly"
+  [m]
+  (make-node (:id m)
+             (keyword (:type m))
+             (:data m)
+             (mapv from-json-map (:children m))
+             (:attributes m)))

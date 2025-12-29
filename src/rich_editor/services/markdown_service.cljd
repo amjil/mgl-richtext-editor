@@ -1,0 +1,113 @@
+(ns rich-editor.services.markdown-service
+  (:require [clojure.string :as str]))
+
+;; =============================================================
+;; Markdown Pattern Detection
+;; =============================================================
+
+(defn- detect-markdown-pattern
+  "Detect Markdown patterns in text (inline formatting)
+   Returns {:type :bold|:italic|:strikethrough|:code
+            :start-offset start position
+            :end-offset end position
+            :content content}"
+  [text offset]
+  (let [text-before (subs text 0 offset)
+        text-after (subs text offset)]
+    (cond
+      ;; Detect **text** (bold) - need to ensure it's not ***
+      (and (>= (count text-before) 2)
+           (= (subs text-before (- (count text-before) 2)) "**")
+           (>= (count text-after) 2)
+           (= (subs text-after 0 2) "**")
+           ;; Ensure there's no * before and after
+           (or (< (count text-before) 3)
+               (not= (subs text-before (- (count text-before) 3) (- (count text-before) 2)) "*"))
+           (or (< (count text-after) 3)
+               (not= (subs text-after 2 3) "*")))
+      {:type :bold
+       :start-offset (- offset 2)
+       :end-offset (+ offset 2)
+       :content (subs text (- offset 2) (+ offset 2))}
+      
+      ;; Detect *text* (italic, but not **)
+      (and (>= (count text-before) 1)
+           (= (subs text-before (- (count text-before) 1)) "*")
+           (or (< (count text-before) 2)
+               (not= (subs text-before (- (count text-before) 2) (- (count text-before) 1)) "*"))
+           (>= (count text-after) 1)
+           (= (subs text-after 0 1) "*")
+           (or (< (count text-after) 2)
+               (not= (subs text-after 1 2) "*")))
+      {:type :italic
+       :start-offset (- offset 1)
+       :end-offset (+ offset 1)
+       :content (subs text (- offset 1) (+ offset 1))}
+      
+      ;; Detect ~~text~~ (strikethrough)
+      (and (>= (count text-before) 2)
+           (= (subs text-before (- (count text-before) 2)) "~~")
+           (>= (count text-after) 2)
+           (= (subs text-after 0 2) "~~"))
+      {:type :strikethrough
+       :start-offset (- offset 2)
+       :end-offset (+ offset 2)
+       :content (subs text (- offset 2) (+ offset 2))}
+      
+      ;; Detect `text` (code)
+      (and (>= (count text-before) 1)
+           (= (subs text-before (- (count text-before) 1)) "`")
+           (>= (count text-after) 1)
+           (= (subs text-after 0 1) "`"))
+      {:type :code
+       :start-offset (- offset 1)
+       :end-offset (+ offset 1)
+       :content (subs text (- offset 1) (+ offset 1))}
+      
+      :else nil)))
+
+(defn- detect-block-markdown
+  "Detect block-level Markdown patterns (at line start)
+   Returns {:type :heading|:list|:quote :level level}"
+  [text]
+  (cond
+    (str/starts-with? text "# ")
+    {:type :heading :level 1}
+    
+    (str/starts-with? text "## ")
+    {:type :heading :level 2}
+    
+    (str/starts-with? text "### ")
+    {:type :heading :level 3}
+    
+    (str/starts-with? text "- ")
+    {:type :list :style :bullet}
+    
+    (re-find #"^1\. " text)
+    {:type :list :style :numbered}
+    
+    (str/starts-with? text "> ")
+    {:type :quote}
+    
+    :else nil))
+
+(defn process-markdown-input!
+  "Process Markdown input, detect and convert formatting
+   Called when user inputs text, detects if there are Markdown patterns to convert
+   Returns {:action :format|:block :pattern pattern-info} or nil"
+  [text offset]
+  (let [pattern (detect-markdown-pattern text offset)]
+    (when pattern
+      {:action :format
+       :pattern pattern})))
+
+(defn process-block-markdown!
+  "Process block-level Markdown input
+   Detects Markdown patterns at the start of a block (e.g., # heading, - list, > quote)
+   Returns {:action :block :pattern pattern-info} or nil"
+  [text]
+  (let [pattern (detect-block-markdown text)]
+    (when pattern
+      {:action :block
+       :pattern pattern})))
+

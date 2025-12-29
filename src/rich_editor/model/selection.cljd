@@ -1,0 +1,96 @@
+(ns rich-editor.model.selection)
+
+(defn make-position
+  "create a position object.
+   path: the path vector of the node, e.g. [0 1 0]
+   offset: the offset of the character in the node"
+  [path offset]
+  {:path path :offset offset})
+
+(defn make-selection
+  "create a selection object.
+   start: the start position
+   end: the end position"
+  [start end]
+  {:start start :end end})
+
+;; =============================================================
+;; path comparison logic
+;; =============================================================
+
+(defn path-compare
+  "compare the order of two path vectors.
+   return: negative number (p1 < p2), 0 (p1 = p2), positive number (p1 > p2)"
+  [p1 p2]
+  (let [len1 (count p1)
+        len2 (count p2)
+        min-len (min len1 len2)]
+    (loop [i 0]
+      (if (< i min-len)
+        (let [v1 (nth p1 i)
+              v2 (nth p2 i)]
+          (if (= v1 v2)
+            (recur (inc i))
+            (- v1 v2)))
+        ;; if the previous parts are the same, the shorter path is before
+        (- len1 len2)))))
+
+(defn path-before? [p1 p2] (< (path-compare p1 p2) 0))
+(defn path-after? [p1 p2] (> (path-compare p1 p2) 0))
+(defn path-equals? [p1 p2] (= (path-compare p1 p2) 0))
+
+;; =============================================================
+;; position comparison logic
+;; =============================================================
+
+(defn position-compare
+  "compare the order of two positions"
+  [pos1 pos2]
+  (let [path-cmp (path-compare (:path pos1) (:path pos2))]
+    (if (not= path-cmp 0)
+      path-cmp
+      ;; if the paths are the same, compare the offsets
+      (- (:offset pos1) (:offset pos2)))))
+
+(defn position-before? [pos1 pos2] (< (position-compare pos1 pos2) 0))
+(defn position-after? [pos1 pos2] (> (position-compare pos1 pos2) 0))
+
+;; =============================================================
+;; selection operations
+;; =============================================================
+
+(defn collapsed?
+  "check if the selection is collapsed (i.e. just a cursor, no selected text)"
+  [{:keys [start end]}]
+  (and (= (:offset start) (:offset end))
+       (path-equals? (:path start) (:path end))))
+
+(defn normalize
+  "normalize the selection.
+   ensure that the start position is always before the end position in the returned selection.
+   this is crucial for rendering the highlighted background."
+  [selection]
+  (if (nil? selection)
+    nil
+    (if (position-before? (:end selection) (:start selection))
+      (make-selection (:end selection) (:start selection))
+      selection)))
+
+(defn contains-path?
+  "check if the path of a node is in the selection range (used for cross-block highlighted calculation)"
+  [selection path]
+  (let [n (normalize selection)]
+    (and (not (path-before? path (:path (:start n))))
+         (not (path-after? path (:path (:end n)))))))
+
+;; =============================================================
+;; serialization
+;; =============================================================
+
+(defn to-map 
+  "convert the selection to a regular Map, convenient for saving to database or JSON"
+  [selection]
+  (if (nil? selection)
+    nil
+    {:start {:path (:path (:start selection)) :offset (:offset (:start selection))}
+     :end   {:path (:path (:end selection))   :offset (:offset (:end selection))}}))

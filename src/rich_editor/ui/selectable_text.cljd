@@ -1,0 +1,38 @@
+(ns rich-editor.ui.selectable-text
+  (:require [cljd.flutter :as f]
+            [rich-editor.state :as state :refer [!editor-state]]
+            [rich-editor.ui.text-utils :as text-utils]
+            [rich-editor.selection-utils :as sel-util]
+            [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.services.node-service :as node-service]
+            ["package:flutter/material.dart" :as m]
+            ["package:mgl_editor_core/selectable_mongol_text.dart" :refer [MglSelectableText]]))
+
+(defn selectable-mongol-text 
+  [{:keys [path delta text-style matches current-match-index]}]
+  (f/widget
+   :managed [focus-node (m/FocusNode.)]
+   :watch [state !editor-state]
+   :let [selection (:selection state)
+        ;;  is-focused? (= (:focused-path state) path)
+         plain-text (delta-utils/delta->text delta)
+         node-len (count plain-text)
+         flutter-selection (sel-util/to-text-selection path selection node-len)
+         {:keys [spans recognizers]} (text-utils/build-spans delta matches current-match-index (fn [_] nil))]
+  ;;  :effect (when is-focused?
+  ;;            ;; Ensure the FocusNode actually gets focus when this block is focused in state
+  ;;            (.requestFocus focus-node))
+
+   (MglSelectableText
+    .focusNode focus-node
+    .onMounted (fn [render-box selectable]
+                 (node-service/register-node! path render-box selectable focus-node))
+    .onUnmounted (fn []
+                   (node-service/unregister-node! path))
+    .textSpan (m/TextSpan 
+                .children (if (empty? spans)
+                            [(m/TextSpan .text "\u200B" .style text-style)]
+                            spans)
+                .style text-style)
+    .gestureRecognizers recognizers
+    .selection flutter-selection)))

@@ -1,0 +1,260 @@
+(ns rich-editor.ui.find-replace-dialog
+  (:require [cljd.flutter :as f]
+            [rich-editor.state :as state]
+            [rich-editor.command.search-commands :as search-cmd]
+            ["package:flutter/material.dart" :as m]
+            ["package:flutter/foundation.dart" :as foundation]))
+
+;; =============================================================
+;; Find and replace dialog
+;; =============================================================
+
+(defn find-replace-dialog
+  "Find and replace dialog component"
+  []
+  (f/widget
+   :context ctx
+   :get [m/MediaQuery]
+   :watch [search-state (f/$ (get-in (f/<! state/!editor-state) [:search]))]
+   :let [show-dialog? (:show-dialog? search-state)
+         replace-mode? (:replace-mode? search-state)
+         search-term (:search-term search-state)
+         replace-term (:replace-term search-state)
+         matches (:matches search-state)
+         current-index (:current-match-index search-state)
+         case-sensitive? (:case-sensitive? search-state)
+         match-count (count matches)
+         match-info (if (pos? match-count)
+                      (str (inc current-index) " / " match-count)
+                      "No matches")
+         search-controller (m/TextEditingController. :text search-term)
+         replace-controller (m/TextEditingController. :text replace-term)
+         ;; Detect platform and screen size
+         is-mobile? (not foundation/kIsWeb)
+         screen-width (.-width (.-size media-query))
+         is-small-screen? (< screen-width 600.0)
+         ;; Mobile uses vertical layout, desktop uses horizontal layout
+         use-vertical-layout? (or is-mobile? is-small-screen?)
+         ;; Button size: larger on mobile
+         button-padding (if use-vertical-layout?
+                          (m/EdgeInsets.symmetric :horizontal 24.0 :vertical 12.0)
+                          (m/EdgeInsets.symmetric :horizontal 16.0 :vertical 8.0))
+         icon-button-size (if use-vertical-layout? 48.0 40.0)]
+
+   (if show-dialog?
+     (m/Positioned
+      :top 0.0
+      :left 0.0
+      :right 0.0
+      :child
+      (m/Container
+       :padding (if use-vertical-layout?
+                  (m/EdgeInsets.all 12.0)
+                  (m/EdgeInsets.all 16.0))
+       :decoration (m/BoxDecoration
+                    :color (.-surface (-> m/Theme (.of ctx) .-colorScheme))
+                    :boxShadow [(m/BoxShadow
+                                 :color (m/Colors.black12)
+                                 :blurRadius 8.0
+                                 :offset (m/Offset. 0.0 2.0))])
+       :child
+       (m/Column
+        :mainAxisSize m/MainAxisSize.min
+        :crossAxisAlignment m/CrossAxisAlignment.start
+        :children
+        [;; Search input and button area
+         (if use-vertical-layout?
+           ;; Mobile: vertical layout
+           (m/Column
+            :mainAxisSize m/MainAxisSize.min
+            :children
+            [;; Search input
+             (m/TextField
+              :controller search-controller
+              :decoration (m/InputDecoration
+                           :labelText "Find"
+                           :hintText "Enter text to find"
+                           :suffixIcon (m/IconButton
+                                        :icon (m/Icon m/Icons.close)
+                                        :iconSize icon-button-size
+                                        :onPressed (fn []
+                                                     (.clear search-controller)
+                                                     (search-cmd/update-search-term! "")))
+                           :border (m/OutlineInputBorder))
+              :onChanged (fn [value]
+                           (search-cmd/update-search-term! value))
+              :onSubmitted (fn [_] (search-cmd/find-next!)))
+
+             ;; Control buttons row
+             (m/Padding
+              :padding (m/EdgeInsets.only :top 8.0)
+              :child
+              (m/Row
+               :mainAxisAlignment m/MainAxisAlignment.spaceEvenly
+               :children
+               [;; Previous button
+                (m/ElevatedButton.icon
+                 :icon (m/Icon m/Icons.arrow_upward)
+                 :label (m/Text "Previous")
+                 :onPressed (when (pos? match-count) (fn [] (search-cmd/find-previous!)))
+                 :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))
+
+                ;; Next button
+                (m/ElevatedButton.icon
+                 :icon (m/Icon m/Icons.arrow_downward)
+                 :label (m/Text "Next")
+                 :onPressed (when (pos? match-count) (fn [] (search-cmd/find-next!)))
+                 :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))
+
+                ;; Close button
+                (m/ElevatedButton.icon
+                 :icon (m/Icon m/Icons.close)
+                 :label (m/Text "Close")
+                 :onPressed (fn [] (search-cmd/hide-find-dialog!))
+                 :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))]))
+
+             ;; Case sensitive option
+             (m/Padding
+              :padding (m/EdgeInsets.only :top 8.0)
+              :child
+              (m/Row
+               :children
+               [(m/Checkbox
+                 :value case-sensitive?
+                 :onChanged (fn [_] (search-cmd/toggle-case-sensitive!)))
+                (m/Text "Case Sensitive"
+                        :style (m/TextStyle :fontSize 14.0))]))])
+           ;; Desktop: horizontal layout
+           (m/Row
+            :children
+            [;; Search input
+             (m/Expanded
+              :child (m/TextField
+                      :controller search-controller
+                      :decoration (m/InputDecoration
+                                   :labelText "Find"
+                                   :hintText "Enter text to find"
+                                   :suffixIcon (m/IconButton
+                                                :icon (m/Icon m/Icons.close)
+                                                :onPressed (fn []
+                                                             (.clear search-controller)
+                                                             (search-cmd/update-search-term! "")))
+                                   :border (m/OutlineInputBorder))
+                      :onChanged (fn [value]
+                                   (search-cmd/update-search-term! value))
+                      :onSubmitted (fn [_] (search-cmd/find-next!))))
+
+             ;; Case sensitive checkbox
+             (m/Checkbox
+              :value case-sensitive?
+              :onChanged (fn [_] (search-cmd/toggle-case-sensitive!)))
+
+             (m/Text "Case Sensitive"
+                     :style (m/TextStyle :fontSize 14.0))
+
+             ;; Previous button
+             (m/IconButton
+              :icon (m/Icon m/Icons.arrow_upward)
+              :tooltip "Previous"
+              :onPressed (when (pos? match-count) (fn [] (search-cmd/find-previous!)))
+              :disabledColor m/Colors.grey)
+
+             ;; Next button
+             (m/IconButton
+              :icon (m/Icon m/Icons.arrow_downward)
+              :tooltip "Next"
+              :onPressed (when (pos? match-count) (fn [] (search-cmd/find-next!)))
+              :disabledColor m/Colors.grey)
+
+             ;; Close button
+             (m/IconButton
+              :icon (m/Icon m/Icons.close)
+              :tooltip "Close"
+              :onPressed (fn [] (search-cmd/hide-find-dialog!)))]))
+
+         ;; Match info
+         (m/Padding
+          :padding (m/EdgeInsets.only :top 8.0 :left (if use-vertical-layout? 0.0 16.0))
+          :child (m/Text match-info
+                         :style (m/TextStyle
+                                 :fontSize 12.0
+                                 :color (.-onSurfaceVariant (-> m/Theme (.of ctx) .-colorScheme)))))
+
+         ;; Replace mode: show replace input and buttons
+         (if replace-mode?
+           (m/Padding
+            :padding (m/EdgeInsets.only :top 8.0)
+            :child
+            (if use-vertical-layout?
+              ;; Mobile: vertical layout
+              (m/Column
+               :mainAxisSize m/MainAxisSize.min
+               :children
+               [;; Replace input
+                (m/TextField
+                 :controller replace-controller
+                 :decoration (m/InputDecoration
+                              :labelText "Replace With"
+                              :hintText "Enter replacement text"
+                              :border (m/OutlineInputBorder))
+                 :onChanged (fn [value]
+                              (search-cmd/update-replace-term! value)))
+
+                ;; Replace buttons row
+                (m/Padding
+                 :padding (m/EdgeInsets.only :top 8.0)
+                 :child
+                 (m/Row
+                  :mainAxisAlignment m/MainAxisAlignment.spaceEvenly
+                  :children
+                  [;; Replace button
+                   (m/ElevatedButton
+                    :onPressed (fn []
+                                 (when (pos? match-count)
+                                   (search-cmd/replace-current! replace-term)))
+                    :child (m/Text "Replace")
+                    :style (m/ButtonStyle
+                            :padding (m/MaterialStateProperty.all button-padding)))
+
+                   ;; Replace All button
+                   (m/ElevatedButton
+                    :onPressed (fn []
+                                 (when (pos? match-count)
+                                   (search-cmd/replace-all! replace-term)))
+                    :child (m/Text "Replace All")
+                    :style (m/ButtonStyle
+                            :padding (m/MaterialStateProperty.all button-padding)))]))])
+              ;; Desktop: horizontal layout
+              (m/Row
+               :children
+               [;; Replace input
+                (m/Expanded
+                 :child (m/TextField
+                         :controller replace-controller
+                         :decoration (m/InputDecoration
+                                      :labelText "Replace With"
+                                      :hintText "Enter replacement text"
+                                      :border (m/OutlineInputBorder))
+                         :onChanged (fn [value]
+                                      (search-cmd/update-replace-term! value))))
+
+                ;; Replace button
+                (m/ElevatedButton
+                 :onPressed (fn []
+                              (when (pos? match-count)
+                                (search-cmd/replace-current! replace-term)))
+                 :child (m/Text "Replace")
+                 :style (m/ButtonStyle
+                         :padding (m/MaterialStateProperty.all button-padding)))
+
+                ;; Replace All button
+                (m/ElevatedButton
+                 :onPressed (fn []
+                              (when (pos? match-count)
+                                (search-cmd/replace-all! replace-term)))
+                 :child (m/Text "Replace All")
+                 :style (m/ButtonStyle
+                         :padding (m/MaterialStateProperty.all button-padding)))])))
+           (m/SizedBox.shrink))])))
+     (m/SizedBox.shrink))))
+

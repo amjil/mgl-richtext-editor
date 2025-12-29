@@ -1,0 +1,205 @@
+(ns rich-editor.services.keyboard-service
+  (:require [rich-editor.command.text-commands :as cmd]
+            [rich-editor.command.table-commands :as table-cmd]
+            [rich-editor.command.search-commands :as search-cmd]
+            [rich-editor.state :as state]
+            [rich-editor.utils.history :as hist]
+            ["package:flutter/services.dart" :as services]))
+
+;; =============================================================
+;; Keyboard shortcut mapping table
+;; =============================================================
+
+(defonce !shortcut-handlers
+  (atom {}))
+
+(defn register-shortcut!
+  "Register a keyboard shortcut
+   key: key identifier, e.g., :cmd-b, :cmd-i
+   handler: handler function"
+  [key handler]
+  (swap! !shortcut-handlers assoc key handler))
+
+(defn unregister-shortcut! [key]
+  (swap! !shortcut-handlers dissoc key))
+
+;; =============================================================
+;; Default shortcut bindings
+;; =============================================================
+
+(defn init-default-shortcuts!
+  "Initialize default shortcut bindings"
+  []
+  ;; Formatting shortcuts
+  (register-shortcut! :cmd-b #(cmd/format-bold!))
+  (register-shortcut! :cmd-i #(cmd/format-italic!))
+  (register-shortcut! :cmd-u #(cmd/format-underline!))
+  (register-shortcut! :cmd-shift-s #(cmd/format-strikethrough!))
+  
+  ;; Edit shortcuts
+  (register-shortcut! :cmd-z #(swap! state/!editor-state hist/undo))
+  (register-shortcut! :cmd-shift-z #(swap! state/!editor-state hist/redo))
+  (register-shortcut! :cmd-x #(cmd/cut-selection!))
+  (register-shortcut! :cmd-c #(cmd/copy-selection!))
+  (register-shortcut! :cmd-v #(cmd/paste-selection!))
+  (register-shortcut! :cmd-a #(cmd/select-all!))
+  (register-shortcut! :backspace #(cmd/delete-backward!))
+  (register-shortcut! :delete #(cmd/delete-forward!))
+  
+  ;; Cursor movement shortcuts
+  (register-shortcut! :arrow-left #(cmd/move-cursor-left!))
+  (register-shortcut! :arrow-right #(cmd/move-cursor-right!))
+  (register-shortcut! :arrow-up #(cmd/move-cursor-up!))
+  (register-shortcut! :arrow-down #(cmd/move-cursor-down!))
+  (register-shortcut! :shift-arrow-left #(cmd/extend-selection-left!))
+  (register-shortcut! :shift-arrow-right #(cmd/extend-selection-right!))
+  
+  ;; Line navigation shortcuts (Home/End)
+  (register-shortcut! :home #(cmd/move-cursor-to-line-start!))
+  (register-shortcut! :end #(cmd/move-cursor-to-line-end!))
+  (register-shortcut! :shift-home #(cmd/extend-selection-to-line-start!))
+  (register-shortcut! :shift-end #(cmd/extend-selection-to-line-end!))
+  
+  ;; Page navigation shortcuts (Page Up/Down)
+  (register-shortcut! :page-up #(cmd/move-cursor-page-up!))
+  (register-shortcut! :page-down #(cmd/move-cursor-page-down!))
+  
+  ;; Text editing shortcuts
+  (register-shortcut! :cmd-k #(cmd/delete-to-line-end!))
+  (register-shortcut! :alt-backspace #(cmd/delete-word-backward!))
+  (register-shortcut! :cmd-backspace #(cmd/delete-to-line-start!))
+  (register-shortcut! :cmd-delete #(cmd/delete-to-line-end-forward!))
+  
+  ;; Search shortcuts
+  (register-shortcut! :cmd-f #(search-cmd/show-find-dialog!))
+  (register-shortcut! :cmd-h #(search-cmd/show-replace-dialog!)))
+
+;; =============================================================
+;; Keyboard event handling
+;; =============================================================
+
+(defn- normalize-key
+  "Normalize key identifier, convert Flutter key events to internal identifiers"
+  [^services/KeyEvent event]
+  (let [logical-key (.-logicalKey event)
+        keyboard (.-instance services/HardwareKeyboard)
+        is-meta (or (.-isMetaPressed keyboard) (.-isControlPressed keyboard))
+        is-shift (.-isShiftPressed keyboard)
+        is-alt (.-isAltPressed keyboard)
+        key-label (.-keyLabel logical-key)
+        key-id (.-keyId logical-key)]
+    (cond
+      ;; Cmd/Ctrl + B (bold)
+      (and is-meta (= key-label "b")) :cmd-b
+      ;; Cmd/Ctrl + I (italic)
+      (and is-meta (= key-label "i")) :cmd-i
+      ;; Cmd/Ctrl + U (underline)
+      (and is-meta (= key-label "u")) :cmd-u
+      ;; Cmd/Ctrl + Shift + S (strikethrough)
+      (and is-meta is-shift (= key-label "S")) :cmd-shift-s
+      ;; Cmd/Ctrl + Z (undo)
+      (and is-meta (= key-label "z")) :cmd-z
+      ;; Cmd/Ctrl + Shift + Z (redo)
+      (and is-meta is-shift (= key-label "Z")) :cmd-shift-z
+      ;; Cmd/Ctrl + X (cut)
+      (and is-meta (= key-label "x")) :cmd-x
+      ;; Cmd/Ctrl + C (copy)
+      (and is-meta (= key-label "c")) :cmd-c
+      ;; Cmd/Ctrl + V (paste)
+      (and is-meta (= key-label "v")) :cmd-v
+      ;; Cmd/Ctrl + A (select all)
+      (and is-meta (= key-label "a")) :cmd-a
+      ;; Cmd/Ctrl + F (find)
+      (and is-meta (= key-label "f")) :cmd-f
+      ;; Cmd/Ctrl + H (replace)
+      (and is-meta (= key-label "h")) :cmd-h
+      ;; Cmd/Ctrl + K (delete to line end)
+      (and is-meta (= key-label "k")) :cmd-k
+      ;; Option/Alt + Backspace (delete word)
+      (and is-alt (= key-label "Backspace")) :alt-backspace
+      ;; Cmd/Ctrl + Backspace (delete to line start)
+      (and is-meta (= key-label "Backspace")) :cmd-backspace
+      ;; Cmd/Ctrl + Delete (delete to line end)
+      (and is-meta (= key-label "Delete")) :cmd-delete
+      ;; Backspace
+      (or (= key-label "Backspace") (= key-id 4294967304)) :backspace
+      ;; Delete
+      (or (= key-label "Delete") (= key-id 4294967423)) :delete
+      ;; Home/End keys
+      (and is-shift (= key-label "Home")) :shift-home
+      (and is-shift (= key-label "End")) :shift-end
+      (= key-label "Home") :home
+      (= key-label "End") :end
+      ;; Page Up/Down keys
+      (= key-label "Page Up") :page-up
+      (= key-label "Page Down") :page-down
+      ;; Arrow keys - check keyLabel first, then keyId as fallback
+      (and is-shift (or (= key-label "Arrow Left") (= key-id 4295426086))) :shift-arrow-left
+      (and is-shift (or (= key-label "Arrow Right") (= key-id 4295426087))) :shift-arrow-right
+      (and is-shift (or (= key-label "Arrow Up") (= key-id 4295426088))) :shift-arrow-up
+      (and is-shift (or (= key-label "Arrow Down") (= key-id 4295426089))) :shift-arrow-down
+      (= key-label "Arrow Left") :arrow-left
+      (= key-label "Arrow Right") :arrow-right
+      (= key-label "Arrow Up") :arrow-up
+      (= key-label "Arrow Down") :arrow-down
+      ;; Fallback to keyId if keyLabel doesn't match
+      (and (not is-shift) (= key-id 4295426086)) :arrow-left
+      (and (not is-shift) (= key-id 4295426087)) :arrow-right
+      (and (not is-shift) (= key-id 4295426088)) :arrow-up
+      (and (not is-shift) (= key-id 4295426089)) :arrow-down
+      :else nil)))
+
+(defn handle-key-event!
+  "Handle keyboard events, execute corresponding shortcut commands.
+   Only handles registered shortcuts, returns false for regular text input
+   so it can be processed by TextInputConnection."
+  [^services/KeyEvent event]
+  (let [key (normalize-key event)
+        handler (get @!shortcut-handlers key)]
+    (if handler
+      (do
+        ;; Execute handler only on KeyDown or KeyRepeat, but return true for all (including KeyUp)
+        ;; to prevent the system/IME from also processing the key.
+        (when-not (instance? services/KeyUpEvent event)
+          (handler))
+        true) ;; Return true to indicate handled (shortcut)
+      false))) ;; Return false to indicate not handled (let TextInputConnection handle it)
+
+;; =============================================================
+;; Virtual keyboard support (mobile)
+;; =============================================================
+
+(defn handle-virtual-key!
+  "Handle virtual keyboard key events
+   key: key identifier, e.g., :bold, :italic, :underline"
+  [key]
+  (case key
+    :bold (cmd/format-bold!)
+    :italic (cmd/format-italic!)
+    :underline (cmd/format-underline!)
+    :strikethrough (cmd/format-strikethrough!)
+    :undo (swap! state/!editor-state hist/undo)
+    :redo (swap! state/!editor-state hist/redo)
+    :cut (cmd/cut-selection!)
+    :copy (cmd/copy-selection!)
+    :paste (cmd/paste-selection!)
+    :select-all (cmd/select-all!)
+    :backspace (cmd/delete-backward!)
+    :delete (cmd/delete-forward!)
+    ;; Block types
+    :paragraph (cmd/convert-block-to-paragraph!)
+    :h1 (cmd/convert-block-to-heading!)
+    :h2 (cmd/convert-block-to-heading2!)
+    :numbered-list (cmd/convert-to-numbered-list!)
+    :bulleted-list (cmd/convert-to-bulleted-list!)
+    :quote (cmd/convert-block-to-quote!)
+    :todo (cmd/convert-list-to-todo!)
+    :table (table-cmd/insert-table!)
+    :add-table-row (table-cmd/add-table-row!)
+    :add-table-col (table-cmd/add-table-column!)
+    :indent (cmd/indent-block!)
+    :outdent (cmd/outdent-block!)
+    :move-up (cmd/move-block-up!)
+    :move-down (cmd/move-block-down!)
+    nil))
+

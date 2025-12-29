@@ -1,0 +1,115 @@
+(ns rich-editor.services.search-service
+  (:require [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.model.delta :as delta]
+            [clojure.string :as str]))
+
+;; =============================================================
+;; Find and replace service
+;; =============================================================
+
+(defn- find-all-matches-in-text
+  "Find all matches in text, return match position list
+   Return format: [{:start 0 :end 5} ...]"
+  [text search-term case-sensitive?]
+  (if (empty? search-term)
+    []
+    (let [search-text (if case-sensitive? search-term (str/lower-case search-term))
+          text-to-search (if case-sensitive? text (str/lower-case text))
+          search-len (count search-text)]
+      (loop [matches []
+             start-pos 0]
+        (let [found-pos (str/index-of text-to-search search-text start-pos)]
+          (if found-pos
+            (recur (conj matches {:start found-pos :end (+ found-pos search-len)})
+                   (inc found-pos))
+            matches))))))
+
+(defn- find-all-matches-in-delta
+  "Find all matches in delta, return match position list
+   Return format: [{:start 0 :end 5} ...]"
+  [delta search-term case-sensitive?]
+  (if (nil? delta)
+    []
+    (let [text (delta-utils/delta->text delta)]
+      (find-all-matches-in-text text search-term case-sensitive?))))
+
+(defn search-in-document
+  "Search for matches in the entire document
+   Return format: [{:path [0] :start 0 :end 5} ...]"
+  [doc search-term case-sensitive?]
+  (if (empty? search-term)
+    []
+    (let [blocks (:children doc)]
+      (loop [matches []
+             block-idx 0]
+        (if (>= block-idx (count blocks))
+          matches
+          (let [block (get blocks block-idx)
+                delta (get-in block [:data :delta])
+                block-matches (find-all-matches-in-delta delta search-term case-sensitive?)]
+            (recur (into matches
+                        (map (fn [match]
+                               {:path [block-idx]
+                                :start (:start match)
+                                :end (:end match)})
+                             block-matches))
+                   (inc block-idx))))))))
+
+(defn get-match-at-index
+  "Get match at specified index"
+  [matches index]
+  (when (and (seq matches) (>= index 0) (< index (count matches)))
+    (get matches index)))
+
+(defn find-next-match
+  "Find next match, return new current index"
+  [matches current-index]
+  (if (empty? matches)
+    -1
+    (if (< current-index (dec (count matches)))
+      (inc current-index)
+      0))) ;; Loop to first
+
+(defn find-previous-match
+  "Find previous match, return new current index"
+  [matches current-index]
+  (if (empty? matches)
+    -1
+    (if (> current-index 0)
+      (dec current-index)
+      (dec (count matches))))) ;; Loop to last
+
+(defn replace-match
+  "Replace single match
+   doc: document
+   match: match {:path [0] :start 0 :end 5}
+   replacement: replacement text
+   Returns: updated document"
+  [doc match replacement]
+  (let [path (:path match)
+        start (:start match)
+        end (:end match)
+        block (get-in doc [:children (first path)])
+        current-delta (get-in block [:data :delta])
+        ;; Delete matched text
+        delta-after-delete (delta/delete-delta-range current-delta start end)
+        ;; Insert replacement text
+        new-delta (delta/insert-text-into-delta delta-after-delete start replacement)]
+    (assoc-in doc [:children (first path) :data :delta] new-delta)))
+
+(defn replace-all-matches
+  "Replace all matches
+   doc: document
+   matches: list of all matches
+   replacement: replacement text
+   Returns: updated document"
+  [doc matches replacement]
+  (if (empty? matches)
+    doc
+    ;; Replace from back to front to avoid position offset issues
+    (let [sorted-matches (sort-by (fn [m] [(:path m) (:start m)]) > matches)]
+      (reduce (fn [acc-doc match]
+                (replace-match acc-doc match replacement))
+              doc
+              sorted-matches))))
+

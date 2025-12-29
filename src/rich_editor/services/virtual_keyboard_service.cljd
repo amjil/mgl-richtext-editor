@@ -1,0 +1,148 @@
+(ns rich-editor.services.virtual-keyboard-service
+  (:require
+   ["package:flutter/services.dart" :as service]
+   ["package:flutter/widgets.dart" :as w]
+   [virtual-keyboard.input-control :as control]
+   [virtual-keyboard.keyboard-candidates :as kc]
+   [virtual-keyboard.zip-utils :as zip-utils]
+   [virtual-keyboard.fst-reader :as fst-reader]
+   [rich-editor.model.node :as node]
+   [rich-editor.command.text-commands :as cmd]
+   [rich-editor.state :as state]
+   [rich-editor.model.selection :as sel]
+   [rich-editor.utils.delta :as delta-utils]
+   [rich-editor.utils.text-diff :as text-diff]))
+
+;; =============================================================
+;; Virtual keyboard initialization service
+;; References mgl-notes-app implementation
+;; =============================================================
+
+(defonce initialized? (atom false))
+(defonce last-synced-state (atom nil))
+
+(defn sync-to-editor!
+  "Sync virtual keyboard state to editor
+   When virtual keyboard text or selection changes, update the editor's document and selection"
+  []
+  (let [editor-state @state/!editor-state
+        selection (:selection editor-state)]
+    (when selection
+      (let [normalized (sel/normalize selection)
+            path (:path (:start normalized))
+            ks (node/path->ks path)
+            delta-ks (if (some #{:delta} path) ks (conj ks :data :delta))
+            delta (get-in editor-state (cons :doc delta-ks))
+            editor-text (delta-utils/delta->text delta)
+            editor-start (:offset (:start normalized))
+            editor-end (:offset (:end normalized))
+            
+            kb-val @control/editing-value
+            kb-text (.-text kb-val)
+            kb-sel (.-selection kb-val)
+            kb-start (.-start kb-sel)
+            kb-end (.-end kb-sel)]
+        
+        ;; Detect text changes using improved diff logic
+        (when (not= kb-text editor-text)
+          (let [diff (text-diff/get-diff editor-text kb-text kb-start)
+                inserted (:inserted diff)
+                deleted (:deleted diff)]
+            (when (pos? (count deleted))
+              ;; For now, we use delete-backward! multiple times if needed, 
+              ;; or better yet, delete-selection! if we can calculate the range.
+              ;; Since kb-start is the new cursor position, we delete backward from where it was.
+              (dotimes [_ (count deleted)]
+                (cmd/delete-backward!)))
+            (when (pos? (count inserted))
+              (cmd/insert-text! inserted))))
+        
+        ;; Update selection position
+        (when (not= [editor-start editor-end] [kb-start kb-end])
+          ;; Selection position will be automatically updated in insert-text! or delete-backward!
+          nil)))))
+
+(defn sync-from-editor!
+  "Sync editor state to virtual keyboard
+   When editor state changes (e.g., selection changes, text changes, etc.), sync to virtual keyboard's editing state"
+  []
+  (let [editor-state @state/!editor-state
+        selection (:selection editor-state)]
+    ;; When there's a selection, sync to virtual keyboard
+    ;; Even if editing-value is nil, initialize it
+    (when (and selection (not= @last-synced-state editor-state))
+      (let [normalized (sel/normalize selection)
+            path (:path (:start normalized))
+            ks (node/path->ks path)
+            delta-ks (if (some #{:delta} path) ks (conj ks :data :delta))
+            delta (get-in editor-state (cons :doc delta-ks))
+            text (delta-utils/delta->text delta)
+            start-offset (:offset (:start normalized))
+            end-offset (:offset (:end normalized))
+            new-selection (w/TextSelection
+                           :baseOffset start-offset
+                           :extentOffset end-offset)
+            editing-val @control/editing-value
+            new-editing-val (if (some? editing-val)
+                              (.copyWith editing-val
+                                        :text text
+                                        :selection new-selection)
+                              (w/TextEditingValue
+                               :text text
+                               :selection new-selection))]
+        ;; Update virtual keyboard's editing state
+        (reset! control/editing-value new-editing-val)
+        ;; Notify TextInput system to update editing state
+        ;; This lets the TextInput system know the current editing state, so it can properly display the virtual keyboard
+        (service/TextInput.updateEditingValue new-editing-val)
+        (reset! last-synced-state editor-state)))))
+
+(defn initialize!
+  "Initialize virtual keyboard service
+   Set up input control and load necessary resource files"
+  []
+  (when-not @initialized?
+    ;; Set up input control so virtual keyboard can interact with Flutter's TextInput system
+    (control/set-control)
+    
+    ;; Load resource files required by virtual keyboard
+    ;; These resource files contain candidate word data, etc.
+    ;; Note: read-json-from-asset-zip is an async function, but we use synchronous approach during initialization
+    ;; Actual loading will happen in the background
+    (try
+      (zip-utils/read-json-from-asset-zip kc/next "assets/next.zip")
+      (fst-reader/ensure-loaded)
+      (catch Exception e
+        (dart:core/print (str "Warning: Could not load virtual keyboard resources: " e))))
+    
+    ;; Listen to virtual keyboard editing value changes, sync to editor
+    (add-watch control/editing-value
+               :virtual-keyboard-to-editor
+               (fn [_ _ _ _]
+                 (sync-to-editor!)))
+    
+    ;; Listen to editor state changes, sync to virtual keyboard
+    (add-watch state/!editor-state
+               :editor-to-virtual-keyboard
+               (fn [_ _ _ _]
+                 (sync-from-editor!)))
+    
+    (reset! initialized? true)
+    (dart:core/print "Virtual keyboard service initialized")))
+
+(defn initialize-editing-state!
+  "Initialize virtual keyboard's editing state
+   Call this function when editor gains focus to ensure virtual keyboard knows the current editing state"
+  []
+  (when @initialized?
+    (sync-from-editor!)))
+
+(defn shutdown!
+  "Shutdown virtual keyboard service, restore platform default input control"
+  []
+  (when @initialized?
+    (remove-watch control/editing-value :virtual-keyboard-to-editor)
+    (remove-watch state/!editor-state :editor-to-virtual-keyboard)
+    (control/restore-control)
+    (reset! initialized? false)
+    (dart:core/print "Virtual keyboard service shut down")))

@@ -1,0 +1,50 @@
+(ns rich-editor.utils.text-diff)
+
+(defn get-diff
+  "Calculate diff between old and new text using cursor position.
+   Reference: appflowy-editor's text_diff.dart getDiff function"
+  [old-text new-text cursor-position]
+  (let [old-len (count old-text)
+        new-len (count new-text)
+        delta (- new-len old-len)
+        ;; Find common prefix from the start
+        start-limit (max 0 (- cursor-position (max 0 delta)))
+        start (loop [start 0]
+                (if (and (< start start-limit)
+                         (< start old-len)
+                         (< start new-len)
+                         (= (nth old-text start nil)
+                            (nth new-text start nil)))
+                  (recur (inc start))
+                  start))
+        ;; Find common suffix from the end (starting from the back)
+        end (loop [old-end old-len
+                   new-end new-len]
+              (if (and (> old-end start)
+                       (> new-end (+ start (max 0 delta)))
+                       (= (nth old-text (dec old-end) nil)
+                          (nth new-text (dec new-end) nil)))
+                (recur (dec old-end) (dec new-end))
+                old-end))
+        deleted (if (>= start end)
+                  ""
+                  (subs old-text start end))
+        inserted (subs new-text start (+ end delta))
+        ;; Find common prefix in deleted and inserted
+        common-prefix-len (loop [i 0]
+                            (if (and (< i (count deleted))
+                                     (< i (count inserted))
+                                     (= (nth deleted i nil)
+                                        (nth inserted i nil)))
+                              (recur (inc i))
+                              i))]
+    {:start (if (pos? common-prefix-len)
+              (+ start common-prefix-len)
+              start)
+     :deleted (if (pos? common-prefix-len)
+                (subs deleted common-prefix-len)
+                deleted)
+     :inserted (if (pos? common-prefix-len)
+                 (subs inserted common-prefix-len)
+                 inserted)}))
+

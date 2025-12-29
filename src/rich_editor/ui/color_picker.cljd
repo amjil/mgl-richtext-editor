@@ -1,0 +1,163 @@
+(ns rich-editor.ui.color-picker
+  (:require [cljd.flutter :as f]
+            [clojure.string :as str]
+            ["package:flutter/material.dart" :as m]))
+
+;; =============================================================
+;; Color utility functions
+;; =============================================================
+
+(defn color-to-hex
+  "Convert Flutter Color to hexadecimal string (without alpha)"
+  [color]
+  (let [value (.-value color)
+        ;; Remove alpha channel (first 2 hex digits) and convert to hex
+        rgb-value (bit-and value 0x00FFFFFF)
+        hex-str (.toRadixString rgb-value 16)
+        ;; Pad with zeros to ensure 6 digits, uppercase
+        hex-len (count hex-str)
+        padding (if (< hex-len 6) (apply str (repeat (- 6 hex-len) "0")) "")
+        padded-hex (str/upper-case (str padding hex-str))]
+    (str "#" padded-hex)))
+
+(defn hex-to-color
+  "Convert hexadecimal string to Flutter Color"
+  [hex-str]
+    (try
+    (if (and hex-str (clojure.string/starts-with? hex-str "#"))
+      (let [hex (subs hex-str 1) ;; Remove #
+            color-value (dart:core/int.parse hex :radix 16)
+            ;; Add alpha channel (0xFF)
+            color-with-alpha (bit-or color-value 0xFF000000)]
+        (m/Color color-with-alpha))
+      m/Colors.black)
+    (catch Exception _
+      m/Colors.black)))
+
+;; Predefined color list
+(def predefined-colors
+  [m/Colors.black
+   m/Colors.red
+   m/Colors.blue
+   m/Colors.green
+   m/Colors.yellow
+   m/Colors.orange
+   m/Colors.purple
+   m/Colors.pink
+   m/Colors.grey
+   m/Colors.brown
+   m/Colors.teal
+   m/Colors.indigo])
+
+;; =============================================================
+;; Color picker component
+;; =============================================================
+
+(defn show-color-dialog
+  "Show custom color selection dialog
+   Uses a simple color picker (Flutter doesn't have a built-in full ColorPicker, we use a simplified version)"
+  [ctx on-selected current-color]
+  (m/showDialog
+   :context ctx
+   :builder
+   (fn [dialog-ctx]
+     (m/AlertDialog
+      :title (m/Text "Select Color")
+      :content (m/Container
+                :width 300.0
+                :height 200.0
+                :child (m/Column
+                        :mainAxisSize m/MainAxisSize.min
+                        :children
+                        [(m/Text "Color Picker (Simplified)"
+                                :style (m/TextStyle :fontSize 14.0))
+                         (m/SizedBox :height 16.0)
+                         (m/Text "Current Color:"
+                                :style (m/TextStyle :fontSize 12.0))
+                         (m/Container
+                          :width 50.0
+                          :height 50.0
+                          :decoration (m/BoxDecoration
+                                       :color (if current-color
+                                                (hex-to-color current-color)
+                                                m/Colors.grey)
+                                       :borderRadius (m/BorderRadius.circular 4.0)
+                                       :border (m/Border.all :color (m/Color 0xFFE0E0E0) :width 1.0))
+                          :margin (m/EdgeInsets.only :top 8.0))
+                         (m/SizedBox :height 16.0)
+                         (m/Text "Note: Full color picker requires third-party package"
+                                :style (m/TextStyle :fontSize 12.0 :color m/Colors.grey))]))
+      :actions
+      [(m/TextButton
+        :child (m/Text "Cancel")
+        :onPressed (fn [] (m/Navigator.pop dialog-ctx)))
+       (m/TextButton
+        :child (m/Text "OK")
+        :onPressed (fn []
+                     ;; Temporarily use current color, or can add more complex color selection logic
+                     (when current-color
+                       (on-selected current-color))
+                     (m/Navigator.pop dialog-ctx)))]))))
+
+(defn color-picker-button
+  "Color picker button, shows color selection menu when clicked
+   current-color: current color (hexadecimal string, e.g., \"#FF0000\")
+   on-color-selected: color selection callback function (fn [hex-color-string])"
+  [{:keys [current-color on-color-selected icon]}]
+  (f/widget
+   :context ctx
+   (m/PopupMenuButton
+    :child (m/Container
+            :width 32.0
+            :height 32.0
+            :decoration (m/BoxDecoration
+                         :color (if current-color
+                                  (hex-to-color current-color)
+                                  m/Colors.grey)
+                         :borderRadius (m/BorderRadius.circular 4.0)
+                         :border (m/Border.all :color (m/Color 0xFFE0E0E0) :width 1.0))
+            :child (m/Icon (or icon m/Icons.color_lens)
+                           :size 18.0
+                           :color (if current-color
+                                    (let [color (hex-to-color current-color)
+                                          brightness (.-computeLuminance color)]
+                                      (if (< brightness 0.5)
+                                        m/Colors.white
+                                        m/Colors.black))
+                                    m/Colors.white)))
+    :itemBuilder
+    (fn [_ctx]
+      (concat
+       ;; Predefined colors
+       (map-indexed
+        (fn [idx color]
+          (m/PopupMenuItem
+           :value idx
+           :height 40.0
+           :child (m/Container
+                   :width 32.0
+                   :height 32.0
+                   :decoration (m/BoxDecoration
+                                :color color
+                                :borderRadius (m/BorderRadius.circular 4.0)
+                                :border (m/Border.all :color (m/Color 0xFFE0E0E0) :width 1.0)))))
+        predefined-colors)
+       ;; Divider
+       [(m/PopupMenuDivider)]
+       ;; Custom color option
+       [(m/PopupMenuItem
+         :value :custom
+         :height 40.0
+         :child (m/Row
+                 :mainAxisSize m/MainAxisSize.min
+                 :children [(m/Icon m/Icons.color_lens :size 20.0)
+                            (m/SizedBox :width 8.0)
+                            (m/Text "Custom Color" :style (m/TextStyle :fontSize 14.0))]))]))
+    :onSelected
+    (fn [value]
+      (if (= value :custom)
+        ;; Open custom color selection dialog
+        (show-color-dialog ctx on-color-selected current-color)
+        ;; Use predefined color
+        (on-color-selected (color-to-hex (nth predefined-colors value))))))))
+

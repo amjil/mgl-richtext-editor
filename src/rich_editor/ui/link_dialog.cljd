@@ -1,0 +1,47 @@
+(ns rich-editor.ui.link-dialog
+  (:require ["package:flutter/material.dart" :as m]))
+
+(defn show-link-dialog
+  "Show a dialog to insert or edit a link"
+  [ctx initial-text initial-url on-submit]
+  (let [text-controller (m/TextEditingController .text (or initial-text ""))
+        url-controller (m/TextEditingController .text (or initial-url ""))
+        text-focus-node (m/FocusNode.)
+        url-focus-node (m/FocusNode.)]
+    (m/showDialog
+     .context ctx
+     .builder
+     (fn [dialog-ctx]
+       (m/AlertDialog
+        .title (m/Text (if initial-url "Edit Link" "Add Link"))
+        .content (m/Column
+                  .mainAxisSize m/MainAxisSize.min
+                  .children
+                  [(m/TextField
+                    .controller text-controller
+                    .focusNode text-focus-node
+                    .autofocus (nil? initial-text)
+                    .decoration (m/InputDecoration
+                                 .hintText "Display Text"
+                                 .labelText "Text"))
+                   (m/SizedBox .height 16.0)
+                   (m/TextField
+                    .controller url-controller
+                    .focusNode url-focus-node
+                    .autofocus (some? initial-text)
+                    .decoration (m/InputDecoration
+                                 .hintText "https://example.com"
+                                 .labelText "URL"))])
+        .actions
+        [(m/TextButton
+          .child (m/Text "Cancel")
+          .onPressed (fn [] (m/Navigator.pop dialog-ctx)))
+         (m/TextButton
+          .child (m/Text "Save")
+          .onPressed (fn []
+                       (let [text (.text text-controller)
+                             url (.text url-controller)]
+                         (when (and (not (empty? text)) (not (empty? url)))
+                           (on-submit text url))
+                         (m/Navigator.pop dialog-ctx))))])))))
+

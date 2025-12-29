@@ -1,0 +1,18 @@
+(ns rich-editor.services.selection-geometry
+  (:require 
+   ["package:flutter/material.dart" :as m]))
+
+(defn calculate-handle-offsets [rects type]
+;;   "calculate the local coordinate of the handle tip based on the rectangle list.
+;;    type: :start (selection start) or :end (selection end)"
+  (if (empty? rects)
+    m/Offset.zero
+    (if (= type :start)
+      ;; start handle: located at the top center of the first rectangle
+      (let [first-rect (first rects)]
+        (m/Offset. (+ (.-left first-rect) (/ (.-width first-rect) 2))
+                   (.-top first-rect)))
+      ;; end handle: located at the bottom center of the last rectangle
+      (let [last-rect (last rects)]
+        (m/Offset. (+ (.-left last-rect) (/ (.-width last-rect) 2))
+                   (.-bottom last-rect))))))

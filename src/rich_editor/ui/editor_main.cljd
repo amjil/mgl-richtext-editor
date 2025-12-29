@@ -1,0 +1,110 @@
+(ns rich-editor.ui.editor-main
+  (:require [cljd.flutter :as f]
+            [rich-editor.state :refer [!editor-state]]
+            [rich-editor.ui.block-view :refer [block-entry]]
+            [rich-editor.ui.mongol-virtual-keyboard :refer [virtual-keyboard-wrapper]]
+            [rich-editor.ui.find-replace-dialog :refer [find-replace-dialog]]
+            [rich-editor.ui.selection-menu :refer [selection-menu]]
+            [rich-editor.ui.slash-command-menu :refer [slash-command-menu]]
+            [rich-editor.ui.selection-gesture-detector :refer [selection-gesture-detector]]
+            [rich-editor.services.keyboard-service :as kb-service]
+            [rich-editor.services.slash-command-service :as slash-cmd]
+            [rich-editor.model.selection :as sel]
+            [rich-editor.services.scroll-service :as scroll-service]
+            [rich-editor.services.desktop-input-service :as desktop-input]
+            ["package:flutter/material.dart" :as m]
+            ["package:flutter/services.dart" :as srv]
+            ["package:flutter/foundation.dart" :as foundation]
+            ["package:mgl_editor_core/mongol_editor_view.dart" :refer [MongolEditorView]]))
+
+;; Custom resource class to manage global keyboard listener
+(deftype KeyboardHandler [handler]
+  ;; Define a standard Dart dispose method
+  (dispose [_]
+    (when handler
+      (.removeHandler (.-instance srv/HardwareKeyboard) handler))))
+
+(defn- init-keyboard! []
+  (let [handler (when-not foundation/kIsWeb
+                  (fn [event]
+                    (let [logical-key (.-logicalKey event)
+                          key-id (.-keyId logical-key)]
+                      (if (and (not (instance? srv/KeyUpEvent event))
+                               (or (= (.-keyLabel logical-key) "Backspace")
+                                   (= key-id 4294967304)))
+                        (do (kb-service/handle-key-event! event)
+                            true) ;; Intercepted
+                        false))))]
+    (kb-service/init-default-shortcuts!)
+    (when handler
+      (.addHandler (.-instance srv/HardwareKeyboard) handler))
+    ;; Return the handler wrapped in our custom class
+    (KeyboardHandler. handler)))
+
+(defn mongol-editor-view []
+  (f/widget
+   :managed [scroll-controller (m/ScrollController.)
+             text-keys-atom (atom {})
+             ;; Properly managed: only runs ONCE when widget is mounted
+             ;; and .dispose() is called automatically when unmounted.
+             _kb-handler (init-keyboard!)
+             :dispose false]
+   :watch [state !editor-state]
+   :let [blocks (get-in state [:doc :children])
+         selection (:selection state)
+         slash-command-active? (:slash-command-active state)
+         has-selection (some? selection)
+         has-focus (some? (:focused-path state))
+         show-keyboard? (and (not foundation/kIsWeb) (or has-selection has-focus))
+         
+         _ (when (and (nil? selection) (seq blocks))
+             (let [first-block-path [0]
+                   initial-selection (sel/make-selection
+                                     (sel/make-position first-block-path 0)
+                                     (sel/make-position first-block-path 0))]
+               (swap! !editor-state assoc :selection initial-selection)))
+         
+         computed-slash-position (when (and slash-command-active? selection)
+                                   (let [normalized (sel/normalize selection)
+                                         path (:path (:start normalized))
+                                         offset (:offset (:start normalized))
+                                         menu-position (m/Offset. (* (first path) 200.0) (* offset 20.0))]
+                                     menu-position))]
+   (MongolEditorView
+    .hasSelection has-selection
+    .onKeyEvent (fn [event] (kb-service/handle-key-event! event))
+    .onPostFrame (fn []
+                   (when selection
+                     (scroll-service/check-cursor-auto-scroll selection scroll-controller)
+                     (when-not foundation/kIsWeb
+                       (desktop-input/attach!)
+                       (desktop-input/update-editing-state!))))
+    .content (virtual-keyboard-wrapper
+              {:show-keyboard? show-keyboard?
+               :child (selection-gesture-detector
+                       {:!editor-state !editor-state
+                        :scroll-controller scroll-controller
+                        :child (m/Container
+                                .child (m/SingleChildScrollView
+                                        .controller scroll-controller
+                                        .scrollDirection m/Axis.horizontal
+                                        .physics (m/AlwaysScrollableScrollPhysics.)
+                                        .child (m/Container
+                                                .color (m/Color 0xFFF5F5F5)
+                                                .child (m/Padding
+                                                        .padding (m/EdgeInsets.all 32.0)
+                                                        .child (m/Row
+                                                                .crossAxisAlignment m/CrossAxisAlignment.start
+                                                                .mainAxisSize m/MainAxisSize.min
+                                                                .children (vec (map-indexed
+                                                                           (fn [idx block]
+                                                                             (block-entry [idx] block text-keys-atom))
+                                                                           blocks)))))))})})
+    .findReplaceDialog (find-replace-dialog)
+    .selectionMenu (selection-menu)
+    .slashCommandMenu (if (and slash-command-active? computed-slash-position)
+                        (slash-command-menu
+                         {:position computed-slash-position
+                          :on-command-selected (fn [command-id]
+                                                 (slash-cmd/execute-command! command-id))})
+                        (m/SizedBox.shrink)))))

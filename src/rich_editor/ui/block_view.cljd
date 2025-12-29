@@ -1,0 +1,473 @@
+(ns rich-editor.ui.block-view
+  (:require [cljd.flutter :as f]
+            [rich-editor.ui.selectable-text :refer [selectable-mongol-text]]
+            [rich-editor.state :as state]
+            [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
+            [rich-editor.command.text-commands :as text-cmd]
+            ["package:mongol/mongol.dart" :as mgl]
+            ["package:mgl_editor_core/mongol_select.dart" :refer [MongolSelect MongolSelectItem]]
+            ["package:flutter/material.dart" :as m]))
+
+(defn- get-block-matches
+  "Get matches for the current block"
+  [matches path current-match-index]
+  (let [block-matches (filter (fn [match]
+                               (= (:path match) path))
+                             matches)
+        ;; Find the index of each match in the global match list
+        block-matches-with-index (map-indexed
+                                  (fn [local-idx match]
+                                    (let [global-idx (first (keep-indexed
+                                                             (fn [idx m]
+                                                               (when (= m match) idx))
+                                                             matches))]
+                                      {:match match
+                                       :local-index local-idx
+                                       :global-index global-idx
+                                       :is-current? (= global-idx current-match-index)}))
+                                  block-matches)]
+    block-matches-with-index))
+
+(defn base-text-block [path block text-keys-atom text-style]
+  (f/widget
+   :watch [search-state (f/$ (some-> (f/<! state/!editor-state) :search))
+           selection (f/$ (get-in (f/<! state/!editor-state) [:selection :start :path]))]
+   :let [matches (:matches search-state)
+         current-match-index (:current-match-index search-state)
+         block-matches (get-block-matches matches path current-match-index)
+         block-match-positions (map (fn [m] {:start (:start (:match m))
+                                             :end (:end (:match m))})
+                                    block-matches)
+         block-current-index (first (keep-indexed
+                                     (fn [idx m]
+                                       (when (:is-current? m) idx))
+                                     block-matches))
+         alignment (get-in block [:attributes :align] :left)
+         direction (get-in block [:attributes :direction] :ttb)]
+   (if (= direction :ttb)
+     (let [align-value (case alignment
+                        :center m/Alignment.topCenter
+                        :right m/Alignment.topRight
+                        :left m/Alignment.topLeft
+                        :justify m/Alignment.topLeft
+                        m/Alignment.topLeft)]
+       (m/Container
+        :alignment align-value
+        ;; Ensure even empty paragraphs have a width to receive clicks and show cursor
+        :constraints (m/BoxConstraints .minWidth 16.0)
+        ;; Added padding to ensure cursor at the bottom/end is visible
+        :padding (m/EdgeInsets.only :bottom 4.0)
+        :child (selectable-mongol-text 
+                {:path path 
+                 :delta (get-in block [:data :delta])
+                 :selection selection 
+                 :text-style text-style
+                 :matches block-match-positions
+                 :current-match-index (or block-current-index -1)
+                 :text-keys-atom text-keys-atom})))
+     (selectable-mongol-text 
+      {:path path 
+       :delta (get-in block [:data :delta])
+       :selection selection 
+       :text-style text-style
+       :matches block-match-positions
+       :current-match-index (or block-current-index -1)
+       :text-keys-atom text-keys-atom}))))
+
+(defn paragraph-block [path block text-keys-atom]
+  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)))
+
+(defn heading-block [path block text-keys-atom font-size]
+  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize font-size :fontWeight m/FontWeight.bold)))
+
+(defn todo-block [path block text-keys-atom]
+  (f/widget
+   :watch [editor-state state/!editor-state
+           search-state (f/$ (some-> (f/<! state/!editor-state) :search))]
+   :let [matches (:matches search-state)
+         current-match-index (:current-match-index search-state)
+         block-matches (get-block-matches matches path current-match-index)
+         block-match-positions (map (fn [m] {:start (:start (:match m))
+                                             :end (:end (:match m))})
+                                    block-matches)
+         block-current-index (first (keep-indexed
+                                     (fn [idx m]
+                                       (when (:is-current? m) idx))
+                                     block-matches))]
+   (m/Column ;; vertically arrange checkbox and text
+    :mainAxisSize m/MainAxisSize.min
+    :children
+    [(f/widget
+       ;; FIX: Correct syntax for watching an atom
+       :watch [state state/!editor-state]
+       :let [checked? (get-in (get-in state [:doc :children (first path)]) [:data :checked])]
+       (m/Checkbox 
+         .value (boolean checked?)
+         .onChanged (fn [v] (state/update-block-data! path {:checked v}))))
+     (selectable-mongol-text 
+       {:path path 
+        :delta (get-in block [:data :delta])
+                :selection (:selection editor-state)
+                :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+        :matches block-match-positions
+        :current-match-index (or block-current-index -1)
+        :text-keys-atom text-keys-atom})])))
+
+(defn image-block [block]
+  (m/ClipRRect
+    .borderRadius (m/BorderRadius.circular 8.0)
+    :child (m/Image.network 
+             (get-in block [:data :url])
+             .width 200.0
+             .fit m/BoxFit.fitWidth)))
+
+(defn numbered-list-block 
+  "Render numbered list item"
+  [path block text-keys-atom]
+  (f/widget
+   :watch [editor-state state/!editor-state]
+   :let [search-state (:search editor-state)
+         matches (:matches search-state)
+         current-match-index (:current-match-index search-state)
+         block-matches (get-block-matches matches path current-match-index)
+         block-match-positions (map (fn [m] {:start (:start (:match m))
+                                             :end (:end (:match m))})
+                                    block-matches)
+         block-current-index (first (keep-indexed
+                                     (fn [idx m]
+                                       (when (:is-current? m) idx))
+                                     block-matches))
+         index (get-in block [:data :index] 1)]
+   (m/Column
+    :crossAxisAlignment m/CrossAxisAlignment.start
+    :children
+    [(m/Container
+      :height 36.0
+      :alignment m/Alignment.topCenter
+      :padding (m/EdgeInsets.only .top 2.0)
+      :child (m/Text (str index ".") 
+                     :style (m/TextStyle :fontSize 16.0 
+                                       :fontWeight m/FontWeight.bold
+                                       :color m/Colors.blueGrey)))
+     (m/Container
+      :constraints (m/BoxConstraints .minWidth 16.0)
+      :padding (m/EdgeInsets.only :bottom 4.0)
+      :child (selectable-mongol-text 
+              {:path path 
+               :delta (get-in block [:data :delta])
+                :selection (:selection editor-state)
+                :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+               :matches block-match-positions
+               :current-match-index (or block-current-index -1)
+               :text-keys-atom text-keys-atom}))])))
+
+(defn bulleted-list-block 
+  "Render bulleted list item"
+  [path block text-keys-atom]
+  (f/widget
+   :watch [editor-state state/!editor-state]
+   :let [search-state (:search editor-state)
+         matches (:matches search-state)
+         current-match-index (:current-match-index search-state)
+         block-matches (get-block-matches matches path current-match-index)
+         block-match-positions (map (fn [m] {:start (:start (:match m))
+                                             :end (:end (:match m))})
+                                    block-matches)
+         block-current-index (first (keep-indexed
+                                     (fn [idx m]
+                                       (when (:is-current? m) idx))
+                                     block-matches))]
+   (m/Column
+    :crossAxisAlignment m/CrossAxisAlignment.start
+    :children
+    [(m/Container
+      :height 36.0
+      :alignment m/Alignment.topCenter
+      :padding (m/EdgeInsets.only .top 4.0)
+      :child (m/Container
+              :width 8.0
+              :height 8.0
+              :decoration (m/BoxDecoration
+                           :color m/Colors.blueGrey
+                           :shape m/BoxShape.circle)))
+     (m/Container
+      :constraints (m/BoxConstraints .minWidth 16.0)
+      :padding (m/EdgeInsets.only :bottom 4.0)
+      :child (selectable-mongol-text 
+              {:path path 
+               :delta (get-in block [:data :delta])
+                :selection (:selection editor-state)
+                :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+               :matches block-match-positions
+               :current-match-index (or block-current-index -1)
+               :text-keys-atom text-keys-atom}))])))
+
+(defn quote-block
+  "Render quote block"
+  [path block text-keys-atom]
+  (f/widget
+   :watch [editor-state state/!editor-state]
+   :let [search-state (:search editor-state)
+         matches (:matches search-state)
+         current-match-index (:current-match-index search-state)
+         block-matches (get-block-matches matches path current-match-index)
+         block-match-positions (map (fn [m] {:start (:start (:match m))
+                                             :end (:end (:match m))})
+                                    block-matches)
+         block-current-index (first (keep-indexed
+                                     (fn [idx m]
+                                       (when (:is-current? m) idx))
+                                     block-matches))]
+   (m/Container
+    :padding (m/EdgeInsets.symmetric :vertical 20.0 :horizontal 12.0)
+    :decoration (m/BoxDecoration
+                 :border (m/Border :top (m/BorderSide
+                                          :color (m/Color 0xFF2196F3)
+                                          :width 4.0))
+                 :color (m/Color 0xFFF0F7FF)
+                 :borderRadius (m/BorderRadius.only 
+                                :bottomLeft (m/Radius.circular 8.0)
+                                :bottomRight (m/Radius.circular 8.0)))
+    :child (selectable-mongol-text 
+            {:path path 
+             :delta (get-in block [:data :delta])
+             :selection (:selection editor-state)
+             :text-style (m/TextStyle :fontStyle m/FontStyle.italic 
+                                     :fontSize 16.0 
+                                     :color (m/Color 0xFF444444))
+             :matches block-match-positions
+             :current-match-index (or block-current-index -1)
+             :text-keys-atom text-keys-atom}))))
+
+(defn divider-block
+  "Render divider line"
+  [_path _block]
+  (m/Container
+   :width 2.0
+   :margin (m/EdgeInsets.symmetric :horizontal 24.0)
+   :decoration (m/BoxDecoration
+                :color (-> m/Colors.blueGrey (.withOpacity 0.2))
+                :borderRadius (m/BorderRadius.circular 1.0))))
+
+(defn code-block
+  "Render code block"
+  [_path block]
+  (m/Container
+   :padding (m/EdgeInsets.all 16.0)
+   :decoration (m/BoxDecoration
+                :color (m/Color 0xFF282C34)
+                :borderRadius (m/BorderRadius.circular 8.0)
+                :boxShadow [(m/BoxShadow 
+                             :color (-> m/Colors.black (.withOpacity 0.1))
+                             :blurRadius 4.0
+                             :offset (m/Offset 0.0 2.0))])
+   :child (m/SelectableText
+           (get-in block [:data :code] "")
+           :style (m/TextStyle
+                   :fontFamily "monospace"
+                   :fontSize 14.0
+                   :color (m/Color 0xFFABB2BF)))))
+
+(defn table-cell
+  "Render table cell"
+  [table-path row-idx col-idx cell text-keys-atom]
+  (let [block-idx (first table-path)
+        cell-path [block-idx :data :rows row-idx :cells col-idx :delta]
+        alignment (get cell :align :left)
+        align-value (case alignment
+                      :center m/Alignment.topCenter
+                      :right m/Alignment.topRight
+                      :left m/Alignment.topLeft
+                      m/Alignment.topLeft)]
+    (m/GestureDetector
+     .onTap (fn []
+              (state/focus-block! cell-path)
+              (state/update-selection! (sel/make-selection (sel/make-position cell-path 0) (sel/make-position cell-path 0))))
+     .child
+     (m/Container
+      .padding (m/EdgeInsets.all 12.0)
+      .decoration (m/BoxDecoration
+                   .color m/Colors.white
+                   .border (m/Border.all .color (m/Color 0xFFE0E0E0) .width 1.0))
+      .constraints (m/BoxConstraints .minHeight 120.0 .minWidth 60.0)
+      .alignment align-value
+      .child (f/widget
+              :watch [editor-state state/!editor-state]
+              :let [current-cell (get-in editor-state (cons :doc (node/path->ks [block-idx :data :rows row-idx :cells col-idx])))
+                    current-delta (get-in current-cell [:delta] {:operations []})]
+              (m/IntrinsicWidth
+               .child (selectable-mongol-text
+                       {:path cell-path
+                        :delta current-delta
+                        :text-keys-atom text-keys-atom
+                        :text-style (m/TextStyle :color (m/Color 0xFF000000) :fontSize 16.0)})))))))
+
+(defn table-row
+  "Render table row"
+  [table-path row-idx row text-keys-atom]
+  (m/Row
+   :mainAxisSize m/MainAxisSize.min
+   :crossAxisAlignment m/CrossAxisAlignment.start
+   :children (map-indexed
+              (fn [col-idx cell]
+                (table-cell table-path row-idx col-idx cell text-keys-atom))
+              (get-in row [:cells] []))))
+
+(defn table-block
+  "Render table block"
+  [path block text-keys-atom]
+  (let [rows (get-in block [:data :rows] [])
+        ;; If no rows, create a default 2x2 table
+        default-rows (if (empty? rows)
+                       [{:cells [{:delta {:operations []}} {:delta {:operations []}}]}
+                        {:cells [{:delta {:operations []}} {:delta {:operations []}}]}]
+                       rows)]
+    (m/Container
+     :margin (m/EdgeInsets.symmetric :vertical 8.0)
+     :decoration (m/BoxDecoration
+                  :color (m/Color 0xFFF8F9FA)
+                  :border (m/Border.all :color (m/Color 0xFFCFD8DC) :width 1.0)
+                  :borderRadius (m/BorderRadius.circular 8.0)
+                  :boxShadow [(m/BoxShadow 
+                               :color (-> m/Colors.black (.withOpacity 0.05))
+                               :blurRadius 4.0
+                               :offset (m/Offset 0.0 2.0))])
+     :clipBehavior m/Clip.antiAlias
+     :child (m/SingleChildScrollView
+             .scrollDirection m/Axis.vertical
+             .child (m/Column
+                     .mainAxisSize m/MainAxisSize.min
+                     .crossAxisAlignment m/CrossAxisAlignment.start
+                     .children (map-indexed
+                                (fn [row-idx row]
+                                  (table-row path row-idx row text-keys-atom))
+                                default-rows))))))
+
+(defn block-menu-button [path block]
+  (f/widget
+   (MongolSelect
+    .value nil
+    .showArrow false
+    .valueBuilder (fn [_] (m/Icon m/Icons.more_vert .size 18.0 .color m/Colors.grey))
+    .onChanged (fn [value]
+                 (when value
+                   (state/focus-block! path)
+                   (let [block-delta (get-in block [:data :delta])
+                         text-len (count (delta-utils/delta->text (or block-delta {:operations []})))
+                         new-pos (sel/make-position path text-len)]
+                     (state/update-selection! (sel/make-selection new-pos new-pos)))
+                   (case value
+                     :move-up (text-cmd/move-block-up!)
+                     :move-down (text-cmd/move-block-down!)
+                     :delete (text-cmd/delete-current-block!)
+                     :copy (text-cmd/copy-block!)
+                     :to-paragraph (text-cmd/convert-block-to-paragraph!)
+                     :to-h1 (text-cmd/convert-block-to-heading!)
+                     :to-h2 (text-cmd/convert-block-to-heading2!)
+                     :to-h3 (text-cmd/convert-block-to-heading3!)
+                     :to-numbered (text-cmd/convert-to-numbered-list!)
+                     :to-bullet (text-cmd/convert-to-bulleted-list!)
+                     :to-todo (text-cmd/convert-to-todo-list!)
+                     nil)))
+    .items [(MongolSelectItem .value :move-up .label (mgl/MongolText "Move Up") .group (mgl/MongolText "Action"))
+            (MongolSelectItem .value :move-down .label (mgl/MongolText "Move Down") .group (mgl/MongolText "Action"))
+            (MongolSelectItem .value :copy .label (mgl/MongolText "Duplicate") .group (mgl/MongolText "Action"))
+            (MongolSelectItem .value :to-paragraph .label (mgl/MongolText "Paragraph") .group (mgl/MongolText "Type"))
+            (MongolSelectItem .value :to-h1 .label (mgl/MongolText "Heading 1") .group (mgl/MongolText "Type"))
+            (MongolSelectItem .value :to-h2 .label (mgl/MongolText "Heading 2") .group (mgl/MongolText "Type"))
+            (MongolSelectItem .value :to-h3 .label (mgl/MongolText "Heading 3") .group (mgl/MongolText "Type"))
+            (MongolSelectItem .value :to-numbered .label (mgl/MongolText "Numbered List") .group (mgl/MongolText "Type"))
+            (MongolSelectItem .value :to-bullet .label (mgl/MongolText "Bullet List") .group (mgl/MongolText "Type"))
+            (MongolSelectItem .value :to-todo .label (mgl/MongolText "To-do List") .group (mgl/MongolText "Type"))
+            (MongolSelectItem .value :delete .label (mgl/MongolText "Delete" .style (m/TextStyle :color m/Colors.red)) .group (mgl/MongolText "Danger"))])))
+
+(defn block-wrapper [path block child]
+  (f/widget
+   :watch [state state/!editor-state]
+   :let [focused-path (:focused-path state)
+         is-focused? (= focused-path path)
+         level (get-in block [:data :level] 0)
+         direction (get-in block [:attributes :direction] :ttb)
+         indent-width (* level 24.0)]
+   (m/GestureDetector
+    .behavior m/HitTestBehavior.opaque
+    .onTap (fn []
+             (when-not is-focused?
+               (state/focus-block! path)
+               ;; Also update selection to the end of this block when clicking
+               (let [block-delta (get-in block [:data :delta])
+                     text-len (count (delta-utils/delta->text block-delta))
+                     new-pos (sel/make-position path text-len)]
+                 (state/update-selection! (sel/make-selection new-pos new-pos)))))
+    .child
+    (m/AnimatedContainer
+     .duration (Duration .milliseconds 250)
+     .curve m/Curves.easeInOut
+     .margin (m/EdgeInsets.only .right 0.0)
+     .padding (m/EdgeInsets.only .left 8.0 .right 8.0 .top 4.0 .bottom 2.0)
+     .decoration (m/BoxDecoration
+                  .color (if is-focused? (-> m/Colors.blue (.withOpacity 0.02)) m/Colors.transparent)
+                  .borderRadius (m/BorderRadius.circular 4.0)
+                  .border (m/Border .top (m/BorderSide
+                                          .color (if is-focused? m/Colors.blue m/Colors.transparent)
+                                          .width 2.0)))
+     .child (m/Column
+             :mainAxisSize m/MainAxisSize.min
+             :crossAxisAlignment m/CrossAxisAlignment.start
+             :children
+             [(block-menu-button path block)
+              (if (pos? level)
+                (if (= direction :ttb)
+                  (m/Column
+                   :mainAxisSize m/MainAxisSize.min
+                   :crossAxisAlignment m/CrossAxisAlignment.start
+                   :children [(m/SizedBox :height indent-width) child])
+                  (m/Row
+                   :mainAxisSize m/MainAxisSize.min
+                   :crossAxisAlignment m/CrossAxisAlignment.start
+                   :children [(m/SizedBox :width indent-width) child]))
+                child)])))))
+
+
+(defn block-entry [path block text-keys-atom]
+  (f/widget
+   :key (m/ValueKey (:id block))
+   (block-wrapper path block
+    (case (:type block)
+      :paragraph (paragraph-block path block text-keys-atom)
+      :image     (image-block block)
+      :h1        (heading-block path block text-keys-atom 28.0)
+      :h2        (heading-block path block text-keys-atom 24.0)
+      :h3        (heading-block path block text-keys-atom 20.0)
+      :numbered-list (numbered-list-block path block text-keys-atom)
+      :bulleted-list (bulleted-list-block path block text-keys-atom)
+      :todo      (todo-block path block text-keys-atom)
+      :quote     (quote-block path block text-keys-atom)
+      :divider   (divider-block path block)
+      :code-block (code-block path block)
+      :table     (table-block path block text-keys-atom)
+      ;; fallback handling
+      (mgl/MongolText (str "Unsupported block: " (:type block)))))))
+
+(defn block-view [path block text-keys-atom]
+  (let [type (:type block)]
+    (m/Container
+     .margin (m/EdgeInsets.only .right 2.0)
+     .child
+     (case type
+       :paragraph (selectable-mongol-text
+                   {:path path
+                    :delta (get-in block [:data :delta])
+                    :text-keys-atom text-keys-atom})
+       :h1        (selectable-mongol-text
+                   {:path path
+                    :delta (get-in block [:data :delta])
+                    :text-style (m/TextStyle .fontSize 32.0 .fontWeight m/FontWeight.bold)
+                    :text-keys-atom text-keys-atom})
+       :todo      (todo-block path block text-keys-atom)
+       :image     (image-block block)
+       :numbered-list (numbered-list-block path block text-keys-atom)
+       :bulleted-list (bulleted-list-block path block text-keys-atom)
+       (m/Text (str "Unknown Block: " type))))))

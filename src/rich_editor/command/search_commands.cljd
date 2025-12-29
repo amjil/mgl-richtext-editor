@@ -1,0 +1,141 @@
+(ns rich-editor.command.search-commands
+  (:require [rich-editor.state :as state]
+            [rich-editor.services.search-service :as search]
+            [rich-editor.model.selection :as sel]
+            [rich-editor.utils.history :as hist]))
+
+;; =============================================================
+;; Find and replace commands
+;; =============================================================
+
+(defn show-find-dialog!
+  "Show find dialog"
+  []
+  (swap! state/!editor-state
+    (fn [curr]
+      (update-in curr [:search] assoc :show-dialog? true :replace-mode? false))))
+
+(defn show-replace-dialog!
+  "Show replace dialog"
+  []
+  (swap! state/!editor-state
+    (fn [curr]
+      (update-in curr [:search] assoc :show-dialog? true :replace-mode? true))))
+
+(defn hide-find-dialog!
+  "Hide find dialog"
+  []
+  (swap! state/!editor-state
+    (fn [curr]
+      (update-in curr [:search] assoc :show-dialog? false))))
+
+(defn update-search-term!
+  "Update search term and execute search"
+  [search-term]
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [case-sensitive? (get-in curr [:search :case-sensitive?])
+            matches (search/search-in-document (:doc curr) search-term case-sensitive?)
+            current-index (if (seq matches) 0 -1)]
+        (-> curr
+            (assoc-in [:search :search-term] search-term)
+            (assoc-in [:search :matches] matches)
+            (assoc-in [:search :current-match-index] current-index))))))
+
+(defn toggle-case-sensitive!
+  "Toggle case sensitive option"
+  []
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [new-case-sensitive? (not (get-in curr [:search :case-sensitive?]))
+            search-term (get-in curr [:search :search-term])
+            matches (search/search-in-document (:doc curr) search-term new-case-sensitive?)
+            current-index (if (seq matches) 0 -1)]
+            (-> curr
+                (assoc-in [:search :case-sensitive?] new-case-sensitive?)
+                (assoc-in [:search :matches] matches)
+                (assoc-in [:search :current-match-index] current-index))))))
+
+(defn find-next!
+  "Find next match"
+  []
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [matches (get-in curr [:search :matches])
+            current-index (get-in curr [:search :current-match-index])
+            new-index (search/find-next-match matches current-index)
+            match (search/get-match-at-index matches new-index)]
+        (if match
+          (let [path (:path match)
+                start (:start match)
+                end (:end match)
+                start-pos (sel/make-position path start)
+                end-pos (sel/make-position path end)
+                new-selection (sel/make-selection start-pos end-pos)]
+            (-> curr
+                (assoc-in [:search :current-match-index] new-index)
+                (assoc :selection new-selection)))
+          curr)))))
+
+(defn find-previous!
+  "Find previous match"
+  []
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [matches (get-in curr [:search :matches])
+            current-index (get-in curr [:search :current-match-index])
+            new-index (search/find-previous-match matches current-index)
+            match (search/get-match-at-index matches new-index)]
+        (if match
+          (let [path (:path match)
+                start (:start match)
+                end (:end match)
+                start-pos (sel/make-position path start)
+                end-pos (sel/make-position path end)
+                new-selection (sel/make-selection start-pos end-pos)]
+            (-> curr
+                (assoc-in [:search :current-match-index] new-index)
+                (assoc :selection new-selection)))
+          curr)))))
+
+(defn replace-current!
+  "Replace current match"
+  [replacement]
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [matches (get-in curr [:search :matches])
+            current-index (get-in curr [:search :current-match-index])
+            match (search/get-match-at-index matches current-index)]
+        (if match
+          (let [updated-doc (search/replace-match (:doc curr) match replacement)
+                ;; Re-search because document has changed
+                search-term (get-in curr [:search :search-term])
+                case-sensitive? (get-in curr [:search :case-sensitive?])
+                new-matches (search/search-in-document updated-doc search-term case-sensitive?)
+                ;; Adjust index, if current match was replaced, index may need adjustment
+                new-index (if (< current-index (count new-matches))
+                           current-index
+                           (max 0 (dec (count new-matches))))]
+            (-> (hist/push-history curr updated-doc)
+                (assoc-in [:search :matches] new-matches)
+                (assoc-in [:search :current-match-index] new-index)))
+          curr)))))
+
+(defn replace-all!
+  "Replace all matches"
+  [replacement]
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [matches (get-in curr [:search :matches])
+            updated-doc (search/replace-all-matches (:doc curr) matches replacement)]
+        (-> (hist/push-history curr updated-doc)
+            (assoc-in [:search :matches] [])
+            (assoc-in [:search :current-match-index] -1))))))
+
+(defn update-replace-term!
+  "Update replace term"
+  [replace-term]
+  (swap! state/!editor-state
+    (fn [curr]
+      (assoc-in curr [:search :replace-term] replace-term))))
+

@@ -1,0 +1,265 @@
+(ns rich-editor.command.table-commands
+  (:require [rich-editor.state :as state]
+            [rich-editor.utils.history :as hist]))
+
+;; =============================================================
+;; Helper Functions
+;; =============================================================
+
+(defn- generate-block-id []
+  ;; Use timestamp for unique ID generation
+  (str "b" (.-millisecondsSinceEpoch (dart:core/DateTime.now))))
+
+(defn- get-block-at-path [doc path]
+  (get-in doc [:children (first path)]))
+
+(defn- insert-block-at-index! [doc block-index new-block]
+  (let [blocks (:children doc)
+        new-blocks (vec (concat (subvec blocks 0 block-index)
+                               [new-block]
+                               (subvec blocks block-index)))]
+    (assoc doc :children new-blocks)))
+
+;; =============================================================
+;; Table Creation
+;; =============================================================
+
+(defn create-table-block
+  "Create a new table block with specified rows and columns"
+  [rows cols]
+  {:id (generate-block-id)
+   :type :table
+   :data {:rows (vec (for [_r (range rows)]
+                       {:cells (vec (for [_c (range cols)]
+                                      {:delta {:operations []}}))}))}})
+
+(defn insert-table!
+  "Insert a new table block after the current block"
+  ([]
+   (insert-table! 2 2)) ;; Default 2x2 table
+  ([rows cols]
+   (let [state @state/!editor-state
+         selection (:selection state)
+         focused-path (:focused-path state)]
+     (when (or selection focused-path)
+       (let [target-path (or (when selection (:path (:start selection)))
+                            focused-path)
+             block-index (first target-path)
+             new-table (create-table-block rows cols)]
+         (swap! state/!editor-state
+           (fn [curr]
+             (let [updated-doc (insert-block-at-index! (:doc curr) (inc block-index) new-table)
+                   new-path [(inc block-index)]]
+               (-> (hist/push-history curr updated-doc)
+                   (assoc :focused-path new-path))))))))))
+
+;; =============================================================
+;; Table Row Operations
+;; =============================================================
+
+(defn add-table-row!
+  "Add a new row to the table at the specified index (or at the end)"
+  ([]
+   (let [state @state/!editor-state
+         focused-path (:focused-path state)]
+     (when focused-path
+       (let [block-index (first focused-path)
+             block (get-block-at-path (:doc state) [block-index])]
+         (when (= (:type block) :table)
+           (let [rows (get-in block [:data :rows] [])
+                 col-count (if (empty? rows)
+                            2
+                            (count (get-in rows [0 :cells] [])))
+                 new-row {:cells (vec (for [_c (range col-count)]
+                                        {:delta {:operations []}}))}]
+             (swap! state/!editor-state
+               (fn [curr]
+                 (let [updated-doc (update-in (:doc curr) 
+                                            [:children block-index :data :rows] 
+                                            #(conj (vec %) new-row))]
+                   (hist/push-history curr updated-doc))))))))))
+  ([row-index]
+   (let [state @state/!editor-state
+         focused-path (:focused-path state)]
+     (when focused-path
+       (let [block-index (first focused-path)
+             block (get-block-at-path (:doc state) [block-index])]
+         (when (= (:type block) :table)
+           (let [rows (get-in block [:data :rows] [])
+                 col-count (if (empty? rows)
+                            2
+                            (count (get-in rows [0 :cells] [])))
+                 new-row {:cells (vec (for [_c (range col-count)]
+                                        {:delta {:operations []}}))}
+                 clamped-index (min row-index (count rows))]
+             (swap! state/!editor-state
+               (fn [curr]
+                 (let [updated-rows (vec (concat (subvec rows 0 clamped-index)
+                                                 [new-row]
+                                                 (subvec rows clamped-index)))
+                       updated-doc (assoc-in (:doc curr) 
+                                           [:children block-index :data :rows] 
+                                           updated-rows)]
+                   (hist/push-history curr updated-doc)))))))))))
+
+(defn delete-table-row!
+  "Delete a row from the table at the specified index"
+  [row-index]
+  (let [state @state/!editor-state
+        focused-path (:focused-path state)]
+    (when focused-path
+      (let [block-index (first focused-path)
+            block (get-block-at-path (:doc state) [block-index])]
+        (when (= (:type block) :table)
+          (let [rows (get-in block [:data :rows] [])]
+            (when (and (>= row-index 0) (< row-index (count rows)) (> (count rows) 1))
+              (swap! state/!editor-state
+                (fn [curr]
+                  (let [updated-rows (vec (concat (subvec rows 0 row-index)
+                                                 (subvec rows (inc row-index))))
+                        updated-doc (assoc-in (:doc curr) 
+                                           [:children block-index :data :rows] 
+                                           updated-rows)]
+                    (hist/push-history curr updated-doc)))))))))))
+
+;; =============================================================
+;; Table Column Operations
+;; =============================================================
+
+(defn add-table-column!
+  "Add a new column to the table at the specified index (or at the end)"
+  ([]
+   (let [state @state/!editor-state
+         focused-path (:focused-path state)]
+     (when focused-path
+       (let [block-index (first focused-path)
+             block (get-block-at-path (:doc state) [block-index])]
+         (when (= (:type block) :table)
+           (let [rows (get-in block [:data :rows] [])
+                 default-rows (if (empty? rows)
+                               [{:cells [{:delta {:operations []}}]}]
+                               rows)]
+             (swap! state/!editor-state
+               (fn [curr]
+                 (let [updated-rows (vec (map (fn [row]
+                                               (update-in row [:cells] 
+                                                          #(conj (vec %) {:delta {:operations []}})))
+                                             default-rows))
+                       updated-doc (assoc-in (:doc curr) 
+                                           [:children block-index :data :rows] 
+                                           updated-rows)]
+                   (hist/push-history curr updated-doc))))))))))
+  ([col-index]
+   (let [state @state/!editor-state
+         focused-path (:focused-path state)]
+     (when focused-path
+       (let [block-index (first focused-path)
+             block (get-block-at-path (:doc state) [block-index])]
+         (when (= (:type block) :table)
+           (let [rows (get-in block [:data :rows] [])]
+             (when-not (empty? rows)
+               (let [first-row-cells (get-in rows [0 :cells] [])
+                     max-col-index (count first-row-cells)
+                     clamped-index (min (max 0 col-index) max-col-index)]
+                 (swap! state/!editor-state
+                   (fn [curr]
+                     (let [updated-rows (vec (map (fn [row]
+                                                   (let [cells (:cells row)]
+                                                     (assoc row :cells 
+                                                            (vec (concat (subvec cells 0 clamped-index)
+                                                                         [{:delta {:operations []}}]
+                                                                         (subvec cells clamped-index))))))
+                                                 rows))
+                           updated-doc (assoc-in (:doc curr) 
+                                               [:children block-index :data :rows] 
+                                               updated-rows)]
+                       (hist/push-history curr updated-doc)))))))))))))
+
+(defn delete-table-column!
+  "Delete a column from the table at the specified index"
+  [col-index]
+  (let [state @state/!editor-state
+        focused-path (:focused-path state)]
+    (when focused-path
+      (let [block-index (first focused-path)
+            block (get-block-at-path (:doc state) [block-index])]
+        (when (= (:type block) :table)
+          (let [rows (get-in block [:data :rows] [])
+                first-row-cells (get-in rows [0 :cells] [])]
+            (when (and (>= col-index 0) (< col-index (count first-row-cells)) (> (count first-row-cells) 1))
+              (swap! state/!editor-state
+                (fn [curr]
+                  (let [updated-rows (vec (map (fn [row]
+                                                (let [cells (:cells row)]
+                                                  (assoc row :cells 
+                                                         (vec (concat (subvec cells 0 col-index)
+                                                                     (subvec cells (inc col-index)))))))
+                                              rows))
+                        updated-doc (assoc-in (:doc curr) 
+                                            [:children block-index :data :rows] 
+                                            updated-rows)]
+                    (hist/push-history curr updated-doc)))))))))))
+
+;; =============================================================
+;; Table Formatting
+;; =============================================================
+
+(defn format-table-cell!
+  "Format a specific table cell with given attributes"
+  [row-index col-index attributes]
+  (let [state @state/!editor-state
+        focused-path (:focused-path state)]
+    (when focused-path
+      (let [block-index (first focused-path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            ;; For now, we'll store formatting in cell metadata
+            ;; In the future, this could apply formatting to the delta
+            (let [updated-doc (update-in (:doc curr) 
+                                       [:children block-index :data :rows row-index :cells col-index]
+                                       #(assoc % :format attributes))]
+              (hist/push-history curr updated-doc))))))))
+
+(defn set-table-border-style!
+  "Set the border style for the entire table"
+  [border-style]
+  (let [state @state/!editor-state
+        focused-path (:focused-path state)]
+    (when focused-path
+      (let [block-index (first focused-path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [updated-doc (assoc-in (:doc curr) 
+                                      [:children block-index :data :border-style] 
+                                      border-style)]
+              (hist/push-history curr updated-doc))))))))
+
+(defn set-table-cell-alignment!
+  "Set the alignment for a specific cell or all cells"
+  ([alignment]
+   (set-table-cell-alignment! nil nil alignment))
+  ([row-index col-index alignment]
+   (let [state @state/!editor-state
+         focused-path (:focused-path state)]
+     (when focused-path
+       (let [block-index (first focused-path)
+             block (get-block-at-path (:doc state) [block-index])
+             rows (get-in block [:data :rows] [])]
+         (swap! state/!editor-state
+           (fn [curr]
+             (let [updated-rows (if (and row-index col-index)
+                                 ;; Update specific cell
+                                 (update-in rows 
+                                           [row-index :cells col-index]
+                                           #(assoc % :align alignment))
+                                 ;; Update all cells
+                                 (vec (map (fn [row]
+                                            (update-in row [:cells]
+                                                      #(vec (map (fn [cell]
+                                                                  (assoc cell :align alignment))
+                                                                %))))
+                                          rows)))
+                   updated-doc (assoc-in (:doc curr) 
+                                       [:children block-index :data :rows] 
+                                       updated-rows)]
+               (hist/push-history curr updated-doc)))))))))

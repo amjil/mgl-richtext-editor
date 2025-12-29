@@ -1,0 +1,14 @@
+(ns rich-editor.utils.delta)
+
+(defn delta->text [delta]
+  (if (nil? delta)
+    ""
+    (let [ops (:operations delta)] ;; assume the structure is {:operations [{:insert "..."} ...]}
+      (->> ops
+           (filter #(string? (:insert %))) ;; only keep text insertion, ignore images and other Embeds
+           (map :insert)
+           (apply str)))))
+
+
+(defn text->delta [text]
+  {:operations [{:insert text}]})

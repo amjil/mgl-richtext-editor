@@ -1,0 +1,37 @@
+(ns rich-editor.selection-utils
+  (:require [rich-editor.model.selection :as sel]
+            ["package:flutter/widgets.dart" :as w]))
+
+(defn to-text-selection [node-path selection node-length]
+  (if (nil? selection)
+    nil
+    (let [normalized (sel/normalize selection)
+          {:keys [start end]} normalized
+          start-path (:path start)
+          end-path (:path end)]
+      (cond
+        ;; If the node path is completely outside the selection range
+        (or (sel/path-after? node-path end-path)
+            (sel/path-before? node-path start-path)) 
+        nil
+        
+        ;; If the node is strictly between start and end blocks
+        (and (sel/path-after? node-path start-path)
+             (sel/path-before? node-path end-path))
+        (w/TextSelection :baseOffset 0 :extentOffset node-length)
+        
+        ;; If the selection is within a single block
+        (sel/path-equals? start-path end-path)
+        (if (sel/path-equals? node-path start-path)
+          (w/TextSelection :baseOffset (:offset start) :extentOffset (:offset end))
+          nil)
+        
+        ;; If the node is the start block
+        (sel/path-equals? node-path start-path)
+        (w/TextSelection :baseOffset (:offset start) :extentOffset node-length)
+        
+        ;; If the node is the end block
+        (sel/path-equals? node-path end-path)
+        (w/TextSelection :baseOffset 0 :extentOffset (:offset end))
+        
+        :else nil))))

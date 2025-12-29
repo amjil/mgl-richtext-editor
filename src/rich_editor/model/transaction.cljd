@@ -1,0 +1,111 @@
+(ns rich-editor.model.transaction
+  (:require
+   [rich-editor.model.node :as node]
+   [rich-editor.utils.history :as hist]))
+
+;; --- Operation constructors ---
+(defn insert-op [path nodes]
+  {:type :insert
+   :path path
+   :nodes nodes})
+
+(defn delete-op [path count]
+  {:type :delete
+   :path path
+   :count count})
+
+(defn update-text-op [path delta]
+  {:type :update-text
+   :path path
+   :delta delta})
+
+(defn update-attr-op [path attributes]
+  {:type :update-attr
+   :path path
+   :attributes attributes})
+
+(defn update-data-op [path data]
+  {:type :update-data
+   :path path
+   :data data})
+
+;; --- Core logic: apply operations ---
+
+(defn- apply-op [doc op]
+  (let [{:keys [type path]} op
+    ks (node/path->ks path)]
+    (case type
+      :insert
+      (let [parent-path (vec (butlast path))
+            index (last path)
+            ;; if the root node is inserted, parent-ks should be [:children]
+            parent-ks (if (empty? parent-path) [:children] (conj (node/path->ks parent-path) :children))]
+        (update-in doc parent-ks 
+          (fn [children]
+            (let [children (or children [])]
+              (into [] (concat (subvec children 0 index) 
+                               (:nodes op) 
+                               (subvec children index)))))))
+
+      :delete
+      (let [parent-path (vec (butlast path))
+            index (last path)
+            parent-ks (if (empty? parent-path) [:children] (conj (node/path->ks parent-path) :children))]
+        (update-in doc parent-ks 
+          (fn [children]
+            (into [] (concat (subvec children 0 index) 
+                             (subvec children (+ index (:count op))))))))
+
+      :update-text
+      ;; update the delta content inside the paragraph
+      (let [delta-ks (if (some #{:delta} path)
+                       ks
+                       (conj ks :data :delta))]
+        (assoc-in doc delta-ks (:delta op)))
+
+      :update-attr
+      ;; update the attribute mapping of the node
+      (let [attr-ks (conj ks :attributes)]
+        (update-in doc attr-ks merge (:attributes op)))
+
+      :update-data
+      ;; update the data mapping of the node (merge)
+      (let [data-ks (conj ks :data)]
+        (update-in doc data-ks merge (:data op)))
+
+      ;; default no change
+      doc)))
+
+;; --- Transaction executor ---
+
+
+
+(defn apply-transaction
+  "Receive the current document and a set of operations, return the updated document.
+   Corresponding to the execution logic of Transaction in Dart."
+  [doc operations]
+  (reduce apply-op doc operations))
+
+;; --- Transaction helper (for building logic) ---
+
+(defn make-transaction
+  "Create a transaction package containing the previous and subsequent selection states"
+  [& {:keys [ops before-selection after-selection]}]
+  {:ops (vec ops)
+   :before-selection before-selection
+   :after-selection after-selection})
+
+(defn commit-transaction!
+  "Apply the transaction to the global state Atom.
+   This is the key to connecting the UI and logic."
+  [!state transaction & {:keys [merge?]}]
+  (swap! !state (fn [current-state]
+                  (let [new-doc (apply-transaction (:doc current-state) (:ops transaction))
+                        after-sel (:after-selection transaction)
+                        new-path (when after-sel (:path (:start after-sel)))]
+                    (if merge?
+                      (cond-> (assoc current-state :doc new-doc :selection after-sel)
+                        new-path (assoc :focused-path new-path))
+                      (let [next-state (hist/push-history current-state new-doc :new-selection after-sel)]
+                        (cond-> next-state
+                          new-path (assoc :focused-path new-path))))))))

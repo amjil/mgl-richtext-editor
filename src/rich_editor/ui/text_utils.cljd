@@ -1,0 +1,132 @@
+(ns rich-editor.ui.text-utils
+  (:require ["package:flutter/material.dart" :as m]
+            ["package:flutter/gestures.dart" :as g]
+            ["package:url_launcher/url_launcher.dart" :as url-launcher]
+            [clojure.string :as str]))
+
+(defn- parse-color [color-str]
+  (try
+    (if (str/starts-with? color-str "#")
+      (let [hex (subs color-str 1)
+            color-value (dart:core/int.parse hex .radix 16)
+            color-with-alpha (bit-or color-value 0xFF000000)]
+        (m/Color color-with-alpha))
+      m/Colors.black)
+    (catch Exception _e 
+      m/Colors.black)))
+
+(defn- handle-link-click
+  "Handle link click event, use url_launcher to open URL"
+  [url]
+  (when url
+    (try
+      (let [uri (dart:core/Uri.parse url)]
+        (url-launcher/launchUrl uri))
+      (catch Exception _
+        ;; If opening fails, handle silently (no error log output)
+        nil))))
+
+(defn- split-text-by-matches
+  "Split text into multiple TextSpans based on matches"
+  [text op-start matches current-match-index base-style recognizer]
+  (let [op-end (+ op-start (count text))
+        ;; Add local index to matches to identify the current match
+        matches-with-idx (map-indexed (fn [idx m] (assoc m :idx idx)) matches)
+        ;; Find matches that intersect with this op's range
+        relevant-matches (filter (fn [m] (and (< (:start m) op-end) (> (:end m) op-start))) matches-with-idx)
+        ;; Sort matches by start position
+        sorted-matches (sort-by :start relevant-matches)]
+    (if (empty? sorted-matches)
+      [(m/TextSpan :text text :style base-style :recognizer recognizer)]
+      (loop [current-pos op-start
+             remaining-text text
+             matches sorted-matches
+             spans []]
+        (if (empty? matches)
+          (if (seq remaining-text)
+            (conj spans (m/TextSpan :text remaining-text :style base-style :recognizer recognizer))
+            spans)
+          (let [match (first matches)
+                m-start (max (:start match) op-start)
+                m-end (min (:end match) op-end)
+                
+                ;; Text before this match (relative to current-pos)
+                before-len (- m-start current-pos)
+                before-text (if (pos? before-len) (subs remaining-text 0 before-len) "")
+                
+                ;; Match text
+                match-len (- m-end m-start)
+                match-text (if (pos? match-len) 
+                             (subs remaining-text (max 0 before-len) (+ (max 0 before-len) match-len))
+                             "")
+                
+                ;; Is this the current match?
+                is-current? (= (:idx match) current-match-index)
+                
+                ;; Style for match
+                highlight-style (.copyWith base-style 
+                                           :backgroundColor (if is-current? 
+                                                              (-> m/Colors.orange (.withOpacity 0.5)) 
+                                                              (-> m/Colors.yellow (.withOpacity 0.3))))
+                
+                new-spans (cond-> spans
+                            (seq before-text) (conj (m/TextSpan :text before-text :style base-style :recognizer recognizer))
+                            (seq match-text) (conj (m/TextSpan :text match-text :style highlight-style :recognizer recognizer)))]
+            (recur m-end 
+                   (subs remaining-text (+ (max 0 before-len) match-len)) 
+                   (rest matches) 
+                   new-spans)))))))
+
+(defn build-spans
+  "Build text spans, supports highlighting matches and links
+   delta: Delta object
+   matches: match list [{:start 0 :end 5} ...] (relative to current block's text position)
+   current-match-index: current match index (for highlighting current match)
+   on-link-click: link click callback function (optional)
+   Returns a map with :spans and :recognizers"
+  ([delta] (build-spans delta [] -1 nil))
+  ([delta matches current-match-index] (build-spans delta matches current-match-index nil))
+  ([delta matches current-match-index on-link-click]
+   (let [recognizers (atom [])
+         current-offset (atom 0)]
+     {:spans (->> (:operations delta)
+                  (mapcat (fn [op]
+                            (let [text (:insert op)
+                                  attrs (:attributes op)
+                                  link-url (get attrs :link)
+                                  base-style (m/TextStyle
+                                              .fontWeight (if (get attrs :bold) m/FontWeight.bold m/FontWeight.normal)
+                                              .fontStyle (if (get attrs :italic) m/FontStyle.italic m/FontStyle.normal)
+                                              .decoration (cond 
+                                                            (get attrs :underline) m/TextDecoration.underline
+                                                            (get attrs :strikethrough) m/TextDecoration.lineThrough
+                                                            :else m/TextDecoration.none)
+                                              .color (if-let [c (get attrs :color)] (parse-color c) nil)
+                                              .backgroundColor (if-let [bg (get attrs :background)] (parse-color bg) nil)
+                                              .fontSize (or (get attrs :font-size) 16.0)
+                                              .fontFamily (get attrs :font-family))
+                                  ;; Merge link style and base style using copyWith
+                                  final-style (if link-url
+                                                (.copyWith base-style
+                                                          :color m/Colors.blue
+                                                          :decoration m/TextDecoration.underline
+                                                          :decorationColor m/Colors.blue)
+                                                base-style)
+                                  ;; Link click handling
+                                  recognizer (when link-url
+                                               (let [rec (g/TapGestureRecognizer.)]
+                                                 (set! (.-onTap rec)
+                                                       (fn []
+                                                         (if on-link-click
+                                                           (on-link-click link-url)
+                                                           (handle-link-click link-url))))
+                                                 (swap! recognizers conj rec)
+                                                 rec))
+                                  op-start @current-offset
+                                  _ (when (string? text) (swap! current-offset + (count text)))
+                                  spans (if (string? text)
+                                          (split-text-by-matches text op-start matches current-match-index final-style recognizer)
+                                          [])]
+                              spans)))
+                  doall)
+      :recognizers @recognizers})))

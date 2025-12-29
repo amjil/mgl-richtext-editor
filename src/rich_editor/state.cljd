@@ -1,0 +1,123 @@
+(ns rich-editor.state
+  (:require [rich-editor.utils.history :as hist]
+            [rich-editor.model.transaction :as tx]
+            [rich-editor.model.node :as node]
+            [rich-editor.utils.delta :as delta-utils]))
+
+;; 1. define the initial state
+(defonce !editor-state
+  (atom {:doc {:children [{:id "b1" :type :paragraph :data {:delta {:operations []}}}]}
+         :selection nil
+         :undo-stack []
+         :redo-stack []
+         :focused-path nil
+         :last-edited-at 0
+         :last-op-type nil
+         ;; Search and replace related state
+         :search {:search-term ""
+                  :replace-term ""
+                  :matches []
+                  :current-match-index -1
+                  :case-sensitive? false
+                  :show-dialog? false
+                  :replace-mode? false}
+         ;; Selection menu related state
+         :selection-menu {:show? false
+                          :position nil}
+         ;; Slash command menu related state
+         :slash-command-menu {:show? false
+                              :position nil}
+         ;; Slash command state
+         :slash-command-active false
+         :slash-command-query ""})) ;; store the timestamp in milliseconds
+
+(defn focus-block! [path]
+  (swap! !editor-state assoc :focused-path path))
+
+(defn blur-all! []
+  (swap! !editor-state assoc :focused-path nil))
+
+(defn update-selection! [new-selection]
+  (swap! !editor-state assoc :selection new-selection))
+
+(defn apply-action! [action-fn & args]
+  (swap! !editor-state (fn [curr]
+                         (hist/push-history curr (apply action-fn (:doc curr) args)))))
+
+
+;; 4. the internal tool function: determine whether to merge the history
+(defn should-merge? [curr-state now-ms current-op-type]
+  (let [last-time (:last-edited-at curr-state)
+        last-op-type (:last-op-type curr-state)
+        interval (- now-ms last-time)]
+    ;; if the interval between two inputs is less than 1000ms, the state is not empty,
+    ;; and the operation type is the same as the last one, then merge
+    (and (< interval 1000) 
+         (pos? last-time)
+         (= last-op-type current-op-type))))
+
+(defn commit-with-history! 
+  "Commit a transaction with automatic history merging logic based on time and operation type."
+  [transaction op-type]
+  (let [curr @!editor-state
+        now-ms (.-millisecondsSinceEpoch (dart:core/DateTime.now))
+        merge? (should-merge? curr now-ms op-type)]
+    (tx/commit-transaction! !editor-state transaction :merge? merge?)
+    (swap! !editor-state assoc :last-edited-at now-ms :last-op-type op-type)))
+
+;; 5. the core business logic function
+(defn on-text-changed! [path new-delta]
+  (let [curr @!editor-state
+        children (get-in curr [:doc :children])
+        idx (first path)]
+    (if (and (number? idx) (>= idx 0) (< idx (count children)))
+      (let [;; Determine operation type (insert vs delete) by comparing text length
+            old-delta (get-in curr (cons :doc (node/path->ks path)))
+            old-len (count (delta-utils/delta->text old-delta))
+            new-len (count (delta-utils/delta->text new-delta))
+            current-op-type (cond 
+                              (> new-len old-len) :insert
+                              (< new-len old-len) :delete
+                              :else :other)
+            ;; Wrap the text update in a transaction
+            transaction (tx/make-transaction
+                         :ops [(tx/update-text-op path new-delta)]
+                         :after-selection (:selection curr))]
+        (commit-with-history! transaction current-op-type))
+      (dart:core/print (str "Warning: Ignored on-text-changed! with invalid path: " path)))))
+
+(defn update-block-data! [path data]
+  (let [curr @!editor-state
+        children (get-in curr [:doc :children])
+        idx (first path)]
+    (if (and (number? idx) (>= idx 0) (< idx (count children)))
+      (let [transaction (tx/make-transaction
+                         :ops [(tx/update-data-op path data)]
+                         :after-selection (:selection curr))]
+        (tx/commit-transaction! !editor-state transaction))
+      (dart:core/print (str "Warning: Ignored update-block-data! with invalid path: " path)))))
+
+(defn delete-block! [path]
+  (let [curr @!editor-state
+        idx (first path)
+        old-children (get-in curr [:doc :children])]
+    (if (and (number? idx) (>= idx 0) (< idx (count old-children)))
+      (if (<= (count old-children) 1)
+        ;; If it's the last block, don't delete it, just clear its content
+        (on-text-changed! path {:operations []})
+        (let [new-focused-path [(max 0 (dec idx))]
+              ;; Update selection to the previous block if current one is deleted
+              new-selection (when (:selection curr)
+                              (let [sel (:selection curr)
+                                    new-idx (max 0 (dec idx))]
+                                (-> sel
+                                    (assoc-in [:start :path 0] new-idx)
+                                    (assoc-in [:end :path 0] new-idx)
+                                    (assoc-in [:start :offset] 0)
+                                    (assoc-in [:end :offset] 0))))
+              transaction (tx/make-transaction
+                           :ops [(tx/delete-op path 1)]
+                           :after-selection new-selection)]
+          (tx/commit-transaction! !editor-state transaction)
+          (swap! !editor-state assoc :focused-path new-focused-path :selection new-selection)))
+      (dart:core/print (str "Warning: Ignored delete-block! with invalid path: " path)))))
