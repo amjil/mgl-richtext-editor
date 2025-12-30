@@ -365,7 +365,11 @@
    (MongolSelect
     .value nil
     .showArrow false
-    .valueBuilder (fn [_] (m/Icon m/Icons.more_vert .size 18.0 .color m/Colors.grey))
+    .valueBuilder (fn [_] 
+                    (m/Container
+                     :width 40.0 :height 40.0
+                     :alignment m/Alignment.center
+                     :child (m/Icon m/Icons.more_vert .size 20.0 .color m/Colors.grey)))
     .onChanged (fn [value]
                  (when value
                    (state/focus-block! path)

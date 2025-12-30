@@ -73,6 +73,22 @@
         ;; 2. trigger automatic scrolling with smooth animation (for Mongolian horizontal scrolling layout)
         (scroll-service/check-auto-scroll global-pos viewport-size scroll-controller true)))))
 
+(defn show-menu-at-selection!
+  "Calculate and show selection menu above the selection start"
+  [selection]
+  (let [start-path (get-in selection [:start :path])]
+    (when-let [start-node (node-service/get-selectable-by-path start-path)]
+      (let [selectable (:selectable start-node)
+            start-render (:render-box start-node)
+            node-len (.-length (.toPlainText (.-text selectable)))
+            flutter-sel (sel-util/to-text-selection start-path selection node-len)
+            start-rects (.getBoxesForSelection selectable flutter-sel)
+            start-local (geom/calculate-handle-offsets start-rects :start)
+            start-global (.localToGlobal start-render start-local)
+            ;; Position menu above the selection start, offset by menu height
+            menu-position (m/Offset. (.-dx start-global) (- (.-dy start-global) 60.0))]
+        (sel-menu/show-selection-menu! menu-position)))))
+
 (defn handle-pan-end!
   "handle the drag end"
   [!editor-state _]
@@ -82,18 +98,7 @@
     (swap! ui/!ui-state dissoc :pan-start-position)
     ;; Show selection menu if there's a non-collapsed selection
     (when (and selection (not (sel/collapsed? selection)))
-      (let [start-path (get-in selection [:start :path])]
-        (when-let [start-node (node-service/get-selectable-by-path start-path)]
-          (let [selectable (:selectable start-node)
-                start-render (:render-box start-node)
-                node-len (.-length (.toPlainText (.-text selectable)))
-                flutter-sel (sel-util/to-text-selection start-path selection node-len)
-                start-rects (.getBoxesForSelection selectable flutter-sel)
-                start-local (geom/calculate-handle-offsets start-rects :start)
-                start-global (.localToGlobal start-render start-local)
-                ;; Position menu above the selection start, offset by menu height
-                menu-position (m/Offset. (.-dx start-global) (- (.-dy start-global) 60.0))]
-            (sel-menu/show-selection-menu! menu-position)))))))
+      (show-menu-at-selection! selection))))
 
 ;; --- helper logic: double/triple click (template) ---
 
@@ -120,17 +125,7 @@
     (let [state @!editor-state
           selection (:selection state)]
       (when (and selection (not (sel/collapsed? selection)))
-        (let [start-path (get-in selection [:start :path])]
-          (when-let [start-node (node-service/get-selectable-by-path start-path)]
-            (let [selectable (:selectable start-node)
-                  start-render (:render-box start-node)
-                  node-len (.-length (.toPlainText (.-text selectable)))
-                  flutter-sel (sel-util/to-text-selection start-path selection node-len)
-                  start-rects (.getBoxesForSelection selectable flutter-sel)
-                  start-local (geom/calculate-handle-offsets start-rects :start)
-                  start-global (.localToGlobal start-render start-local)
-                  menu-position (m/Offset. (.-dx start-global) (- (.-dy start-global) 60.0))]
-              (sel-menu/show-selection-menu! menu-position))))))))
+        (show-menu-at-selection! selection)))))
 
 (defn handle-handle-drag!
   "handle the logic of moving the selection handle.
