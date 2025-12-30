@@ -86,12 +86,12 @@
   []
   (f/widget
    :context ctx
-   :watch [editor-state (f/$ (f/<! state/!editor-state))]
-   :let [has-selection (some? (:selection editor-state))
-         focused-path (:focused-path editor-state)
-         block-index (when focused-path (first focused-path))
-         current-block (when block-index (get-in editor-state [:doc :children block-index]))
-         is-table? (= (:type current-block) :table)
+   :watch [selection (f/$ (:selection (f/<! state/!editor-state)))
+           is-table? (f/$ (let [state (f/<! state/!editor-state)
+                                path (:focused-path state)
+                                block-index (when path (first path))]
+                            (= :table (:type (get-in state [:doc :children block-index])))))]
+   :let [has-selection (some? selection)
          theme (-> m/Theme (.of ctx))
          color-scheme (.-colorScheme theme)]
 
@@ -130,7 +130,7 @@
 
                           (format-button
                            {:icon m/Icons.strikethrough_s
-                            :label "Strikethrough"
+                           :label "Strikethrough"
                             :on-pressed (when has-selection #(kb-service/handle-virtual-key! :strikethrough))
                             :active? false
                             :disabled? (not has-selection)})
@@ -161,7 +161,7 @@
                             :on-pressed (when has-selection
                                           (fn []
                                             (let [current-url (text-cmd/get-link-at-selection)
-                                                  selected-text (get-selected-text editor-state)]
+                                                  selected-text (get-selected-text @state/!editor-state)]
                                               (link-dialog/show-link-dialog ctx selected-text current-url
                                                                             (fn [text url]
                                                                               (text-cmd/insert-link! text url))))))
@@ -314,10 +314,9 @@
    Used for conditional toolbar display"
   [widget]
   (f/widget
-   :watch [editor-state (f/$ (f/<! state/!editor-state))]
-   :let [has-selection (some? (:selection editor-state))
-         has-focus (some? (:focused-path editor-state))
-         visible (or has-selection has-focus)]
+   :watch [visible (f/$ (let [state (f/<! state/!editor-state)]
+                          (or (some? (:selection state))
+                              (some? (:focused-path state)))))]
    (m/Visibility
     :visible visible
     :child widget)))

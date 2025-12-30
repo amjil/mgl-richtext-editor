@@ -51,13 +51,11 @@
              ;; and .dispose() is called automatically when unmounted.
              _kb-handler (init-keyboard!)
              :dispose false]
-   :watch [state !editor-state
-           ui-state ui/!ui-state]
-   :let [blocks (get-in state [:doc :children])
-         selection (:selection state)
-         slash-command-active? (:slash-command-active ui-state)
-         has-selection (some? selection)
-         has-focus (some? (:focused-path state))
+   :watch [blocks (f/$ (:children (:doc (f/<! !editor-state))))
+           selection (f/$ (:selection (f/<! !editor-state)))
+           has-focus (f/$ (some? (:focused-path (f/<! !editor-state))))
+           slash-command-active? (f/$ (:slash-command-active (f/<! ui/!ui-state)))]
+   :let [has-selection (some? selection)
          show-keyboard? (and (not foundation/kIsWeb) (or has-selection has-focus))
          
          _ (when (and (nil? selection) (seq blocks))

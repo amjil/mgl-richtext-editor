@@ -34,8 +34,7 @@
 
 (defn base-text-block [path block text-keys-atom text-style]
   (f/widget
-   :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))
-           selection (f/$ (get-in (f/<! state/!editor-state) [:selection :start :path]))]
+   :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
    :let [matches (:matches search-state)
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
@@ -64,7 +63,6 @@
         :child (selectable-mongol-text 
                 {:path path 
                  :delta (get-in block [:data :delta])
-                 :selection selection 
                  :text-style text-style
                  :matches block-match-positions
                  :current-match-index (or block-current-index -1)
@@ -72,7 +70,6 @@
      (selectable-mongol-text 
       {:path path 
        :delta (get-in block [:data :delta])
-       :selection selection 
        :text-style text-style
        :matches block-match-positions
        :current-match-index (or block-current-index -1)
@@ -86,8 +83,8 @@
 
 (defn todo-block [path block text-keys-atom]
   (f/widget
-   :watch [editor-state state/!editor-state
-           search-state (f/$ (:search (f/<! ui/!ui-state)))]
+   :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))
+           checked? (f/$ (get-in (f/<! state/!editor-state) (conj [:doc :children (first path)] :data :checked)))]
    :let [matches (:matches search-state)
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
@@ -101,18 +98,13 @@
    (m/Column ;; vertically arrange checkbox and text
     :mainAxisSize m/MainAxisSize.min
     :children
-    [(f/widget
-       ;; FIX: Correct syntax for watching an atom
-       :watch [state state/!editor-state]
-       :let [checked? (get-in (get-in state [:doc :children (first path)]) [:data :checked])]
-       (m/Checkbox 
-         .value (boolean checked?)
-         .onChanged (fn [v] (state/update-block-data! path {:checked v}))))
+    [(m/Checkbox 
+       .value (boolean checked?)
+       .onChanged (fn [v] (state/update-block-data! path {:checked v})))
      (selectable-mongol-text 
        {:path path 
         :delta (get-in block [:data :delta])
-                :selection (:selection editor-state)
-                :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+        :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
         :matches block-match-positions
         :current-match-index (or block-current-index -1)
         :text-keys-atom text-keys-atom})])))
@@ -129,10 +121,8 @@
   "Render numbered list item"
   [path block text-keys-atom]
   (f/widget
-   :watch [editor-state state/!editor-state
-           ui-state ui/!ui-state]
-   :let [search-state (:search ui-state)
-         matches (:matches search-state)
+   :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
+   :let [matches (:matches search-state)
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -160,8 +150,7 @@
       :child (selectable-mongol-text 
               {:path path 
                :delta (get-in block [:data :delta])
-                :selection (:selection editor-state)
-                :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+               :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
                :matches block-match-positions
                :current-match-index (or block-current-index -1)
                :text-keys-atom text-keys-atom}))])))
@@ -170,10 +159,8 @@
   "Render bulleted list item"
   [path block text-keys-atom]
   (f/widget
-   :watch [editor-state state/!editor-state
-           ui-state ui/!ui-state]
-   :let [search-state (:search ui-state)
-         matches (:matches search-state)
+   :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
+   :let [matches (:matches search-state)
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -202,8 +189,7 @@
       :child (selectable-mongol-text 
               {:path path 
                :delta (get-in block [:data :delta])
-                :selection (:selection editor-state)
-                :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+               :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
                :matches block-match-positions
                :current-match-index (or block-current-index -1)
                :text-keys-atom text-keys-atom}))])))
@@ -212,10 +198,8 @@
   "Render quote block"
   [path block text-keys-atom]
   (f/widget
-   :watch [editor-state state/!editor-state
-           ui-state ui/!ui-state]
-   :let [search-state (:search ui-state)
-         matches (:matches search-state)
+   :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
+   :let [matches (:matches search-state)
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -238,7 +222,6 @@
     :child (selectable-mongol-text 
             {:path path 
              :delta (get-in block [:data :delta])
-             :selection (:selection editor-state)
              :text-style (m/TextStyle :fontStyle m/FontStyle.italic 
                                      :fontSize 16.0 
                                      :color (m/Color 0xFF444444))
@@ -294,15 +277,15 @@
      .constraints (m/BoxConstraints .minHeight 120.0 .minWidth 60.0)
      .alignment align-value
      .child (f/widget
-             :watch [editor-state state/!editor-state]
-             :let [current-cell (get-in editor-state (cons :doc (node/path->ks [block-idx :data :rows row-idx :cells col-idx])))
-                   current-delta (get-in current-cell [:delta] {:operations []})]
-             (m/IntrinsicWidth
-              .child (selectable-mongol-text
-                      {:path cell-path
-                       :delta current-delta
-                       :text-keys-atom text-keys-atom
-                       :text-style (m/TextStyle :color (m/Color 0xFF000000) :fontSize 16.0)}))))))
+            :watch [current-delta (f/$ (or (get-in (f/<! state/!editor-state) 
+                                                (conj (node/path->ks [block-idx :data :rows row-idx :cells col-idx]) :delta))
+                                         {:operations []}))]
+            (m/IntrinsicWidth
+             .child (selectable-mongol-text
+                     {:path cell-path
+                      :delta current-delta
+                      :text-keys-atom text-keys-atom
+                      :text-style (m/TextStyle :color (m/Color 0xFF000000) :fontSize 16.0)}))))))
 
 (defn table-row
   "Render table row"
@@ -385,10 +368,8 @@
 
 (defn block-wrapper [path block child]
   (f/widget
-   :watch [state state/!editor-state]
-   :let [focused-path (:focused-path state)
-         is-focused? (= focused-path path)
-         level (get-in block [:data :level] 0)
+   :watch [is-focused? (f/$ (= (:focused-path (f/<! state/!editor-state)) path))]
+   :let [level (get-in block [:data :level] 0)
          direction (get-in block [:attributes :direction] :ttb)
          indent-width (* level 24.0)]
    (m/GestureDetector

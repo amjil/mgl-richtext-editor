@@ -42,6 +42,7 @@ dependencies:
   mongol: ^7.0.0
   mongol_code: ^0.3.0
   vibration: ^1.8.4
+  uuid: ^4.3.3
 
 dev_dependencies:
   flutter_test:

@@ -15,9 +15,8 @@
   (f/widget
    :context ctx
    :get [m/MediaQuery]
-   :watch [ui-state ui/!ui-state]
-   :let [search-state (:search ui-state)
-         show-dialog? (:show-dialog? search-state)
+   :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
+   :let [show-dialog? (:show-dialog? search-state)
          replace-mode? (:replace-mode? search-state)
          search-term (:search-term search-state)
          replace-term (:replace-term search-state)

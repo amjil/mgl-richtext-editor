@@ -34,15 +34,15 @@
 (defn selection-menu-content []
   (f/widget
    :context ctx
-   :watch [editor-state state/!editor-state]
-   :let [selection (:selection editor-state)
-         is-mobile? (not foundation/kIsWeb)
+   :watch [selection (f/$ (:selection (f/<! state/!editor-state)))
+           focused-path (f/$ (:focused-path (f/<! state/!editor-state)))]
+   :let [is-mobile? (not foundation/kIsWeb)
          screen-width (.-width (.-size (m/MediaQuery.of ctx)))
          is-small-screen? (< screen-width 600.0)
          use-vertical-layout? (or is-mobile? is-small-screen?)
          has-selection? (and selection (not (sel/collapsed? selection)))]
    
-   (if (or has-selection? (some? (:focused-path editor-state)))
+   (if (or has-selection? (some? focused-path))
      (m/Container
       :constraints (m/BoxConstraints :maxWidth (- screen-width 32.0))
       :padding (m/EdgeInsets.all 4.0)
@@ -81,8 +81,7 @@
 (defn selection-menu
   []
   (f/widget
-   :watch [ui-state ui/!ui-state]
-   :let [{:keys [show? position]} (:selection-menu ui-state)]
+   :watch [{:keys [show? position]} (f/$ (:selection-menu (f/<! ui/!ui-state)))]
    (if (and show? position)
      (m/Positioned
       :left (.-dx position)

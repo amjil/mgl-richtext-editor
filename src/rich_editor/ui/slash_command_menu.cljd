@@ -10,9 +10,8 @@
 
 (defn slash-command-menu [{:keys [position on-command-selected]}]
   (f/widget
-   :watch [ui-state ui/!ui-state]
-   :let [active (:slash-command-active ui-state)
-         _query (:slash-command-query ui-state)]
+   :watch [active (f/$ (:slash-command-active (f/<! ui/!ui-state)))
+           _query (f/$ (:slash-command-query (f/<! ui/!ui-state)))]
    
    (if (and active (seq (slash-cmd/get-filtered-commands)))
      (let [filtered-commands (slash-cmd/get-filtered-commands)]

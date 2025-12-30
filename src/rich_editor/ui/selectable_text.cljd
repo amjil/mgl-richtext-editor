@@ -12,13 +12,11 @@
   [{:keys [path delta text-style matches current-match-index]}]
   (f/widget
    :managed [focus-node (m/FocusNode.)]
-   :watch [state !editor-state]
-   :let [selection (:selection state)
-        ;;  is-focused? (= (:focused-path state) path)
+   :let [;;  is-focused? (= (:focused-path state) path)
          plain-text (delta-utils/delta->text delta)
          node-len (count plain-text)
-         flutter-selection (sel-util/to-text-selection path selection node-len)
          {:keys [spans recognizers]} (text-utils/build-spans delta matches current-match-index (fn [_] nil))]
+   :watch [selection (f/$ (sel-util/to-text-selection path (:selection (f/<! !editor-state)) node-len))]
   ;;  :effect (when is-focused?
   ;;            ;; Ensure the FocusNode actually gets focus when this block is focused in state
   ;;            (.requestFocus focus-node))
@@ -35,4 +33,4 @@
                             spans)
                 .style text-style)
     .gestureRecognizers recognizers
-    .selection flutter-selection)))
+    .selection selection)))
