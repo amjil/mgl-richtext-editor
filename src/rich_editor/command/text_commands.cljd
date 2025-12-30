@@ -917,7 +917,8 @@
                            :data {:delta current-delta})]
         (swap! state/!editor-state
           (fn [curr]
-            (let [updated-doc (assoc-in (:doc curr) [:children block-index] new-block)]
+            (let [updated-doc (-> (assoc-in (:doc curr) [:children block-index] new-block)
+                                  update-numbered-list-indices!)]
               (hist/push-history curr updated-doc))))))))
 
 (defn convert-block-to-heading!
@@ -955,7 +956,8 @@
                            :data {:delta current-delta})]
         (swap! state/!editor-state
           (fn [curr]
-            (let [updated-doc (assoc-in (:doc curr) [:children block-index] new-block)]
+            (let [updated-doc (-> (assoc-in (:doc curr) [:children block-index] new-block)
+                                  update-numbered-list-indices!)]
               (hist/push-history curr updated-doc))))))))
 
 (defn convert-block-to-quote!
@@ -1205,7 +1207,8 @@
                 (hist/push-history curr updated-doc)))))))))
 
 (defn outdent-block!
-  "Decrease the indentation level of a block"
+  "Decrease the indentation level of a block.
+   If the block is a list item at level 0, it will be converted back to a paragraph."
   []
   (let [state @state/!editor-state
         selection (:selection state)]
@@ -1213,16 +1216,20 @@
       (let [path (:path (:start selection))
             block-index (first path)
             block (get-block-at-path (:doc state) path)
-            current-level (get-in block [:data :level] 0)
-            new-level (max (dec current-level) 0)]
-        (when (pos? current-level)
-          (swap! state/!editor-state
-            (fn [curr]
-              (let [updated-doc (-> (update-in (:doc curr) 
-                                              [:children block-index :data :level] 
-                                              (constantly new-level))
-                                    update-numbered-list-indices!)]
-                (hist/push-history curr updated-doc)))))))))
+            current-level (get-in block [:data :level] 0)]
+        (if (pos? current-level)
+          ;; Decrease level if level > 0
+          (let [new-level (dec current-level)]
+            (swap! state/!editor-state
+              (fn [curr]
+                (let [updated-doc (-> (update-in (:doc curr) 
+                                                [:children block-index :data :level] 
+                                                (constantly new-level))
+                                      update-numbered-list-indices!)]
+                  (hist/push-history curr updated-doc)))))
+          ;; If level is 0 and it's a list/todo, convert to paragraph
+          (when (contains? #{:numbered-list :bulleted-list :todo} (:type block))
+            (convert-list-to-paragraph!)))))))
 
 (defn update-numbered-list-indices!
   "Update the index numbers for all numbered list items in the document"

@@ -117,6 +117,20 @@
              .width 200.0
              .fit m/BoxFit.fitWidth)))
 
+(defn- get-numbered-label [index level]
+  (let [type-idx (mod level 3)]
+    (case type-idx
+      ;; Level 0, 3, 6...: 1, 2, 3...
+      0 (str index ".")
+      ;; Level 1, 4, 7...: a, b, c...
+      1 (let [a-code (.codeUnitAt "a" 0)
+              char-code (+ a-code (mod (dec index) 26))]
+          (str (String/fromCharCode char-code) "."))
+      ;; Level 2, 5, 8...: i, ii, iii... (simplified)
+      2 (let [romans ["i" "ii" "iii" "iv" "v" "vi" "vii" "viii" "ix" "x"]]
+          (str (if (<= 1 index 10) (nth romans (dec index)) index) "."))
+      (str index "."))))
+
 (defn numbered-list-block 
   "Render numbered list item"
   [path block text-keys-atom]
@@ -132,7 +146,8 @@
                                      (fn [idx m]
                                        (when (:is-current? m) idx))
                                      block-matches))
-         index (get-in block [:data :index] 1)]
+         index (get-in block [:data :index] 1)
+         level (get-in block [:data :level] 0)]
    (m/Column
     :crossAxisAlignment m/CrossAxisAlignment.start
     :children
@@ -140,10 +155,10 @@
       :height 36.0
       :alignment m/Alignment.topCenter
       :padding (m/EdgeInsets.only .top 2.0)
-      :child (m/Text (str index ".") 
-                     :style (m/TextStyle :fontSize 16.0 
-                                       :fontWeight m/FontWeight.bold
-                                       :color m/Colors.blueGrey)))
+      :child (mgl/MongolText (get-numbered-label index level) 
+                            :style (m/TextStyle :fontSize 16.0 
+                                              :fontWeight m/FontWeight.bold
+                                              :color m/Colors.blueGrey)))
      (m/Container
       :constraints (m/BoxConstraints .minWidth 16.0)
       :padding (m/EdgeInsets.only :bottom 4.0)
@@ -169,7 +184,8 @@
          block-current-index (first (keep-indexed
                                      (fn [idx m]
                                        (when (:is-current? m) idx))
-                                     block-matches))]
+                                     block-matches))
+         level (get-in block [:data :level] 0)]
    (m/Column
     :crossAxisAlignment m/CrossAxisAlignment.start
     :children
@@ -177,12 +193,28 @@
       :height 36.0
       :alignment m/Alignment.topCenter
       :padding (m/EdgeInsets.only .top 4.0)
-      :child (m/Container
-              :width 8.0
-              :height 8.0
-              :decoration (m/BoxDecoration
-                           :color m/Colors.blueGrey
-                           :shape m/BoxShape.circle)))
+      :child (let [bullet-type (mod level 3)]
+               (case bullet-type
+                 ;; Level 0: Solid circle
+                 0 (m/Container
+                    :width 8.0
+                    :height 8.0
+                    :decoration (m/BoxDecoration
+                                 :color m/Colors.blueGrey
+                                 :shape m/BoxShape.circle))
+                 ;; Level 1: Hollow circle
+                 1 (m/Container
+                    :width 8.0
+                    :height 8.0
+                    :decoration (m/BoxDecoration
+                                 :border (m/Border.all :color m/Colors.blueGrey :width 1.5)
+                                 :shape m/BoxShape.circle))
+                 ;; Level 2: Solid square
+                 2 (m/Container
+                    :width 6.0
+                    :height 6.0
+                    :decoration (m/BoxDecoration
+                                 :color m/Colors.blueGrey)))))
      (m/Container
       :constraints (m/BoxConstraints .minWidth 16.0)
       :padding (m/EdgeInsets.only :bottom 4.0)

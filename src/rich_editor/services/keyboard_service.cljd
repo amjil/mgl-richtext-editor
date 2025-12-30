@@ -72,7 +72,11 @@
   
   ;; Search shortcuts
   (register-shortcut! :cmd-f #(search-cmd/show-find-dialog!))
-  (register-shortcut! :cmd-h #(search-cmd/show-replace-dialog!)))
+  (register-shortcut! :cmd-h #(search-cmd/show-replace-dialog!))
+  
+  ;; Indentation shortcuts
+  (register-shortcut! :tab #(cmd/indent-block!))
+  (register-shortcut! :shift-tab #(cmd/outdent-block!)))
 
 ;; =============================================================
 ;; Keyboard event handling
@@ -89,6 +93,9 @@
         key-label (.-keyLabel logical-key)
         key-id (.-keyId logical-key)]
     (cond
+      ;; Tab / Shift + Tab
+      (and is-shift (= key-label "Tab")) :shift-tab
+      (= key-label "Tab") :tab
       ;; Cmd/Ctrl + B (bold)
       (and is-meta (= key-label "b")) :cmd-b
       ;; Cmd/Ctrl + I (italic)
