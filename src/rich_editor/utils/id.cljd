@@ -1,0 +1,11 @@
+(ns rich-editor.utils.id
+  (:require ["package:uuid/uuid.dart" :as uuid]))
+
+(defonce ^:private uuid-gen (uuid/Uuid.))
+
+(defn gen-id []
+  (.v4 uuid-gen))
+
+(defn gen-block-id []
+  (str "b-" (gen-id)))
+

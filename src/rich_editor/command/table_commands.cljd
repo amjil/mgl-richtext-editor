@@ -1,5 +1,6 @@
 (ns rich-editor.command.table-commands
   (:require [rich-editor.state :as state]
+            [rich-editor.utils.id :as id]
             [rich-editor.utils.history :as hist]))
 
 ;; =============================================================
@@ -7,8 +8,8 @@
 ;; =============================================================
 
 (defn- generate-block-id []
-  ;; Use timestamp for unique ID generation
-  (str "b" (.-millisecondsSinceEpoch (dart:core/DateTime.now))))
+  ;; Use UUID for unique ID generation
+  (id/gen-block-id))
 
 (defn- get-block-at-path [doc path]
   (get-in doc [:children (first path)]))

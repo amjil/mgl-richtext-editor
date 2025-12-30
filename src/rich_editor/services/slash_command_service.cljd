@@ -1,12 +1,12 @@
 (ns rich-editor.services.slash-command-service
-  (:require [rich-editor.state :as state]
+  (:require [rich-editor.ui-state :as ui]
             [rich-editor.command.text-commands :as text-cmd]
             [clojure.string :as str]))
 
 ;; =============================================================
 ;; State Management
 ;; =============================================================
-;; Note: Slash command state is now stored in state/!editor-state
+;; Note: Slash command state is now stored in ui/!ui-state
 ;; under :slash-command-active and :slash-command-query keys
 
 ;; Commands are defined in rich-editor.command.text-commands
@@ -39,17 +39,17 @@
 (defn activate-slash-command!
   "Activate slash command mode"
   []
-  (swap! state/!editor-state assoc :slash-command-active true :slash-command-query ""))
+  (ui/set-slash-command! true ""))
 
 (defn deactivate-slash-command!
   "Deactivate slash command mode"
   []
-  (swap! state/!editor-state assoc :slash-command-active false :slash-command-query ""))
+  (ui/set-slash-command! false ""))
 
 (defn update-slash-command-query!
   "Update query string"
   [query]
-  (swap! state/!editor-state assoc :slash-command-query query))
+  (ui/set-slash-command! true query))
 
 ;; =============================================================
 ;; Command Execution
@@ -70,6 +70,6 @@
 (defn get-filtered-commands
   "Get filtered command list (for UI display)"
   []
-  (let [query (:slash-command-query @state/!editor-state)]
+  (let [query (:slash-command-query @ui/!ui-state)]
     (filter-commands query)))
 

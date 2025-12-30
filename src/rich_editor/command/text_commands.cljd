@@ -4,8 +4,10 @@
             [rich-editor.model.delta :as delta]
             [rich-editor.model.transaction :as tx]
             [rich-editor.state :as state]
+            [rich-editor.ui-state :as ui]
             [rich-editor.utils.history :as hist]
             [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.utils.id :as id]
             [rich-editor.services.scroll-service :as scroll-service]
             [rich-editor.services.markdown-service :as markdown-service]
             [rich-editor.command.table-commands :as table-cmd]
@@ -304,7 +306,7 @@
               (if current-delta
                 (let [before-delta (delta/slice-delta current-delta 0 offset)
                       after-delta (delta/slice-delta current-delta offset (get-delta-text-length current-delta))
-                      new-block-id (str "b" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
+                      new-block-id (id/gen-block-id)
                       ;; New block inherits type and attributes
                       new-block (assoc block 
                                   :id new-block-id 
@@ -344,18 +346,18 @@
         
         (cond
           ;; Detect slash command
-          (and (= text "/") (not (:slash-command-active @state/!editor-state)))
+          (and (= text "/") (not (:slash-command-active @ui/!ui-state)))
           (do
-            (swap! state/!editor-state assoc :slash-command-active true :slash-command-query "")
+            (ui/set-slash-command! true "")
             ;; Insert "/" normally
             (insert-text-internal! text))
           
           ;; In slash command mode
-          (:slash-command-active @state/!editor-state)
+          (:slash-command-active @ui/!ui-state)
           (cond
             (str/includes? text "\n") ; Enter executes command
-            (let [current-state @state/!editor-state
-                  query (:slash-command-query current-state)
+            (let [ui-state @ui/!ui-state
+                  query (:slash-command-query ui-state)
                   commands (get-slash-commands)
                   filtered (if (empty? query)
                             commands
@@ -381,10 +383,9 @@
                             new-selection (sel/make-selection
                                            (sel/make-position path delete-start)
                                            (sel/make-position path delete-start))]
+                        (ui/set-slash-command! false "")
                         (-> (hist/push-history curr updated-doc)
-                            (assoc :selection new-selection
-                                   :slash-command-active false
-                                   :slash-command-query "")))))
+                            (assoc :selection new-selection)))))
                   ;; Execute command
                   (when-let [cmd (first (filter #(= (:id %) cmd-id) commands))]
                     (when-let [action (:action cmd)]
@@ -393,12 +394,12 @@
               nil)
             
             (= text "\u0008") ; Backspace
-            (let [current-state @state/!editor-state
-                  current-query (:slash-command-query current-state)]
+            (let [ui-state @ui/!ui-state
+                  current-query (:slash-command-query ui-state)]
               (if (empty? current-query)
                 ;; If query is empty, cancel slash command mode
                 (do
-                  (swap! state/!editor-state assoc :slash-command-active false :slash-command-query "")
+                  (ui/set-slash-command! false "")
                   ;; Delete "/"
                   (let [delete-start (dec offset)
                         delete-end offset]
@@ -415,15 +416,13 @@
                               (assoc :selection new-selection)))))))
                 ;; Update query and delete normally
                 (do
-                  (swap! state/!editor-state assoc :slash-command-query
-                         (subs current-query 0 (dec (count current-query))))
+                  (ui/set-slash-command! true (subs current-query 0 (dec (count current-query))))
                   (insert-text-internal! text))))
             
             :else
             ;; Update query and insert text
             (do
-              (swap! state/!editor-state update :slash-command-query
-                     #(str % text))
+              (ui/set-slash-command! true (str (:slash-command-query @ui/!ui-state) text))
               (insert-text-internal! text)))
           
           ;; Handle newline - split block (Normal mode)
@@ -1130,7 +1129,7 @@
             (fn [curr]
               (let [old-blocks (:children (:doc curr))
                     ;; Create a copy of the block with a new ID
-                    copied-block (assoc block :id (str "b" (.-millisecondsSinceEpoch (dart:core/DateTime.now))))
+                    copied-block (assoc block :id (id/gen-block-id))
                     ;; Insert the copied block after the current block
                     new-blocks (vec (concat (subvec old-blocks 0 (inc block-index))
                                           [copied-block]
@@ -1577,7 +1576,7 @@
 ;; =============================================================
 
 (defn- generate-block-id []
-  (str "b" (.-millisecondsSinceEpoch (dart:core/DateTime.now))))
+  (id/gen-block-id))
 
 (defn- get-block-at-path-for-slash [doc path]
   (get-in doc [:children (first path)]))

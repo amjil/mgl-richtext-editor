@@ -1,6 +1,7 @@
 (ns rich-editor.ui.editor-main
   (:require [cljd.flutter :as f]
             [rich-editor.state :refer [!editor-state]]
+            [rich-editor.ui-state :as ui]
             [rich-editor.ui.block-view :refer [block-entry]]
             [rich-editor.ui.mongol-virtual-keyboard :refer [virtual-keyboard-wrapper]]
             [rich-editor.ui.find-replace-dialog :refer [find-replace-dialog]]
@@ -12,6 +13,7 @@
             [rich-editor.model.selection :as sel]
             [rich-editor.services.scroll-service :as scroll-service]
             [rich-editor.services.desktop-input-service :as desktop-input]
+            [rich-editor.services.layout-service :as layout-service]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/services.dart" :as srv]
             ["package:flutter/foundation.dart" :as foundation]
@@ -49,10 +51,11 @@
              ;; and .dispose() is called automatically when unmounted.
              _kb-handler (init-keyboard!)
              :dispose false]
-   :watch [state !editor-state]
+   :watch [state !editor-state
+           ui-state ui/!ui-state]
    :let [blocks (get-in state [:doc :children])
          selection (:selection state)
-         slash-command-active? (:slash-command-active state)
+         slash-command-active? (:slash-command-active ui-state)
          has-selection (some? selection)
          has-focus (some? (:focused-path state))
          show-keyboard? (and (not foundation/kIsWeb) (or has-selection has-focus))
@@ -65,11 +68,11 @@
                (swap! !editor-state assoc :selection initial-selection)))
          
          computed-slash-position (when (and slash-command-active? selection)
-                                   (let [normalized (sel/normalize selection)
-                                         path (:path (:start normalized))
-                                         offset (:offset (:start normalized))
-                                         menu-position (m/Offset. (* (first path) 200.0) (* offset 20.0))]
-                                     menu-position))]
+                                   (if-let [global-pos (layout-service/get-selection-global-position selection :start)]
+                                     ;; Offset menu relative to cursor
+                                     (m/Offset. (.-dx global-pos) (+ (.-dy global-pos) 24.0))
+                                     ;; Fallback if layout not ready
+                                     (m/Offset. 100.0 100.0)))]
    (MongolEditorView
     .hasSelection has-selection
     .onKeyEvent (fn [event] (kb-service/handle-key-event! event))

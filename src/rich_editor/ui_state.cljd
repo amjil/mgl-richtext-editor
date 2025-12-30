@@ -1,0 +1,33 @@
+(ns rich-editor.ui-state)
+
+(defonce !ui-state
+  (atom {:search {:search-term ""
+                  :replace-term ""
+                  :matches []
+                  :current-match-index -1
+                  :case-sensitive? false
+                  :show-dialog? false
+                  :replace-mode? false}
+         ;; Selection menu related state
+         :selection-menu {:show? false
+                          :position nil}
+         ;; Slash command menu related state
+         :slash-command-menu {:show? false
+                              :position nil}
+         ;; Slash command state
+         :slash-command-active false
+         :slash-command-query ""
+         ;; Mouse/Gestures transient state
+         :pan-start-position nil}))
+
+;; --- Helpers to update UI state ---
+
+(defn update-search! [f & args]
+  (swap! !ui-state update :search #(apply f % args)))
+
+(defn set-selection-menu! [show? position]
+  (swap! !ui-state assoc :selection-menu {:show? show? :position position}))
+
+(defn set-slash-command! [active? query]
+  (swap! !ui-state assoc :slash-command-active active? :slash-command-query query))
+

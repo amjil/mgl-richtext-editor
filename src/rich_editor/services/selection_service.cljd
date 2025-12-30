@@ -1,5 +1,6 @@
 (ns rich-editor.services.selection-service
   (:require [rich-editor.model.selection :as sel]
+            [rich-editor.ui-state :as ui]
             [rich-editor.services.node-service :as node-service]
             [rich-editor.services.scroll-service :as scroll-service]
             [rich-editor.services.selection-geometry :as geom]
@@ -25,11 +26,11 @@
             new-selection (sel/make-selection new-pos new-pos)]
         ;; Request focus for the clicked node
         (node-service/focus-node! path)
-        (swap! !editor-state assoc
-               :selection new-selection
-               :pan-start-position new-pos)) ;; record the starting point for drag usage
+        (swap! !editor-state assoc :selection new-selection)
+        (swap! ui/!ui-state assoc :pan-start-position new-pos)) ;; record the starting point for drag usage
       ;; click on the blank area, clear the selection
-      (swap! !editor-state assoc :selection nil :pan-start-position nil))))
+      (do (swap! !editor-state assoc :selection nil)
+          (swap! ui/!ui-state assoc :pan-start-position nil)))))
 
 (defn handle-secondary-tap-down!
   "handle the right-click event: show the context menu at the click position"
@@ -52,7 +53,8 @@
   (let [global-pos (.-globalPosition details)
         node (node-service/get-node-at-offset global-pos)
         state @!editor-state
-        start-pos (:pan-start-position state)]
+        ui-state @ui/!ui-state
+        start-pos (:pan-start-position ui-state)]
 
     (when (and start-pos node)
       (let [{:keys [path selectable render-box]} node
@@ -76,7 +78,7 @@
   ;; when the drag ends, usually no need to modify the selection, but can clear the temporary state
   (let [state @!editor-state
         selection (:selection state)]
-    (swap! !editor-state dissoc :pan-start-position)
+    (swap! ui/!ui-state dissoc :pan-start-position)
     ;; Show selection menu if there's a non-collapsed selection
     (when (and selection (not (sel/collapsed? selection)))
       (let [start-path (get-in selection [:start :path])]

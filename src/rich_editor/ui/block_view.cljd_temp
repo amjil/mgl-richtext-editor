@@ -1,0 +1,42 @@
+(defn block-entry [path block text-keys-atom]
+  (f/widget
+   :key (m/ValueKey (:id block))
+   (block-wrapper path block
+    (case (:type block)
+      :paragraph (paragraph-block path block text-keys-atom)
+      :image     (image-block block)
+      :h1        (heading-block path block text-keys-atom 28.0)
+      :h2        (heading-block path block text-keys-atom 24.0)
+      :h3        (heading-block path block text-keys-atom 20.0)
+      :numbered-list (numbered-list-block path block text-keys-atom)
+      :bulleted-list (bulleted-list-block path block text-keys-atom)
+      :todo      (todo-block path block text-keys-atom)
+      :quote     (quote-block path block text-keys-atom)
+      :divider   (divider-block path block)
+      :code-block (code-block path block)
+      :table     (table-block path block text-keys-atom)
+      ;; fallback handling
+      (do (log/log-warn (str "Unsupported block type: " (:type block)))
+          (mgl/MongolText (str "Unsupported block: " (:type block))))))))
+
+(defn block-view [path block text-keys-atom]
+  (let [type (:type block)]
+    (m/Container
+     .margin (m/EdgeInsets.only .right 2.0)
+     .child
+     (case type
+       :paragraph (selectable-mongol-text
+                   {:path path
+                    :delta (get-in block [:data :delta])
+                    :text-keys-atom text-keys-atom})
+       :h1        (selectable-mongol-text
+                   {:path path
+                    :delta (get-in block [:data :delta])
+                    :text-style (m/TextStyle .fontSize 32.0 .fontWeight m/FontWeight.bold)
+                    :text-keys-atom text-keys-atom})
+       :todo      (todo-block path block text-keys-atom)
+       :image     (image-block block)
+       :numbered-list (numbered-list-block path block text-keys-atom)
+       :bulleted-list (bulleted-list-block path block text-keys-atom)
+       (m/Text (str "Unknown Block: " type))))))
+

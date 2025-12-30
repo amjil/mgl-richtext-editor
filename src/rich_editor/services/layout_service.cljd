@@ -1,0 +1,43 @@
+(ns rich-editor.services.layout-service
+  (:require [rich-editor.services.node-service :as node-service]
+            [rich-editor.services.selection-geometry :as geom]
+            [rich-editor.selection-utils :as sel-util]
+            [rich-editor.model.selection :as sel]
+            ["package:flutter/material.dart" :as m]))
+
+(defn get-selection-global-position
+  "Calculates the global position of the selection (start or end).
+   Returns an Offset or nil if not found or if the layout is not ready."
+  [selection type]
+  (try
+    (when selection
+      (let [normalized (sel/normalize selection)
+            target-pos (if (= type :start) (:start normalized) (:end normalized))
+            path (:path target-pos)]
+        (if-let [node (node-service/get-selectable-by-path path)]
+          (let [selectable (:selectable node)
+                render-box (:render-box node)]
+            (if (and selectable render-box (.-attached render-box))
+              (let [node-text (.toPlainText (.-text selectable))
+                    node-len (count node-text)
+                    flutter-sel (sel-util/to-text-selection path selection node-len)]
+                (if (and flutter-sel (not (.-isCollapsed flutter-sel)))
+                  (let [rects (.getBoxesForSelection selectable flutter-sel)]
+                    (if (seq rects)
+                      (let [local-offset (geom/calculate-handle-offsets rects type)]
+                        (.localToGlobal render-box local-offset))
+                      ;; If no rects (e.g. empty selection), use cursor position
+                      (let [pos (if (= type :start) (.-baseOffset flutter-sel) (.-extentOffset flutter-sel))
+                            local-offset (.getOffsetForCaret selectable (m/TextPosition .offset pos))]
+                        (.localToGlobal render-box local-offset))))
+                  ;; Collapsed or nil selection - use cursor position
+                  (let [pos (if flutter-sel (.-baseOffset flutter-sel) 0)
+                        local-offset (.getOffsetForCaret selectable (m/TextPosition .offset pos))]
+                    (.localToGlobal render-box local-offset))))
+              nil))
+          nil)))
+    (catch Object e
+      ;; Log error and return nil to avoid crashing UI
+      (dart:core/print (str "Error in get-selection-global-position: " e))
+      nil)))
+

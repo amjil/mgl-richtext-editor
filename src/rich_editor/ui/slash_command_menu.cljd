@@ -1,7 +1,7 @@
 (ns rich-editor.ui.slash-command-menu
   (:require [cljd.flutter :as f]
             [rich-editor.services.slash-command-service :as slash-cmd]
-            [rich-editor.state :as state]
+            [rich-editor.ui-state :as ui]
             ["package:flutter/material.dart" :as m]))
 
 ;; =============================================================
@@ -10,9 +10,9 @@
 
 (defn slash-command-menu [{:keys [position on-command-selected]}]
   (f/widget
-   :watch [editor-state (f/$ (f/<! state/!editor-state))]
-   :let [active (:slash-command-active editor-state)
-         _query (:slash-command-query editor-state)]
+   :watch [ui-state ui/!ui-state]
+   :let [active (:slash-command-active ui-state)
+         _query (:slash-command-query ui-state)]
    
    (if (and active (seq (slash-cmd/get-filtered-commands)))
      (let [filtered-commands (slash-cmd/get-filtered-commands)]

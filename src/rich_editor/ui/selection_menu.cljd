@@ -1,6 +1,7 @@
 (ns rich-editor.ui.selection-menu
   (:require [cljd.flutter :as f]
             [rich-editor.state :as state]
+            [rich-editor.ui-state :as ui]
             [rich-editor.command.text-commands :as text-cmd]
             [rich-editor.model.selection :as sel]
             ["package:flutter/material.dart" :as m]
@@ -11,18 +12,10 @@
 ;; =============================================================
 
 (defn show-selection-menu! [position]
-  (swap! state/!editor-state
-    (fn [curr]
-      (-> curr
-          (assoc-in [:selection-menu :show?] true)
-          (assoc-in [:selection-menu :position] position)))))
+  (ui/set-selection-menu! true position))
 
 (defn hide-selection-menu! []
-  (swap! state/!editor-state
-    (fn [curr]
-      (-> curr
-          (assoc-in [:selection-menu :show?] false)
-          (assoc-in [:selection-menu :position] nil)))))
+  (ui/set-selection-menu! false nil))
 
 ;; =============================================================
 ;; Selection menu UI component
@@ -41,7 +34,7 @@
 (defn selection-menu-content []
   (f/widget
    :context ctx
-   :watch [editor-state (f/$ (f/<! state/!editor-state))]
+   :watch [editor-state state/!editor-state]
    :let [selection (:selection editor-state)
          is-mobile? (not foundation/kIsWeb)
          screen-width (.-width (.-size (m/MediaQuery.of ctx)))
@@ -88,8 +81,8 @@
 (defn selection-menu
   []
   (f/widget
-   :watch [show? (f/$ (get-in (f/<! state/!editor-state) [:selection-menu :show?]))
-           position (f/$ (get-in (f/<! state/!editor-state) [:selection-menu :position]))]
+   :watch [ui-state ui/!ui-state]
+   :let [{:keys [show? position]} (:selection-menu ui-state)]
    (if (and show? position)
      (m/Positioned
       :left (.-dx position)

@@ -2,7 +2,8 @@
   (:require [rich-editor.utils.history :as hist]
             [rich-editor.model.transaction :as tx]
             [rich-editor.model.node :as node]
-            [rich-editor.utils.delta :as delta-utils]))
+            [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.utils.logger :as log]))
 
 ;; 1. define the initial state
 (defonce !editor-state
@@ -12,24 +13,7 @@
          :redo-stack []
          :focused-path nil
          :last-edited-at 0
-         :last-op-type nil
-         ;; Search and replace related state
-         :search {:search-term ""
-                  :replace-term ""
-                  :matches []
-                  :current-match-index -1
-                  :case-sensitive? false
-                  :show-dialog? false
-                  :replace-mode? false}
-         ;; Selection menu related state
-         :selection-menu {:show? false
-                          :position nil}
-         ;; Slash command menu related state
-         :slash-command-menu {:show? false
-                              :position nil}
-         ;; Slash command state
-         :slash-command-active false
-         :slash-command-query ""})) ;; store the timestamp in milliseconds
+         :last-op-type nil})) ;; store the timestamp in milliseconds
 
 (defn focus-block! [path]
   (swap! !editor-state assoc :focused-path path))
@@ -84,18 +68,18 @@
                          :ops [(tx/update-text-op path new-delta)]
                          :after-selection (:selection curr))]
         (commit-with-history! transaction current-op-type))
-      (dart:core/print (str "Warning: Ignored on-text-changed! with invalid path: " path)))))
+      (log/log-warn (str "Ignored on-text-changed! with invalid path: " path)))))
 
 (defn update-block-data! [path data]
   (let [curr @!editor-state
         children (get-in curr [:doc :children])
         idx (first path)]
     (if (and (number? idx) (>= idx 0) (< idx (count children)))
-      (let [transaction (tx/make-transaction
+      (let [            transaction (tx/make-transaction
                          :ops [(tx/update-data-op path data)]
                          :after-selection (:selection curr))]
         (tx/commit-transaction! !editor-state transaction))
-      (dart:core/print (str "Warning: Ignored update-block-data! with invalid path: " path)))))
+      (log/log-warn (str "Ignored update-block-data! with invalid path: " path)))))
 
 (defn delete-block! [path]
   (let [curr @!editor-state
@@ -120,4 +104,4 @@
                            :after-selection new-selection)]
           (tx/commit-transaction! !editor-state transaction)
           (swap! !editor-state assoc :focused-path new-focused-path :selection new-selection)))
-      (dart:core/print (str "Warning: Ignored delete-block! with invalid path: " path)))))
+      (log/log-warn (str "Ignored delete-block! with invalid path: " path)))))

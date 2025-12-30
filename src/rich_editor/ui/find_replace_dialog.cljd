@@ -1,6 +1,6 @@
 (ns rich-editor.ui.find-replace-dialog
   (:require [cljd.flutter :as f]
-            [rich-editor.state :as state]
+            [rich-editor.ui-state :as ui]
             [rich-editor.command.search-commands :as search-cmd]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/foundation.dart" :as foundation]))
@@ -15,8 +15,9 @@
   (f/widget
    :context ctx
    :get [m/MediaQuery]
-   :watch [search-state (f/$ (get-in (f/<! state/!editor-state) [:search]))]
-   :let [show-dialog? (:show-dialog? search-state)
+   :watch [ui-state ui/!ui-state]
+   :let [search-state (:search ui-state)
+         show-dialog? (:show-dialog? search-state)
          replace-mode? (:replace-mode? search-state)
          search-term (:search-term search-state)
          replace-term (:replace-term search-state)

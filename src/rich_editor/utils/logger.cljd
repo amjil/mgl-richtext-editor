@@ -1,0 +1,14 @@
+(ns rich-editor.utils.logger
+  (:require ["package:flutter/foundation.dart" :as foundation]))
+
+(defn log-warn [message]
+  (foundation/debugPrint (str "⚠️ [WARN] " message)))
+
+(defn log-error [message & [error stack-trace]]
+  (foundation/debugPrint (str "❌ [ERROR] " message))
+  (when error (foundation/debugPrint (str "Error: " error)))
+  (when stack-trace (foundation/debugPrint (str "Stacktrace: " stack-trace))))
+
+(defn log-info [message]
+  (foundation/debugPrint (str "ℹ️ [INFO] " message)))
+
