@@ -32,7 +32,10 @@
    :type :table
    :data {:rows (vec (for [_r (range rows)]
                        {:cells (vec (for [_c (range cols)]
-                                      {:delta {:operations []}}))}))}})
+                                      {:delta {:operations []}
+                                       :attributes {:rowspan 1 :colspan 1}}))}))
+          :column-widths (vec (repeat cols 150.0))
+          :row-heights (vec (repeat rows 120.0))}})
 
 (defn insert-table!
   "Insert a new table block after the current block"
@@ -72,12 +75,16 @@
                             2
                             (count (get-in rows [0 :cells] [])))
                  new-row {:cells (vec (for [_c (range col-count)]
-                                        {:delta {:operations []}}))}]
+                                        {:delta {:operations []}
+                                         :attributes {:rowspan 1 :colspan 1}}))}]
              (swap! state/!editor-state
                (fn [curr]
-                 (let [updated-doc (update-in (:doc curr) 
+                 (let [updated-rows (update-in (:doc curr) 
                                             [:children block-index :data :rows] 
-                                            #(conj (vec %) new-row))]
+                                            #(conj (vec %) new-row))
+                       updated-doc (update-in updated-rows 
+                                            [:children block-index :data :row-heights]
+                                            #(conj (vec %) 120.0))]
                    (hist/push-history curr updated-doc))))))))))
   ([row-index]
    (let [state @state/!editor-state
@@ -91,7 +98,8 @@
                             2
                             (count (get-in rows [0 :cells] [])))
                  new-row {:cells (vec (for [_c (range col-count)]
-                                        {:delta {:operations []}}))}
+                                        {:delta {:operations []}
+                                         :attributes {:rowspan 1 :colspan 1}}))}
                  clamped-index (min row-index (count rows))]
              (swap! state/!editor-state
                (fn [curr]
@@ -118,9 +126,14 @@
                 (fn [curr]
                   (let [updated-rows (vec (concat (subvec rows 0 row-index)
                                                  (subvec rows (inc row-index))))
-                        updated-doc (assoc-in (:doc curr) 
-                                           [:children block-index :data :rows] 
-                                           updated-rows)]
+                        row-heights (get-in curr [:doc :children block-index :data :row-heights])
+                        updated-heights (if row-heights
+                                          (vec (concat (subvec row-heights 0 row-index)
+                                                       (subvec row-heights (inc row-index))))
+                                          [])
+                        updated-doc (-> (:doc curr)
+                                        (assoc-in [:children block-index :data :rows] updated-rows)
+                                        (assoc-in [:children block-index :data :row-heights] updated-heights))]
                     (hist/push-history curr updated-doc)))))))))))
 
 ;; =============================================================
@@ -144,11 +157,12 @@
                (fn [curr]
                  (let [updated-rows (vec (map (fn [row]
                                                (update-in row [:cells] 
-                                                          #(conj (vec %) {:delta {:operations []}})))
+                                                          #(conj (vec %) {:delta {:operations []}
+                                                                          :attributes {:rowspan 1 :colspan 1}})))
                                              default-rows))
-                       updated-doc (assoc-in (:doc curr) 
-                                           [:children block-index :data :rows] 
-                                           updated-rows)]
+                       updated-doc (-> (:doc curr)
+                                       (assoc-in [:children block-index :data :rows] updated-rows)
+                                       (update-in [:children block-index :data :column-widths] #(conj (vec %) 150.0)))]
                    (hist/push-history curr updated-doc))))))))))
   ([col-index]
    (let [state @state/!editor-state
@@ -168,7 +182,8 @@
                                                    (let [cells (:cells row)]
                                                      (assoc row :cells 
                                                             (vec (concat (subvec cells 0 clamped-index)
-                                                                         [{:delta {:operations []}}]
+                                                                         [{:delta {:operations []}
+                                                                           :attributes {:rowspan 1 :colspan 1}}]
                                                                          (subvec cells clamped-index))))))
                                                  rows))
                            updated-doc (assoc-in (:doc curr) 
@@ -196,30 +211,83 @@
                                                          (vec (concat (subvec cells 0 col-index)
                                                                      (subvec cells (inc col-index)))))))
                                               rows))
-                        updated-doc (assoc-in (:doc curr) 
-                                            [:children block-index :data :rows] 
-                                            updated-rows)]
+                        col-widths (get-in curr [:doc :children block-index :data :column-widths])
+                        updated-widths (if col-widths
+                                         (vec (concat (subvec col-widths 0 col-index)
+                                                      (subvec col-widths (inc col-index))))
+                                         [])
+                        updated-doc (-> (:doc curr)
+                                        (assoc-in [:children block-index :data :rows] updated-rows)
+                                        (assoc-in [:children block-index :data :column-widths] updated-widths))]
                     (hist/push-history curr updated-doc)))))))))))
 
 ;; =============================================================
 ;; Table Formatting
 ;; =============================================================
 
-(defn format-table-cell!
-  "Format a specific table cell with given attributes"
-  [row-index col-index attributes]
+(defn merge-cells!
+  "Merge cells starting from [row-index, col-index] with given rowspan and colspan"
+  [row-index col-index rowspan colspan]
   (let [state @state/!editor-state
         focused-path (:focused-path state)]
     (when focused-path
       (let [block-index (first focused-path)]
         (swap! state/!editor-state
           (fn [curr]
-            ;; For now, we'll store formatting in cell metadata
-            ;; In the future, this could apply formatting to the delta
-            (let [updated-doc (update-in (:doc curr) 
-                                       [:children block-index :data :rows row-index :cells col-index]
-                                       #(assoc % :format attributes))]
+            (let [rows (get-in curr [:doc :children block-index :data :rows])
+                  ;; Mark the top-left cell with new rowspan/colspan
+                  updated-rows (update-in rows [row-index :cells col-index :attributes]
+                                          #(merge (or % {}) {:rowspan rowspan :colspan colspan}))
+                  ;; Mark other cells in the merge range as hidden
+                  updated-rows (reduce
+                                (fn [rs r-idx]
+                                  (reduce
+                                   (fn [rs2 c-idx]
+                                     (if (and (= r-idx row-index) (= c-idx col-index))
+                                       rs2
+                                       (assoc-in rs2 [r-idx :cells c-idx :attributes :hidden] true)))
+                                   rs
+                                   (range col-index (+ col-index colspan))))
+                                updated-rows
+                                (range row-index (+ row-index rowspan)))
+                  updated-doc (assoc-in (:doc curr) 
+                                       [:children block-index :data :rows] 
+                                       updated-rows)]
               (hist/push-history curr updated-doc))))))))
+
+(defn split-cell!
+  "Split a previously merged cell at [row-index, col-index]"
+  [row-index col-index]
+  (let [state @state/!editor-state
+        focused-path (:focused-path state)]
+    (when focused-path
+      (let [block-index (first focused-path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [rows (get-in curr [:doc :children block-index :data :rows])
+                  cell (get-in rows [row-index :cells col-index])
+                  rowspan (get-in cell [:attributes :rowspan] 1)
+                  colspan (get-in cell [:attributes :colspan] 1)]
+              (if (and (= rowspan 1) (= colspan 1))
+                curr ;; Nothing to split
+                (let [;; Reset the top-left cell
+                      updated-rows (update-in rows [row-index :cells col-index :attributes]
+                                              #(dissoc % :rowspan :colspan))
+                      ;; Unhide other cells
+                      updated-rows (reduce
+                                    (fn [rs r-idx]
+                                      (reduce
+                                       (fn [rs2 c-idx]
+                                         (update-in rs2 [r-idx :cells c-idx :attributes]
+                                                    #(dissoc % :hidden)))
+                                       rs
+                                       (range col-index (+ col-index colspan))))
+                                    updated-rows
+                                    (range row-index (+ row-index rowspan)))
+                      updated-doc (assoc-in (:doc curr) 
+                                           [:children block-index :data :rows] 
+                                           updated-rows)]
+                  (hist/push-history curr updated-doc))))))))))
 
 (defn set-table-border-style!
   "Set the border style for the entire table"
@@ -251,16 +319,51 @@
              (let [updated-rows (if (and row-index col-index)
                                  ;; Update specific cell
                                  (update-in rows 
-                                           [row-index :cells col-index]
-                                           #(assoc % :align alignment))
+                                           [row-index :cells col-index :attributes]
+                                           #(assoc (or % {}) :align alignment))
                                  ;; Update all cells
                                  (vec (map (fn [row]
                                             (update-in row [:cells]
                                                       #(vec (map (fn [cell]
-                                                                  (assoc cell :align alignment))
+                                                                  (update cell :attributes 
+                                                                          (fn [attrs] (assoc (or attrs {}) :align alignment))))
                                                                 %))))
                                           rows)))
                    updated-doc (assoc-in (:doc curr) 
                                        [:children block-index :data :rows] 
                                        updated-rows)]
                (hist/push-history curr updated-doc)))))))))
+
+(defn update-column-width!
+  "Update the width of a specific column"
+  [block-idx col-idx new-width]
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [updated-doc (assoc-in (:doc curr) 
+                                 [:children block-idx :data :column-widths col-idx] 
+                                 (max 30.0 new-width))]
+        (assoc curr :doc updated-doc)))))
+
+(defn update-row-height!
+  "Update the height of a specific row"
+  [block-idx row-idx new-height]
+  (swap! state/!editor-state
+    (fn [curr]
+      (let [updated-doc (assoc-in (:doc curr) 
+                                 [:children block-idx :data :row-heights row-idx] 
+                                 (max 30.0 new-height))]
+        (assoc curr :doc updated-doc)))))
+
+(defn format-table-cell!
+  "Format a specific table cell with given attributes"
+  [row-index col-index attributes]
+  (let [state @state/!editor-state
+        focused-path (:focused-path state)]
+    (when focused-path
+      (let [block-index (first focused-path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [updated-doc (update-in (:doc curr) 
+                                       [:children block-index :data :rows row-index :cells col-index :attributes]
+                                       #(merge (or % {}) attributes))]
+              (hist/push-history curr updated-doc))))))))

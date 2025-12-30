@@ -8,6 +8,7 @@
             [rich-editor.model.node :as node]
             [rich-editor.utils.logger :as log]
             [rich-editor.command.text-commands :as text-cmd]
+            [rich-editor.command.table-commands :as table-cmd]
             ["package:mongol/mongol.dart" :as mgl]
             ["package:mgl_editor_core/mongol_select.dart" :refer [MongolSelect MongolSelectItem]]
             ["package:flutter/material.dart" :as m]))
@@ -292,52 +293,95 @@
 
 (defn table-cell
   "Render table cell"
-  [table-path row-idx col-idx cell text-keys-atom]
+  [table-path row-idx col-idx cell text-keys-atom col-widths row-heights]
   (let [block-idx (first table-path)
         cell-path [block-idx :data :rows row-idx :cells col-idx :delta]
-        alignment (get cell :align :left)
+        attributes (get cell :attributes {})
+        rowspan (get attributes :rowspan 1)
+        colspan (get attributes :colspan 1)
+        ;; Calculate total width and height based on span
+        cell-width (if (and col-widths (>= (count col-widths) (+ col-idx colspan)))
+                     (reduce + (subvec col-widths col-idx (+ col-idx colspan)))
+                     (* colspan 150.0))
+        cell-height (if (and row-heights (>= (count row-heights) (+ row-idx rowspan)))
+                      (reduce + (subvec row-heights row-idx (+ row-idx rowspan)))
+                      (* rowspan 120.0))
+        alignment (or (:align attributes) (get cell :align :left))
+        bg-color-val (get attributes :background-color)
+        bg-color (if bg-color-val (m/Color bg-color-val) m/Colors.white)
+        border-color-val (get attributes :border-color)
+        border-color (if border-color-val (m/Color border-color-val) (m/Color 0xFFE0E0E0))
+        border-width (get attributes :border-width 1.0)
         align-value (case alignment
                       :center m/Alignment.topCenter
                       :right m/Alignment.topRight
                       :left m/Alignment.topLeft
                       m/Alignment.topLeft)]
-    (m/Container
-     .padding (m/EdgeInsets.all 12.0)
-     .decoration (m/BoxDecoration
-                  .color m/Colors.white
-                  .border (m/Border.all .color (m/Color 0xFFE0E0E0) .width 1.0))
-     .constraints (m/BoxConstraints .minHeight 120.0 .minWidth 60.0)
-     .alignment align-value
-     .child (f/widget
-            :watch [current-delta (f/$ (or (get-in (f/<! state/!editor-state) 
-                                                (conj (node/path->ks [block-idx :data :rows row-idx :cells col-idx]) :delta))
-                                         {:operations []}))]
-            (m/IntrinsicWidth
-             .child (selectable-mongol-text
-                     {:path cell-path
-                      :delta current-delta
-                      :text-keys-atom text-keys-atom
-                      :text-style (m/TextStyle :color (m/Color 0xFF000000) :fontSize 16.0)}))))))
+    (m/Stack
+     :children
+     [(m/Container
+       .width cell-width
+       .height cell-height
+       .padding (m/EdgeInsets.all 12.0)
+       .decoration (m/BoxDecoration
+                    .color bg-color
+                    .border (m/Border.all .color border-color .width border-width))
+       .alignment align-value
+       .child (f/widget
+               :watch [current-delta (f/$ (or (get-in (f/<! state/!editor-state) 
+                                                   (conj (node/path->ks [block-idx :data :rows row-idx :cells col-idx]) :delta))
+                                            {:operations []}))]
+               (m/IntrinsicWidth
+                .child (selectable-mongol-text
+                        {:path cell-path
+                         :delta current-delta
+                         :text-keys-atom text-keys-atom
+                         :text-style (m/TextStyle :color (m/Color 0xFF000000) :fontSize 16.0)}))))
+      ;; Column Resizer (Right edge)
+      (m/Positioned
+       :right 0.0 :top 0.0 :bottom 0.0
+       :child (m/GestureDetector
+               :behavior m/HitTestBehavior.opaque
+               :onHorizontalDragUpdate (fn [details]
+                                         (let [delta (.-dx (.-delta details))
+                                               current-width (nth col-widths col-idx)]
+                                           (table-cmd/update-column-width! block-idx col-idx (+ current-width delta))))
+               :child (m/Container :width 8.0 :color m/Colors.transparent)))
+      ;; Row Resizer (Bottom edge)
+      (m/Positioned
+       :left 0.0 :right 0.0 :bottom 0.0
+       :child (m/GestureDetector
+               :behavior m/HitTestBehavior.opaque
+               :onVerticalDragUpdate (fn [details]
+                                       (let [delta (.-dy (.-delta details))
+                                             current-height (nth row-heights row-idx)]
+                                         (table-cmd/update-row-height! block-idx row-idx (+ current-height delta))))
+               :child (m/Container :height 8.0 :color m/Colors.transparent)))])))
 
 (defn table-row
   "Render table row"
-  [table-path row-idx row text-keys-atom]
+  [table-path row-idx row text-keys-atom col-widths row-heights]
   (m/Row
    :mainAxisSize m/MainAxisSize.min
    :crossAxisAlignment m/CrossAxisAlignment.start
-   :children (map-indexed
-              (fn [col-idx cell]
-                (table-cell table-path row-idx col-idx cell text-keys-atom))
-              (get-in row [:cells] []))))
+   :children (->> (get-in row [:cells] [])
+                  (map-indexed (fn [col-idx cell] {:idx col-idx :cell cell}))
+                  (remove (fn [{:keys [cell]}] (get-in cell [:attributes :hidden])))
+                  (map (fn [{:keys [idx cell]}]
+                         (table-cell table-path row-idx idx cell text-keys-atom col-widths row-heights))))))
 
 (defn table-block
   "Render table block"
   [path block text-keys-atom]
   (let [rows (get-in block [:data :rows] [])
+        col-widths (get-in block [:data :column-widths])
+        row-heights (get-in block [:data :row-heights])
         ;; If no rows, create a default 2x2 table
         default-rows (if (empty? rows)
-                       [{:cells [{:delta {:operations []}} {:delta {:operations []}}]}
-                        {:cells [{:delta {:operations []}} {:delta {:operations []}}]}]
+                       [{:cells [{:delta {:operations []} :attributes {:rowspan 1 :colspan 1}} 
+                                 {:delta {:operations []} :attributes {:rowspan 1 :colspan 1}}]}
+                        {:cells [{:delta {:operations []} :attributes {:rowspan 1 :colspan 1}} 
+                                 {:delta {:operations []} :attributes {:rowspan 1 :colspan 1}}]}]
                        rows)]
     (m/Container
      :margin (m/EdgeInsets.symmetric :vertical 8.0)
@@ -352,13 +396,15 @@
      :clipBehavior m/Clip.antiAlias
      :child (m/SingleChildScrollView
              .scrollDirection m/Axis.vertical
-             .child (m/Column
-                     .mainAxisSize m/MainAxisSize.min
-                     .crossAxisAlignment m/CrossAxisAlignment.start
-                     .children (map-indexed
-                                (fn [row-idx row]
-                                  (table-row path row-idx row text-keys-atom))
-                                default-rows))))))
+             .child (m/SingleChildScrollView
+                     .scrollDirection m/Axis.horizontal
+                     .child (m/Column
+                             .mainAxisSize m/MainAxisSize.min
+                             .crossAxisAlignment m/CrossAxisAlignment.start
+                             .children (map-indexed
+                                        (fn [row-idx row]
+                                          (table-row path row-idx row text-keys-atom col-widths row-heights))
+                                        default-rows)))))))
 
 (defn block-menu-button [path block]
   (f/widget
