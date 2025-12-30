@@ -23,68 +23,97 @@
 
 (defn format-button [icon label on-pressed]
   (f/widget
-   (m/TextButton.icon
-    :icon (m/Icon icon :size 20.0)
-    :label (m/Text label :style (m/TextStyle :fontSize 14.0))
-    :onPressed on-pressed
-    :style (m/ButtonStyle
-            :padding (m/MaterialStateProperty.all
-                     (m/EdgeInsets.symmetric :horizontal 12.0 :vertical 8.0))))))
+   :context ctx
+   :let [color-scheme (.-colorScheme (m/Theme.of ctx))]
+   (m/Material
+    :color m/Colors.transparent
+    :child
+    (m/InkWell
+     :onTap on-pressed
+     :child
+     (m/Padding
+      :padding (m/EdgeInsets.symmetric :horizontal 16.0 :vertical 12.0)
+      :child
+      (m/Row
+       :mainAxisSize m/MainAxisSize.min
+       :children
+       [(m/Icon icon :size 20.0 :color (.-onSurface color-scheme))
+        (m/SizedBox :width 8.0)
+        (m/Text label :style (m/TextStyle :fontSize 14.0 :color (.-onSurface color-scheme)))]))))))
 
 (defn selection-menu-content []
   (f/widget
    :context ctx
    :watch [selection (f/$ (:selection (f/<! state/!editor-state)))
            focused-path (f/$ (:focused-path (f/<! state/!editor-state)))]
-   :let [is-mobile? (not foundation/kIsWeb)
+   :let [is-mobile? (or (not foundation/kIsWeb)
+                        (let [platform (foundation/defaultTargetPlatform)]
+                          (or (= platform m/TargetPlatform.iOS)
+                              (= platform m/TargetPlatform.android))))
          screen-width (.-width (.-size (m/MediaQuery.of ctx)))
          is-small-screen? (< screen-width 600.0)
-         use-vertical-layout? (or is-mobile? is-small-screen?)
+         use-horizontal-menu? (or is-mobile? is-small-screen?)
          has-selection? (and selection (not (sel/collapsed? selection)))]
    
    (if (or has-selection? (some? focused-path))
      (m/Container
       :constraints (m/BoxConstraints :maxWidth (- screen-width 32.0))
-      :padding (m/EdgeInsets.all 4.0)
       :decoration (m/BoxDecoration
                    :color (.-surface (-> m/Theme (.of ctx) .-colorScheme))
-                   :borderRadius (m/BorderRadius.circular 8.0)
+                   :borderRadius (m/BorderRadius.circular 24.0)
                    :boxShadow [(m/BoxShadow
                                 :color (m/Colors.black26)
                                 :blurRadius 8.0
                                 :offset (m/Offset. 0.0 2.0))])
+      :clipBehavior m/Clip.hardEdge
       :child
-      (m/SingleChildScrollView
-       :scrollDirection (if use-vertical-layout? m/Axis.vertical m/Axis.horizontal)
-       :child
-       (let [items (filter some?
-                           [(when has-selection?
-                              (format-button m/Icons.copy "Copy"
-                                             (fn [] (text-cmd/copy-selection!) (hide-selection-menu!))))
-                            (when has-selection?
-                              (format-button m/Icons.content_cut "Cut"
-                                             (fn [] (text-cmd/cut-selection!) (hide-selection-menu!))))
-                            (format-button m/Icons.paste "Paste"
-                                           (fn [] (text-cmd/paste-selection!) (hide-selection-menu!)))
-                            (format-button m/Icons.select_all "Select All"
-                                           (fn [] (text-cmd/select-all!) (hide-selection-menu!)))])]
-         (if use-vertical-layout?
+      (let [items (filter some?
+                          [(when has-selection?
+                             (format-button m/Icons.copy "Copy"
+                                            (fn [] (text-cmd/copy-selection!) (hide-selection-menu!))))
+                           (when has-selection?
+                             (format-button m/Icons.content_cut "Cut"
+                                            (fn [] (text-cmd/cut-selection!) (hide-selection-menu!))))
+                           (format-button m/Icons.paste "Paste"
+                                          (fn [] (text-cmd/paste-selection!) (hide-selection-menu!)))
+                           (format-button m/Icons.select_all "Select All"
+                                          (fn [] (text-cmd/select-all!) (hide-selection-menu!)))])]
+        (if use-horizontal-menu?
+          (m/SingleChildScrollView
+           :scrollDirection m/Axis.horizontal
+           :child (m/Row :mainAxisSize m/MainAxisSize.min :children items))
+          (m/IntrinsicWidth
+           :child
            (m/Column
             :mainAxisSize m/MainAxisSize.min
-            :crossAxisAlignment m/CrossAxisAlignment.start
-            :children items)
-           (m/Row
-            :mainAxisSize m/MainAxisSize.min
+            :crossAxisAlignment m/CrossAxisAlignment.stretch
             :children items)))))
      (m/SizedBox.shrink))))
 
 (defn selection-menu
   []
   (f/widget
+   :context ctx
    :watch [{:keys [show? position]} (f/$ (:selection-menu (f/<! ui/!ui-state)))]
    (if (and show? position)
-     (m/Positioned
-      :left (.-dx position)
-      :top (.-dy position)
-      :child (selection-menu-content))
+     (let [screen-size (.-size (m/MediaQuery.of ctx))
+           screen-width (.-width screen-size)
+           screen-height (.-height screen-size)
+           ;; Approximate menu size if we don't know it yet
+           menu-width 240.0 
+           menu-height 50.0
+           
+           ;; Ensure menu stays within screen bounds
+           left (let [x (.-dx position)]
+                  (if (> (+ x menu-width) (- screen-width 16.0))
+                    (- screen-width menu-width 16.0)
+                    (if (< x 16.0) 16.0 x)))
+           top (let [y (.-dy position)]
+                 (if (> (+ y menu-height) (- screen-height 16.0))
+                   (- y menu-height 16.0)
+                   (if (< y 16.0) 16.0 y)))]
+       (m/Positioned
+        :left left
+        :top top
+        :child (selection-menu-content)))
      (m/SizedBox.shrink))))

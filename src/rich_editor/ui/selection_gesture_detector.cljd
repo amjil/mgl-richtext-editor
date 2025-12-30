@@ -37,4 +37,7 @@
     :onSecondaryTapDown (fn [^m/TapDownDetails details]
                           (sel-service/handle-secondary-tap-down! !editor-state details))
 
+    :onLongPressStart (fn [^m/LongPressStartDetails details]
+                       (sel-service/handle-long-press! !editor-state details))
+
     :child child)))

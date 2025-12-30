@@ -7,6 +7,7 @@
             [rich-editor.selection-utils :as sel-util]
             [rich-editor.ui.selection-menu :as sel-menu]
             ["package:flutter/material.dart" :as m]
+            ["package:flutter/services.dart" :as srv]
             ["package:flutter/gestures.dart" :as g]))
 
 ;; --- Core processing logic ---
@@ -109,12 +110,35 @@
                 (sel/make-position path (.-start boundary))
                 (sel/make-position path (.-end boundary))))))))
 
+(defn handle-long-press!
+  "long press to select a word and show selection menu"
+  [!editor-state ^m/LongPressStartDetails details]
+  (let [global-pos (.-globalPosition details)]
+    (.selectionClick srv/HapticFeedback)
+    (handle-double-tap! !editor-state global-pos)
+    ;; After selecting word, show menu
+    (let [state @!editor-state
+          selection (:selection state)]
+      (when (and selection (not (sel/collapsed? selection)))
+        (let [start-path (get-in selection [:start :path])]
+          (when-let [start-node (node-service/get-selectable-by-path start-path)]
+            (let [selectable (:selectable start-node)
+                  start-render (:render-box start-node)
+                  node-len (.-length (.toPlainText (.-text selectable)))
+                  flutter-sel (sel-util/to-text-selection start-path selection node-len)
+                  start-rects (.getBoxesForSelection selectable flutter-sel)
+                  start-local (geom/calculate-handle-offsets start-rects :start)
+                  start-global (.localToGlobal start-render start-local)
+                  menu-position (m/Offset. (.-dx start-global) (- (.-dy start-global) 60.0))]
+              (sel-menu/show-selection-menu! menu-position))))))))
+
 (defn handle-handle-drag!
   "handle the logic of moving the selection handle.
    !editor-state: the editor state atom
    global-pos: the current global coordinate of the finger (Offset)
    handle-type: the type of the handle to be moved (:start or :end)"
   [!editor-state global-pos handle-type]
+  (.selectionClick srv/HapticFeedback)
   (let [;; 1. use the coordinate to find the node the finger is on
         node (node-service/get-node-at-offset global-pos)]
 
