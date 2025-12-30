@@ -407,7 +407,7 @@
    :watch [is-focused? (f/$ (= (:focused-path (f/<! state/!editor-state)) path))]
    :let [level (get-in block [:data :level] 0)
          direction (get-in block [:attributes :direction] :ttb)
-         indent-width (* level 24.0)]
+         indent-width (* level 32.0)]
    (m/GestureDetector
     .behavior m/HitTestBehavior.opaque
     .onTap (fn []

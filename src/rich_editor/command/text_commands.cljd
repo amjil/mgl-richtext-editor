@@ -283,6 +283,8 @@
           (-> (hist/push-history curr updated-doc)
               (assoc :selection new-selection)))))))
 
+(declare indent-block! outdent-block!)
+
 (defn split-block!
   "Split the current block into two at the current selection position."
   []
@@ -302,29 +304,34 @@
                   offset (:offset (:start selection))
                   block-idx (first path)
                   block (get-block-at-path (:doc state) path)
-                  current-delta (get-in block [:data :delta])]
-              (if current-delta
-                (let [before-delta (delta/slice-delta current-delta 0 offset)
-                      after-delta (delta/slice-delta current-delta offset (get-delta-text-length current-delta))
-                      new-block-id (id/gen-block-id)
-                      ;; New block inherits type and attributes
-                      new-block (assoc block 
-                                  :id new-block-id 
-                                  :data (assoc (:data block) :delta after-delta))
-                      new-selection (sel/make-selection
-                                     (sel/make-position [(inc block-idx)] 0)
-                                     (sel/make-position [(inc block-idx)] 0))
-                      transaction (tx/make-transaction
-                                   :ops [(tx/update-text-op path before-delta)
-                                         (tx/insert-op [(inc block-idx)] [new-block])]
-                                   :after-selection new-selection)]
-                  (swap! state/!editor-state
-                    (fn [curr]
-                      (let [new-doc (-> (tx/apply-transaction (:doc curr) (:ops transaction))
-                                        update-numbered-list-indices!)]
-                        (-> (hist/push-history curr new-doc :new-selection new-selection)
-                            (assoc :focused-path (:path (:start new-selection))))))))
-                (insert-text-internal! "\n"))))
+                  current-delta (get-in block [:data :delta])
+                  text-len (if current-delta (get-delta-text-length current-delta) 0)]
+              (if (and (zero? text-len) 
+                       (contains? #{:numbered-list :bulleted-list :todo} (:type block)))
+                ;; If it's an empty list/todo item, outdent it instead of splitting
+                (outdent-block!)
+                (if current-delta
+                  (let [before-delta (delta/slice-delta current-delta 0 offset)
+                        after-delta (delta/slice-delta current-delta offset text-len)
+                        new-block-id (id/gen-block-id)
+                        ;; New block inherits type and attributes
+                        new-block (assoc block 
+                                    :id new-block-id 
+                                    :data (assoc (:data block) :delta after-delta))
+                        new-selection (sel/make-selection
+                                       (sel/make-position [(inc block-idx)] 0)
+                                       (sel/make-position [(inc block-idx)] 0))
+                        transaction (tx/make-transaction
+                                     :ops [(tx/update-text-op path before-delta)
+                                           (tx/insert-op [(inc block-idx)] [new-block])]
+                                     :after-selection new-selection)]
+                    (swap! state/!editor-state
+                      (fn [curr]
+                        (let [new-doc (-> (tx/apply-transaction (:doc curr) (:ops transaction))
+                                          update-numbered-list-indices!)]
+                          (-> (hist/push-history curr new-doc :new-selection new-selection)
+                              (assoc :focused-path (:path (:start new-selection))))))))
+                  (insert-text-internal! "\n")))))
           ;; Deep paths (like table cells) - insert newline character for now
           (insert-text-internal! "\n"))))))
 
@@ -530,9 +537,7 @@
 
 (defn delete-backward!
   "Delete one character backward (Backspace).
-   Uses Unicode-aware rune position calculation to correctly handle
-   emoji, Mongolian composite characters, and other multi-code-unit Unicode characters.
-   If at the start of a block, merges with the previous block."
+   If at the start of a list item, outdent it first."
   []
   (let [state @state/!editor-state
         selection (:selection state)]
@@ -540,10 +545,12 @@
       (let [path (:path (:start selection))
             offset-raw (:offset (:start selection))
             block-idx (first path)
+            block (get-block-at-path (:doc state) path)
             current-delta (get-delta-at-path (:doc state) path)
             text-len (get-delta-text-length current-delta)
             offset (max 0 (min offset-raw text-len))]
-        (if (pos? offset)
+        (cond
+          (pos? offset)
           ;; Within a block, delete character
           (let [prev-offset (delta/prev-rune-position current-delta offset)
                 ;; CRITICAL FIX: Ensure effective-prev is ALWAYS less than current offset to avoid stuck cursor
@@ -558,26 +565,32 @@
                              :ops [(tx/update-text-op path new-delta)]
                              :after-selection new-selection)]
             (state/commit-with-history! transaction :delete))
-          ;; At the start of a block (offset 0), merge with previous block
-          (when (pos? block-idx)
-            (let [prev-block-idx (dec block-idx)
-                  prev-block (get-in (:doc state) [:children prev-block-idx])
-                  prev-delta (get-in prev-block [:data :delta])
-                  prev-text-len (get-delta-text-length prev-delta)
-                  ;; Merge current block delta into previous block
-                  merged-delta (delta/concat-deltas prev-delta current-delta)
-                  new-selection (sel/make-selection
-                                 (sel/make-position [prev-block-idx] prev-text-len)
-                                 (sel/make-position [prev-block-idx] prev-text-len))
-                  transaction (tx/make-transaction
-                               :ops [(tx/update-text-op [prev-block-idx] merged-delta)
-                                     (tx/delete-op [block-idx] 1)]
-                               :after-selection new-selection)]
-              (swap! state/!editor-state
-                (fn [curr]
-                  (let [new-doc (-> (tx/apply-transaction (:doc curr) (:ops transaction))
-                                    update-numbered-list-indices!)]
-                    (hist/push-history curr new-doc :new-selection new-selection))))))))
+          
+          ;; At the start of a block (offset 0)
+          (contains? #{:numbered-list :bulleted-list :todo} (:type block))
+          ;; If it's a list/todo item at offset 0, outdent it
+          (outdent-block!)
+
+          (pos? block-idx)
+          ;; Merge with previous block
+          (let [prev-block-idx (dec block-idx)
+                prev-block (get-in (:doc state) [:children prev-block-idx])
+                prev-delta (get-in prev-block [:data :delta])
+                prev-text-len (get-delta-text-length prev-delta)
+                ;; Merge current block delta into previous block
+                merged-delta (delta/concat-deltas prev-delta current-delta)
+                new-selection (sel/make-selection
+                               (sel/make-position [prev-block-idx] prev-text-len)
+                               (sel/make-position [prev-block-idx] prev-text-len))
+                transaction (tx/make-transaction
+                             :ops [(tx/update-text-op [prev-block-idx] merged-delta)
+                                   (tx/delete-op [block-idx] 1)]
+                             :after-selection new-selection)]
+            (swap! state/!editor-state
+              (fn [curr]
+                (let [new-doc (-> (tx/apply-transaction (:doc curr) (:ops transaction))
+                                  update-numbered-list-indices!)]
+                  (hist/push-history curr new-doc :new-selection new-selection)))))))
       (delete-selection!))))
 
 (defn delete-forward!
@@ -1180,56 +1193,67 @@
 ;; =============================================================
 
 (defn indent-block!
-  "Increase the indentation level of a block.
-   Constraint: Cannot be more than 1 level deeper than the previous block."
+  "Increase the indentation level of blocks in the current selection.
+   Constraint: A block cannot be more than 1 level deeper than its previous block."
   []
   (let [state @state/!editor-state
         selection (:selection state)]
     (when selection
-      (let [path (:path (:start selection))
-            block-index (first path)
-            blocks (get-in (:doc state) [:children])
-            block (get-block-at-path (:doc state) path)
-            current-level (get-in block [:data :level] 0)
-            prev-block (when (pos? block-index) (get blocks (dec block-index)))
-            prev-level (if prev-block (get-in prev-block [:data :level] 0) -1)
-            max-level 5 ;; Absolute limit
-            ;; Constraint: level <= prev-level + 1
-            new-level (min (inc current-level) (inc prev-level) max-level)]
-        (when (and (< current-level max-level)
-                   (<= (inc current-level) (inc prev-level)))
-          (swap! state/!editor-state
-            (fn [curr]
-              (let [updated-doc (-> (update-in (:doc curr) 
-                                              [:children block-index :data :level] 
-                                              (constantly new-level))
-                                    update-numbered-list-indices!)]
-                (hist/push-history curr updated-doc)))))))))
+      (let [normalized (sel/normalize selection)
+            start-idx (first (:path (:start normalized)))
+            end-idx (first (:path (:end normalized)))]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [updated-doc (loop [idx start-idx
+                                    doc (:doc curr)]
+                                (if (> idx end-idx)
+                                  doc
+                                  (let [blocks-internal (:children doc)
+                                        block (get blocks-internal idx)
+                                        current-level (get-in block [:data :level] 0)
+                                        prev-block (when (pos? idx) (get blocks-internal (dec idx)))
+                                        prev-level (if prev-block (get-in prev-block [:data :level] 0) -1)
+                                        max-level 5
+                                        new-level (min (inc current-level) (inc prev-level) max-level)]
+                                    (if (and (< current-level max-level)
+                                             (<= (inc current-level) (inc prev-level)))
+                                      (recur (inc idx)
+                                             (update-in doc [:children idx :data :level] (constantly new-level)))
+                                      (recur (inc idx) doc)))))]
+              (hist/push-history curr (update-numbered-list-indices! updated-doc)))))))))
 
 (defn outdent-block!
-  "Decrease the indentation level of a block.
-   If the block is a list item at level 0, it will be converted back to a paragraph."
+  "Decrease the indentation level of blocks in the current selection.
+   If a list item at level 0 is outdented, it converts back to a paragraph."
   []
   (let [state @state/!editor-state
         selection (:selection state)]
     (when selection
-      (let [path (:path (:start selection))
-            block-index (first path)
-            block (get-block-at-path (:doc state) path)
-            current-level (get-in block [:data :level] 0)]
-        (if (pos? current-level)
-          ;; Decrease level if level > 0
-          (let [new-level (dec current-level)]
-            (swap! state/!editor-state
-              (fn [curr]
-                (let [updated-doc (-> (update-in (:doc curr) 
-                                                [:children block-index :data :level] 
-                                                (constantly new-level))
-                                      update-numbered-list-indices!)]
-                  (hist/push-history curr updated-doc)))))
-          ;; If level is 0 and it's a list/todo, convert to paragraph
-          (when (contains? #{:numbered-list :bulleted-list :todo} (:type block))
-            (convert-list-to-paragraph!)))))))
+      (let [normalized (sel/normalize selection)
+            start-idx (first (:path (:start normalized)))
+            end-idx (first (:path (:end normalized)))]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [updated-doc (loop [idx start-idx
+                                    doc (:doc curr)]
+                                (if (> idx end-idx)
+                                  doc
+                                  (let [block (get-in doc [:children idx])
+                                        current-level (get-in block [:data :level] 0)]
+                                    (if (pos? current-level)
+                                      ;; Decrease level
+                                      (recur (inc idx)
+                                             (update-in doc [:children idx :data :level] dec))
+                                      ;; If level 0, check if we should convert to paragraph
+                                      (if (contains? #{:numbered-list :bulleted-list :todo} (:type block))
+                                        ;; We use convert-block-to-paragraph-internal here instead of the public one
+                                        ;; because we are inside a swap! and need to return the updated doc
+                                        (let [new-block (assoc block :type :paragraph
+                                                              :data (dissoc (:data block) :level :index :checked))]
+                                          (recur (inc idx)
+                                                 (assoc-in doc [:children idx] new-block)))
+                                        (recur (inc idx) doc))))))]
+              (hist/push-history curr (update-numbered-list-indices! updated-doc)))))))))
 
 (defn update-numbered-list-indices!
   "Update the index numbers for all numbered list items in the document"
