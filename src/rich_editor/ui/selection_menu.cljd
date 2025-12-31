@@ -47,7 +47,7 @@
    :watch [selection (f/$ (:selection (f/<! state/!editor-state)))
            focused-path (f/$ (:focused-path (f/<! state/!editor-state)))]
    :let [is-mobile? (or (not foundation/kIsWeb)
-                        (let [platform (foundation/defaultTargetPlatform)]
+                        (let [platform foundation/defaultTargetPlatform]
                           (or (= platform m/TargetPlatform.iOS)
                               (= platform m/TargetPlatform.android))))
          screen-width (.-width (.-size (m/MediaQuery.of ctx)))
