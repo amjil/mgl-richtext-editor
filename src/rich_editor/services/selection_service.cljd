@@ -3,9 +3,8 @@
             [rich-editor.ui-state :as ui]
             [rich-editor.services.node-service :as node-service]
             [rich-editor.services.scroll-service :as scroll-service]
-            [rich-editor.services.selection-geometry :as geom]
-            [rich-editor.selection-utils :as sel-util]
             [rich-editor.ui.selection-menu :as sel-menu]
+            [rich-editor.utils.logger :as log]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/services.dart" :as srv]
             ["package:flutter/gestures.dart" :as g]))
@@ -16,21 +15,53 @@
   [!editor-state ^g/TapDownDetails details]
   (let [global-pos (.-globalPosition details)
         node (node-service/get-node-at-offset global-pos)]
+    (log/log-info (str "[Cursor Positioning] handle-tap-down! global-pos: " global-pos))
     ;; Hide selection menu when clicking
     (sel-menu/hide-selection-menu!)
     (if-let [{:keys [path selectable render-box]} node]
-      (let [;; 1. get the logical offset of the click position in the Mongolian block
+      (let [;; 1. Render box should already be laid out if attached
+            _ (when (and render-box (.-attached render-box))
+                ;; Layout is typically complete when attached, no need to check needsLayout
+                nil)
+            ;; 2. get the logical offset of the click position in the Mongolian block
             local-pos (.globalToLocal render-box global-pos)
-            pos-in-block (.getPositionForOffset selectable local-pos)
-            new-pos (sel/make-position path (.-offset pos-in-block))
-            ;; 2. create a collapsed selection region (i.e. cursor)
-            new-selection (sel/make-selection new-pos new-pos)]
-        ;; Request focus for the clicked node
+            _ (log/log-info (str "[Cursor Positioning] path: " path ", local-pos: " local-pos))
+            ;; 3. For MongolRenderParagraph, ensure we're using the correct coordinate system
+            ;; MongolTextPainter expects coordinates in its own rotated coordinate system
+            pos-in-block (try
+                          (.getPositionForOffset selectable local-pos)
+                          (catch Exception e
+                            (log/log-warn (str "[Cursor Positioning] getPositionForOffset failed, using fallback: " e))
+                            ;; Fallback: try to get position using text length bounds
+                            (let [text (.toPlainText (.-text selectable))
+                                  text-len (count text)
+                                  ;; Clamp offset to valid range
+                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
+                                                                       0
+                                                                       text-len)))]
+                              (m/TextPosition :offset clamped-offset))))
+            offset-value (.-offset pos-in-block)
+            ;; 4. Ensure offset is within valid range
+            text (.toPlainText (.-text selectable))
+            text-len (count text)
+            clamped-offset (max 0 (min offset-value text-len))
+            new-pos (sel/make-position path clamped-offset)
+            ;; 5. create a collapsed selection region (i.e. cursor)
+            new-selection (sel/make-selection new-pos new-pos)
+            current-selection (:selection @!editor-state)]
+        (log/log-info (str "[Cursor Positioning] calculation completed - offset: " offset-value ", text-len: " text-len ", clamped-offset: " clamped-offset ", new-pos: " new-pos))
+        ;; Always ensure focus is requested to make cursor visible
         (node-service/focus-node! path)
+        ;; Always update selection to ensure UI refresh, even if value is the same
+        ;; This ensures didUpdateWidget is called and setState triggers cursor repaint
         (swap! !editor-state assoc :selection new-selection)
+        (if (not= current-selection new-selection)
+          (log/log-info (str "[Cursor Positioning] selection updated: " new-selection))
+          (log/log-info (str "[Cursor Positioning] forced selection refresh (same value): " new-selection)))
         (swap! ui/!ui-state assoc :pan-start-position new-pos)) ;; record the starting point for drag usage
       ;; click on the blank area, clear the selection
-      (do (swap! !editor-state assoc :selection nil)
+      (do (log/log-info "[Cursor Positioning] clicked on blank area, clearing selection")
+          (swap! !editor-state assoc :selection nil)
           (swap! ui/!ui-state assoc :pan-start-position nil)))))
 
 (defn handle-secondary-tap-down!
@@ -48,6 +79,39 @@
     ;; 2. show the selection menu (context menu) at the click position
     (sel-menu/show-selection-menu! global-pos)))
 
+(defn handle-pan-start!
+  "handle the drag start event: set the starting position for selection"
+  [!editor-state ^g/DragStartDetails details]
+  (let [global-pos (.-globalPosition details)
+        node (node-service/get-node-at-offset global-pos)]
+    (when-let [{:keys [path selectable render-box]} node]
+      (let [;; Render box should already be laid out if attached
+            _ (when (and render-box (.-attached render-box))
+                ;; Layout is typically complete when attached
+                nil)
+            ;; Calculate the logical coordinate
+            local-pos (.globalToLocal render-box global-pos)
+            ;; Get position with error handling
+            pos-in-block (try
+                          (.getPositionForOffset selectable local-pos)
+                          (catch Exception _
+                            (let [text (.toPlainText (.-text selectable))
+                                  text-len (count text)
+                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
+                                                                       0
+                                                                       text-len)))]
+                              (m/TextPosition :offset clamped-offset))))
+            offset-value (.-offset pos-in-block)
+            ;; Clamp offset to valid range
+            text (.toPlainText (.-text selectable))
+            text-len (count text)
+            clamped-offset (max 0 (min offset-value text-len))
+            start-pos (sel/make-position path clamped-offset)]
+        ;; Set the starting position for drag selection
+        (swap! ui/!ui-state assoc :pan-start-position start-pos)
+        ;; Also update the selection to collapsed at start position
+        (swap! !editor-state assoc :selection (sel/make-selection start-pos start-pos))))))
+
 (defn handle-pan-update!
   "handle the drag update event: implement cross-block selection"
   [!editor-state ^g/DragUpdateDetails details viewport-size scroll-controller]
@@ -59,35 +123,40 @@
 
     (when (and start-pos node)
       (let [{:keys [path selectable render-box]} node
+            ;; Render box should already be laid out if attached
+            _ (when (and render-box (.-attached render-box))
+                ;; Layout is typically complete when attached
+                nil)
             ;; calculate the logical coordinate corresponding to the current finger/mouse position
             local-pos (.globalToLocal render-box global-pos)
-            pos-in-block (.getPositionForOffset selectable local-pos)
-            current-pos (sel/make-position path (.-offset pos-in-block))
+            ;; Get position with error handling
+            pos-in-block (try
+                          (.getPositionForOffset selectable local-pos)
+                          (catch Exception e
+                            (log/log-warn (str "[Text Selection] getPositionForOffset failed, using fallback: " e))
+                            (let [text (.toPlainText (.-text selectable))
+                                  text-len (count text)
+                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
+                                                                       0
+                                                                       text-len)))]
+                              (m/TextPosition :offset clamped-offset))))
+            offset-value (.-offset pos-in-block)
+            ;; Clamp offset to valid range
+            text (.toPlainText (.-text selectable))
+            text-len (count text)
+            clamped-offset (max 0 (min offset-value text-len))
+            current-pos (sel/make-position path clamped-offset)
             ;; create a range from the starting point to the current point
             new-selection (sel/make-selection start-pos current-pos)]
 
         ;; 1. update the selection range only if it actually changed
         (when (not= (:selection state) new-selection)
+          (log/log-info (str "[Text Selection] updating selection - start-pos: " start-pos ", current-pos: " current-pos ", new-selection: " new-selection))
           (swap! !editor-state assoc :selection new-selection))
 
         ;; 2. trigger automatic scrolling with smooth animation (for Mongolian horizontal scrolling layout)
         (scroll-service/check-auto-scroll global-pos viewport-size scroll-controller true)))))
 
-(defn show-menu-at-selection!
-  "Calculate and show selection menu above the selection start"
-  [selection]
-  (let [start-path (get-in selection [:start :path])]
-    (when-let [start-node (node-service/get-selectable-by-path start-path)]
-      (let [selectable (:selectable start-node)
-            start-render (:render-box start-node)
-            node-len (.-length (.toPlainText (.-text selectable)))
-            flutter-sel (sel-util/to-text-selection start-path selection node-len)
-            start-rects (.getBoxesForSelection selectable flutter-sel)
-            start-local (geom/calculate-handle-offsets start-rects :start)
-            start-global (.localToGlobal start-render start-local)
-            ;; Position menu above the selection start, offset by menu height
-            menu-position (m/Offset. (.-dx start-global) (- (.-dy start-global) 60.0))]
-        (sel-menu/show-selection-menu! menu-position)))))
 
 (defn handle-pan-end!
   "handle the drag end"
@@ -98,7 +167,7 @@
     (swap! ui/!ui-state dissoc :pan-start-position)
     ;; Show selection menu if there's a non-collapsed selection
     (when (and selection (not (sel/collapsed? selection)))
-      (show-menu-at-selection! selection))))
+      (sel-menu/show-menu-at-selection! selection))))
 
 ;; --- helper logic: double/triple click (template) ---
 
@@ -125,7 +194,7 @@
     (let [state @!editor-state
           selection (:selection state)]
       (when (and selection (not (sel/collapsed? selection)))
-        (show-menu-at-selection! selection)))))
+        (sel-menu/show-menu-at-selection! selection)))))
 
 (defn handle-handle-drag!
   "handle the logic of moving the selection handle.
@@ -138,14 +207,31 @@
         node (node-service/get-node-at-offset global-pos)]
 
     (when-let [{:keys [path selectable render-box]} node]
-      (let [;; 2. call the MongolRenderParagraph logic to get the offset in the text
+      (let [;; 2. Render box should already be laid out if attached
+            _ (when (and render-box (.-attached render-box))
+                ;; Layout is typically complete when attached
+                nil)
+            ;; 3. call the MongolRenderParagraph logic to get the offset in the text
             local-pos (.globalToLocal render-box global-pos)
-            pos-in-block (.getPositionForOffset selectable local-pos)
+            ;; Get position with error handling
+            pos-in-block (try
+                          (.getPositionForOffset selectable local-pos)
+                          (catch Exception _
+                            (let [text (.toPlainText (.-text selectable))
+                                  text-len (count text)
+                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
+                                                                       0
+                                                                       text-len)))]
+                              (m/TextPosition :offset clamped-offset))))
+            offset-value (.-offset pos-in-block)
+            ;; Clamp offset to valid range
+            text (.toPlainText (.-text selectable))
+            text-len (count text)
+            clamped-offset (max 0 (min offset-value text-len))
+            ;; 4. construct the new logical position (Position)
+            new-point (sel/make-position path clamped-offset)]
 
-            ;; 3. construct the new logical position (Position)
-            new-point (sel/make-position path (.-offset pos-in-block))]
-
-        ;; 4. atomically update the global selection state
+        ;; 5. atomically update the global selection state
         (swap! !editor-state update :selection
                (fn [current-sel]
                  (if (nil? current-sel)

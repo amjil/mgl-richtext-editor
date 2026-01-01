@@ -16,7 +16,11 @@
     :onTapDown (fn [^m/TapDownDetails details]
                  (sel-service/handle-tap-down! !editor-state details))
 
-    ;; 2. handle the drag update (cross-block selection + automatic scrolling)
+    ;; 2. handle the drag start (set starting position for selection)
+    :onPanStart (fn [^g/DragStartDetails details]
+                  (sel-service/handle-pan-start! !editor-state details))
+
+    ;; 3. handle the drag update (cross-block selection + automatic scrolling)
     :onPanUpdate (fn [^m/DragUpdateDetails details]
                    (sel-service/handle-pan-update!
                     !editor-state
@@ -24,11 +28,11 @@
                     viewport-size
                     scroll-controller))
 
-    ;; 3. handle the drag end (clean the state)
+    ;; 4. handle the drag end (clean the state)
     :onPanEnd (fn [^m/DragEndDetails details]
                 (sel-service/handle-pan-end! !editor-state details))
 
-    ;; 4. double click to select a word (optional)
+    ;; 5. double click to select a word (optional)
     :onDoubleTapDown (fn [^g/TapDownDetails details]
                        (sel-service/handle-double-tap!
                         !editor-state

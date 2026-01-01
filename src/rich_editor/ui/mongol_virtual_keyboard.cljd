@@ -36,31 +36,42 @@
             :color m/Colors.transparent
             :child (m/InkWell
                     :onTap (when (and on-pressed (not disabled?)) on-pressed)
-                    :child (m/Padding
-                            :padding (m/EdgeInsets.symmetric :horizontal 12.0)
-                            :child (m/Row
+                            :child (m/Padding
+                            :padding (m/EdgeInsets.symmetric :horizontal 12.0 :vertical 0.0)
+                            :child (m/Align
+                                    :alignment m/Alignment.center
+                                    :child (m/Row
                                     :mainAxisSize m/MainAxisSize.min
                                     :mainAxisAlignment m/MainAxisAlignment.center
+                                    :crossAxisAlignment m/CrossAxisAlignment.center
                                     :children
-                                    [(m/Icon icon
-                                             :size 22.0
-                                             :color (if active?
-                                                      (.-onPrimary color-scheme)
-                                                      (if disabled?
-                                                        (.-onSurfaceVariant color-scheme)
-                                                        (.-onSurface color-scheme))))
+                                    [(m/SizedBox
+                                      :width 22.0
+                                      :height 22.0
+                                      :child (m/Center
+                                              :child (m/Icon icon
+                                                             :size 22.0
+                                                             :color (if active?
+                                                                      (.-onPrimary color-scheme)
+                                                                      (if disabled?
+                                                                        (.-onSurfaceVariant color-scheme)
+                                                                        (.-onSurface color-scheme))))))
                                      (when label
                                        (m/Padding
                                         :padding (m/EdgeInsets.only :left 6.0)
-                                        :child (m/Text label
-                                                       :style (m/TextStyle
-                                                               :fontSize 14.0
-                                                               :fontWeight m/FontWeight.w500
-                                                               :color (if active?
-                                                                        (.-onPrimary color-scheme)
-                                                                        (if disabled?
-                                                                          (.-onSurfaceVariant color-scheme)
-                                                                          (.-onSurface color-scheme)))))))])))))))
+                                        :child (m/SizedBox
+                                                :height 22.0
+                                                :child (m/Center
+                                                        :child (m/Text label
+                                                                       :style (m/TextStyle
+                                                                               :fontSize 14.0
+                                                                               :height 1.0
+                                                                               :fontWeight m/FontWeight.w500
+                                                                               :color (if active?
+                                                                                        (.-onPrimary color-scheme)
+                                                                                        (if disabled?
+                                                                                          (.-onSurfaceVariant color-scheme)
+                                                                                          (.-onSurface color-scheme)))))))))]))))))))
 
 (defn- get-block-at-path [doc path]
   (get-in doc [:children (first path)]))

@@ -4,6 +4,8 @@
             [rich-editor.command.search-commands :as search-cmd]
             [rich-editor.state :as state]
             [rich-editor.utils.history :as hist]
+            [rich-editor.utils.logger :as log]
+            [clojure.string :as str]
             ["package:flutter/services.dart" :as services]))
 
 ;; =============================================================
@@ -91,37 +93,49 @@
         is-shift (.-isShiftPressed keyboard)
         is-alt (.-isAltPressed keyboard)
         key-label (.-keyLabel logical-key)
-        key-id (.-keyId logical-key)]
-    (cond
+        key-id (.-keyId logical-key)
+        ;; Check if this is a modifier key alone (should be ignored)
+        is-modifier-only (or (str/includes? key-label "Meta")
+                             (str/includes? key-label "Control")
+                             (and (str/includes? key-label "Shift")
+                                  (not (or (= key-label "Tab") (= key-label "Home") (= key-label "End"))))
+                             (str/includes? key-label "Alt"))]
+    (when (or (= key-label "c") (= key-label "C"))
+      (log/log-info (str "[Keyboard] detected C key - key-label: " key-label ", is-meta: " is-meta ", is-meta-pressed: " (.-isMetaPressed keyboard) ", is-control-pressed: " (.-isControlPressed keyboard))))
+    (when is-modifier-only
+      (log/log-info (str "[Keyboard] ignoring modifier-only key: " key-label)))
+    (if is-modifier-only
+      nil
+      (cond
       ;; Tab / Shift + Tab
       (and is-shift (= key-label "Tab")) :shift-tab
       (= key-label "Tab") :tab
-      ;; Cmd/Ctrl + B (bold)
-      (and is-meta (= key-label "b")) :cmd-b
-      ;; Cmd/Ctrl + I (italic)
-      (and is-meta (= key-label "i")) :cmd-i
-      ;; Cmd/Ctrl + U (underline)
-      (and is-meta (= key-label "u")) :cmd-u
+      ;; Cmd/Ctrl + B (bold) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "b") (= key-label "B"))) :cmd-b
+      ;; Cmd/Ctrl + I (italic) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "i") (= key-label "I"))) :cmd-i
+      ;; Cmd/Ctrl + U (underline) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "u") (= key-label "U"))) :cmd-u
       ;; Cmd/Ctrl + Shift + S (strikethrough)
       (and is-meta is-shift (= key-label "S")) :cmd-shift-s
-      ;; Cmd/Ctrl + Z (undo)
-      (and is-meta (= key-label "z")) :cmd-z
+      ;; Cmd/Ctrl + Z (undo) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "z") (= key-label "Z"))) :cmd-z
       ;; Cmd/Ctrl + Shift + Z (redo)
       (and is-meta is-shift (= key-label "Z")) :cmd-shift-z
-      ;; Cmd/Ctrl + X (cut)
-      (and is-meta (= key-label "x")) :cmd-x
-      ;; Cmd/Ctrl + C (copy)
-      (and is-meta (= key-label "c")) :cmd-c
-      ;; Cmd/Ctrl + V (paste)
-      (and is-meta (= key-label "v")) :cmd-v
-      ;; Cmd/Ctrl + A (select all)
-      (and is-meta (= key-label "a")) :cmd-a
-      ;; Cmd/Ctrl + F (find)
-      (and is-meta (= key-label "f")) :cmd-f
-      ;; Cmd/Ctrl + H (replace)
-      (and is-meta (= key-label "h")) :cmd-h
-      ;; Cmd/Ctrl + K (delete to line end)
-      (and is-meta (= key-label "k")) :cmd-k
+      ;; Cmd/Ctrl + X (cut) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "x") (= key-label "X"))) :cmd-x
+      ;; Cmd/Ctrl + C (copy) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "c") (= key-label "C"))) :cmd-c
+      ;; Cmd/Ctrl + V (paste) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "v") (= key-label "V"))) :cmd-v
+      ;; Cmd/Ctrl + A (select all) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "a") (= key-label "A"))) :cmd-a
+      ;; Cmd/Ctrl + F (find) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "f") (= key-label "F"))) :cmd-f
+      ;; Cmd/Ctrl + H (replace) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "h") (= key-label "H"))) :cmd-h
+      ;; Cmd/Ctrl + K (delete to line end) - handle both lowercase and uppercase
+      (and is-meta (or (= key-label "k") (= key-label "K"))) :cmd-k
       ;; Option/Alt + Backspace (delete word)
       (and is-alt (= key-label "Backspace")) :alt-backspace
       ;; Cmd/Ctrl + Backspace (delete to line start)
@@ -154,7 +168,7 @@
       (and (not is-shift) (= key-id 4295426087)) :arrow-right
       (and (not is-shift) (= key-id 4295426088)) :arrow-up
       (and (not is-shift) (= key-id 4295426089)) :arrow-down
-      :else nil)))
+      :else nil))))
 
 (defn handle-key-event!
   "Handle keyboard events, execute corresponding shortcut commands.
@@ -162,13 +176,25 @@
    so it can be processed by TextInputConnection."
   [^services/KeyEvent event]
   (let [key (normalize-key event)
-        handler (get @!shortcut-handlers key)]
+        handler (get @!shortcut-handlers key)
+        key-label (.-keyLabel (.-logicalKey event))
+        event-type (cond
+                     (instance? services/KeyDownEvent event) "KeyDown"
+                     (instance? services/KeyUpEvent event) "KeyUp"
+                     (instance? services/KeyRepeatEvent event) "KeyRepeat"
+                     :else "Unknown")]
+    (when (= key :cmd-c)
+      (log/log-info (str "[Keyboard] ⚠️ detected Cmd+C - key-label: " key-label ", event-type: " event-type ", handler exists?: " (some? handler))))
+    (log/log-info (str "[Keyboard] handle-key-event! - key-label: " key-label ", normalized-key: " key ", event-type: " event-type ", handler exists?: " (some? handler)))
     (if handler
       (do
         ;; Execute handler only on KeyDown or KeyRepeat, but return true for all (including KeyUp)
         ;; to prevent the system/IME from also processing the key.
         (when-not (instance? services/KeyUpEvent event)
-          (handler))
+          (log/log-info (str "[Keyboard] executing handler: " key))
+          (let [result (handler)]
+            (when (= key :cmd-c)
+              (log/log-info (str "[Keyboard] Cmd+C handler execution completed, return value: " result)))))
         true) ;; Return true to indicate handled (shortcut)
       false))) ;; Return false to indicate not handled (let TextInputConnection handle it)
 

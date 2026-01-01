@@ -11,7 +11,11 @@
             [rich-editor.services.scroll-service :as scroll-service]
             [rich-editor.services.markdown-service :as markdown-service]
             [rich-editor.command.table-commands :as table-cmd]
-            [clojure.string :as str]))
+            [rich-editor.services.command-registry :as cmd-registry]
+            [rich-editor.utils.logger :as log]
+            [clojure.string :as str]
+            [rich-editor.ui.selection-menu :as sel-menu]
+            ["package:flutter/services.dart" :as services]))
 
 (declare get-slash-commands)
 (declare delete-selection!)
@@ -650,22 +654,30 @@
 (defonce !clipboard-content (atom nil))
 
 (defn copy-selection!
-  "Copy the selected text to clipboard"
+  "Copy the selected text to clipboard.
+   Returns true if there was a selection to copy, false otherwise."
   []
   (let [state @state/!editor-state
         selection (:selection state)]
-    (when selection
+    (log/log-info (str "[Copy] copy-selection! called, selection: " selection))
+    (if (and selection (not (sel/collapsed? selection)))
       (let [normalized (sel/normalize selection)
             start-path (:path (:start normalized))
             end-path (:path (:end normalized))
             start-offset (:offset (:start normalized))
             end-offset (:offset (:end normalized))]
+        (log/log-info (str "[Copy] has selection - start-path: " start-path ", end-path: " end-path ", start-offset: " start-offset ", end-offset: " end-offset))
         (if (= start-path end-path)
           ;; Single block copy
           (let [current-delta (get-delta-at-path (:doc state) start-path)
                 selected-text (delta-utils/delta->text 
                                (delta/slice-delta current-delta start-offset end-offset))]
-            (reset! !clipboard-content selected-text))
+            (log/log-info (str "[Copy] single block copy - selected-text: \"" selected-text "\" (length: " (count selected-text) ")"))
+            (reset! !clipboard-content selected-text)
+            ;; Copy to system clipboard
+            (services/Clipboard.setData (services/ClipboardData. :text selected-text))
+            (log/log-info "[Copy] copied to system clipboard")
+            true)
           ;; Cross-block copy - concatenate text from multiple blocks
           (let [start-idx (first start-path)
                 end-idx (first end-path)
@@ -683,7 +695,15 @@
                                            (delta/slice-delta current-delta copy-start copy-end))]
                                  (recur (inc idx) (conj parts text)))))
                 full-text (clojure.string/join "\n" text-parts)]
-            (reset! !clipboard-content full-text)))))))
+            (log/log-info (str "[Copy] cross-block copy - full-text: \"" full-text "\" (length: " (count full-text) ")"))
+            (reset! !clipboard-content full-text)
+            ;; Copy to system clipboard
+            (services/Clipboard.setData (services/ClipboardData. :text full-text))
+            (log/log-info "[Copy] copied to system clipboard")
+            true)))
+      ;; No selection or collapsed selection - nothing to copy, but still handled
+      (do (log/log-warn (str "[Copy] no selection or selection is collapsed - selection: " selection ", collapsed?: " (when selection (sel/collapsed? selection))))
+          false))))
 
 (defn cut-selection!
   "Cut the selected text to clipboard (copy + delete)"
@@ -694,9 +714,23 @@
 (defn paste-selection!
   "Paste text from clipboard at the current selection"
   []
-  (when-let [text @!clipboard-content]
-    (delete-selection!) ;; Delete current selection if any
-    (insert-text! text)))
+  ;; Clipboard.getData is async, so we use .then and .catchError to handle it
+  (let [clipboard-future (services/Clipboard.getData services/Clipboard.kTextPlain)]
+    (-> clipboard-future
+        (.then (fn [clipboard-data]
+                 (let [clipboard-text (when clipboard-data (.-text clipboard-data))
+                       ;; Fallback to internal clipboard if system clipboard is empty
+                       text (or clipboard-text @!clipboard-content)]
+                   (when text
+                     (delete-selection!) ;; Delete current selection if any
+                     (insert-text! text)
+                     ;; Also update internal clipboard
+                     (reset! !clipboard-content text)))))
+        (.catchError (fn [_error]
+                       ;; If clipboard access fails, fallback to internal clipboard
+                       (when-let [text @!clipboard-content]
+                         (delete-selection!)
+                         (insert-text! text)))))))
 
 ;; =============================================================
 ;; Selection Commands
@@ -708,17 +742,23 @@
   (let [state @state/!editor-state
         blocks (:children (:doc state))]
     (when (seq blocks)
-      (let [first-block (first blocks)
-            first-path [0]
-            first-delta (get-in first-block [:data :delta])
-            _first-length (get-delta-text-length first-delta)
+      (let [first-path [0]
             last-block (last blocks)
             last-path [(dec (count blocks))]
             last-delta (get-in last-block [:data :delta])
             last-length (get-delta-text-length last-delta)
             start-pos (sel/make-position first-path 0)
-            end-pos (sel/make-position last-path last-length)]
-        (swap! state/!editor-state assoc :selection (sel/make-selection start-pos end-pos))))))
+            end-pos (sel/make-position last-path last-length)
+            new-selection (sel/make-selection start-pos end-pos)]
+        ;; Always update selection state, even if collapsed (empty document)
+        (swap! state/!editor-state assoc :selection new-selection)
+        ;; Set pan-start-position to enable drag selection after select-all
+        (swap! ui/!ui-state assoc :pan-start-position start-pos)
+        ;; Show selection menu only if selection is not collapsed
+        (when (and new-selection (not (sel/collapsed? new-selection)))
+          (sel-menu/show-menu-at-selection! new-selection))
+        ;; Return true to indicate success
+        true))))
 
 ;; =============================================================
 ;; Cursor Movement Commands
@@ -1798,4 +1838,12 @@
                    col-count (when first-row (count (get-in first-row [:cells] [])))]
                (when (and col-count (> col-count 1))
                  (table-cmd/delete-table-column! (dec col-count))))}])
+
+;; Register commands in registry to break circular dependencies
+;; This must be after all function definitions
+(cmd-registry/register-commands!
+ {:copy-selection! copy-selection!
+  :cut-selection! cut-selection!
+  :paste-selection! paste-selection!
+  :select-all! select-all!})
 

@@ -2,8 +2,11 @@
   (:require [cljd.flutter :as f]
             [rich-editor.state :as state]
             [rich-editor.ui-state :as ui]
-            [rich-editor.command.text-commands :as text-cmd]
             [rich-editor.model.selection :as sel]
+            [rich-editor.services.node-service :as node-service]
+            [rich-editor.selection-utils :as sel-util]
+            [rich-editor.services.selection-geometry :as geom]
+            [rich-editor.services.command-registry :as cmd-registry]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/foundation.dart" :as foundation]))
 
@@ -16,6 +19,22 @@
 
 (defn hide-selection-menu! []
   (ui/set-selection-menu! false nil))
+
+(defn show-menu-at-selection!
+  "Calculate and show selection menu above the selection start"
+  [selection]
+  (let [start-path (get-in selection [:start :path])]
+    (when-let [start-node (node-service/get-selectable-by-path start-path)]
+      (let [selectable (:selectable start-node)
+            start-render (:render-box start-node)
+            node-len (.-length (.toPlainText (.-text selectable)))
+            flutter-sel (sel-util/to-text-selection start-path selection node-len)
+            start-rects (.getBoxesForSelection selectable flutter-sel)
+            start-local (geom/calculate-handle-offsets start-rects :start)
+            start-global (.localToGlobal start-render start-local)
+            ;; Position menu above the selection start, offset by menu height
+            menu-position (m/Offset. (.-dx start-global) (- (.-dy start-global) 60.0))]
+        (show-selection-menu! menu-position)))))
 
 ;; =============================================================
 ;; Selection menu UI component
@@ -67,17 +86,22 @@
                                 :offset (m/Offset. 0.0 2.0))])
       :clipBehavior m/Clip.hardEdge
       :child
-      (let [items (filter some?
+      (let [;; Get commands from registry to break circular dependency
+            copy-fn (cmd-registry/get-command :copy-selection!)
+            cut-fn (cmd-registry/get-command :cut-selection!)
+            paste-fn (cmd-registry/get-command :paste-selection!)
+            select-all-fn (cmd-registry/get-command :select-all!)
+            items (filter some?
                           [(when has-selection?
                              (format-button m/Icons.copy "Copy"
-                                            (fn [] (text-cmd/copy-selection!) (hide-selection-menu!))))
+                                            (fn [] (when copy-fn (copy-fn)) (hide-selection-menu!))))
                            (when has-selection?
                              (format-button m/Icons.content_cut "Cut"
-                                            (fn [] (text-cmd/cut-selection!) (hide-selection-menu!))))
+                                            (fn [] (when cut-fn (cut-fn)) (hide-selection-menu!))))
                            (format-button m/Icons.paste "Paste"
-                                          (fn [] (text-cmd/paste-selection!) (hide-selection-menu!)))
+                                          (fn [] (when paste-fn (paste-fn)) (hide-selection-menu!)))
                            (format-button m/Icons.select_all "Select All"
-                                          (fn [] (text-cmd/select-all!) (hide-selection-menu!)))])]
+                                          (fn [] (when select-all-fn (select-all-fn)) (hide-selection-menu!)))])]
         (if use-horizontal-menu?
           (m/SingleChildScrollView
            :scrollDirection m/Axis.horizontal

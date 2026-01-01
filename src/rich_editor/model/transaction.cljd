@@ -99,13 +99,28 @@
   "Apply the transaction to the global state Atom.
    This is the key to connecting the UI and logic."
   [!state transaction & {:keys [merge?]}]
-  (swap! !state (fn [current-state]
-                  (let [new-doc (apply-transaction (:doc current-state) (:ops transaction))
-                        after-sel (:after-selection transaction)
-                        new-path (when after-sel (:path (:start after-sel)))]
-                    (if merge?
-                      (cond-> (assoc current-state :doc new-doc :selection after-sel)
-                        new-path (assoc :focused-path new-path))
-                      (let [next-state (hist/push-history current-state new-doc :new-selection after-sel)]
-                        (cond-> next-state
-                          new-path (assoc :focused-path new-path))))))))
+  (let [current-state @!state
+        current-selection (:selection current-state)
+        after-sel (:after-selection transaction)]
+    ;; Only log selection changes when they're unexpected (e.g., path changes or large offset differences)
+    (when (and after-sel (not= current-selection after-sel))
+      (let [current-path (when current-selection (:path (:start current-selection)))
+            after-path (when after-sel (:path (:start after-sel)))
+            current-offset (when current-selection (:offset (:start current-selection)))
+            after-offset (when after-sel (:offset (:start after-sel)))
+            path-changed? (not= current-path after-path)
+            offset-diff (when (and current-offset after-offset) (max (- after-offset current-offset) (- current-offset after-offset)))]
+        ;; Only warn on path changes or very large offset differences (normal multi-char input like IME is expected)
+        ;; Threshold of 5 allows normal IME input (2-4 chars) without warnings
+        (when (or path-changed? (and offset-diff (> offset-diff 5)))
+          (dart:core/print (str "[Transaction Commit] ⚠️ commit-transaction! will modify selection - current: " current-selection ", transaction after-selection: " after-sel))))))
+    (swap! !state (fn [current-state]
+                    (let [new-doc (apply-transaction (:doc current-state) (:ops transaction))
+                          after-sel (:after-selection transaction)
+                          new-path (when after-sel (:path (:start after-sel)))]
+                      (if merge?
+                        (cond-> (assoc current-state :doc new-doc :selection after-sel)
+                          new-path (assoc :focused-path new-path))
+                        (let [next-state (hist/push-history current-state new-doc :new-selection after-sel)]
+                          (cond-> next-state
+                            new-path (assoc :focused-path new-path))))))))

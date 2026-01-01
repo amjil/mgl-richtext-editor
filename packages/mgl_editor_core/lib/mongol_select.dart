@@ -59,6 +59,7 @@ class MongolSelect<T> extends StatefulWidget {
 class _MongolSelectState<T> extends State<MongolSelect<T>>
     with SingleTickerProviderStateMixin {
   final LayerLink _link = LayerLink();
+  final GlobalKey _buttonKey = GlobalKey();
   OverlayEntry? _overlay;
 
   late final AnimationController _controller;
@@ -101,8 +102,33 @@ class _MongolSelectState<T> extends State<MongolSelect<T>>
   }
 
   void _show() {
+    // Use post-frame callback to ensure layout is complete and update overlay
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      
+      // Update overlay to recalculate position
+      if (_overlay != null && mounted) {
+        _overlay!.markNeedsBuild();
+      }
+    });
+    
     _overlay = OverlayEntry(
+      maintainState: true,
       builder: (context) {
+        // Recalculate in builder to get latest position
+        bool openToLeft = widget.openToLeft;
+        final RenderBox? renderBox = _buttonKey.currentContext?.findRenderObject() as RenderBox?;
+        if (renderBox != null) {
+          final buttonPosition = renderBox.localToGlobal(Offset.zero);
+          final screenWidth = MediaQuery.of(context).size.width;
+          final buttonCenterX = buttonPosition.dx + renderBox.size.width / 2;
+          
+          if (widget.openToLeft) {
+            // Smart positioning: button on right side -> open left, button on left side -> open right
+            openToLeft = buttonCenterX > screenWidth / 2;
+          }
+        }
+        
         return Stack(
           clipBehavior: Clip.none,
           children: [
@@ -112,10 +138,10 @@ class _MongolSelectState<T> extends State<MongolSelect<T>>
             ),
             CompositedTransformFollower(
               link: _link,
-              showWhenUnlinked: false,
-              offset: widget.openToLeft
+              showWhenUnlinked: true,
+              offset: openToLeft
                   ? Offset(-widget.menuWidth, 0) // Open to the left
-                  : Offset.zero, // Open to the right
+                  : Offset(0, 0), // Open to the right
               child: Material(
                 color: Colors.transparent,
                 clipBehavior: Clip.none,
@@ -123,7 +149,7 @@ class _MongolSelectState<T> extends State<MongolSelect<T>>
                   opacity: _fade,
                   child: ScaleTransition(
                     scale: _scale,
-                    alignment: widget.openToLeft
+                    alignment: openToLeft
                         ? Alignment.centerRight
                         : Alignment.centerLeft,
                     child: _buildMenu(context),
@@ -231,6 +257,7 @@ class _MongolSelectState<T> extends State<MongolSelect<T>>
     return CompositedTransformTarget(
       link: _link,
       child: GestureDetector(
+        key: _buttonKey,
         behavior: HitTestBehavior.opaque,
         onTap: _toggle,
         child: Column(

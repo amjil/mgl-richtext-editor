@@ -38,6 +38,7 @@ class MglSelectableTextState extends State<MglSelectableText>
   final GlobalKey _textKey = GlobalKey();
   late FocusNode _focusNode;
   late AnimationController _caretController;
+  bool _isRegistered = false;
 
   @override
   void initState() {
@@ -64,12 +65,13 @@ class MglSelectableTextState extends State<MglSelectableText>
   }
 
   void _register() {
-    if (widget.onMounted != null) {
+    if (widget.onMounted != null && !_isRegistered) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final renderBox =
             _textKey.currentContext?.findRenderObject() as RenderBox?;
         if (renderBox != null && renderBox is MongolRenderParagraph) {
           widget.onMounted!(renderBox, renderBox);
+          _isRegistered = true;
         }
       });
     }
@@ -108,7 +110,31 @@ class MglSelectableTextState extends State<MglSelectableText>
       _focusNode.requestFocus();
     }
 
-    _register();
+    // Force repaint if selection changed
+    if (widget.selection != oldWidget.selection) {
+      setState(() {});
+    }
+    
+    // Always ensure caret is visible when focused and selection is collapsed
+    // This handles the case where user clicks the same position again
+    if (widget.selection != null &&
+        widget.selection!.isCollapsed &&
+        _focusNode.hasFocus) {
+      // Ensure caret animation is running
+      if (!_caretController.isAnimating) {
+        _caretController.value = 1.0;
+        _caretController.repeat(reverse: true);
+      }
+      // Always force repaint to ensure cursor visibility, even if selection is the same
+      // This is critical for cursor visibility when clicking the same position
+      setState(() {});
+    }
+
+    // Only register if not already registered or if key changed
+    if (!_isRegistered || widget.key != oldWidget.key) {
+      _isRegistered = false;
+      _register();
+    }
   }
 
   @override
@@ -169,11 +195,15 @@ class MglSelectableTextState extends State<MglSelectableText>
               },
             ),
           if (widget.selection != null && !widget.selection!.isCollapsed)
-            CustomPaint(
-              painter: _MongolSelectionPainter(
-                textKey: _textKey,
-                selection: widget.selection!,
-              ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                return CustomPaint(
+                  painter: _MongolSelectionPainter(
+                    textKey: _textKey,
+                    selection: widget.selection!,
+                  ),
+                );
+              },
             ),
         ],
       ),
@@ -225,15 +255,40 @@ class _MongolSelectionPainter extends CustomPainter {
         textKey.currentContext?.findRenderObject() as MongolRenderParagraph?;
     if (renderBox == null) return;
 
-    final boxes = renderBox.getBoxesForSelection(selection);
-    final paint = Paint()..color = Colors.blue.withOpacity(0.3);
+    // Ensure layout is complete before getting selection boxes
+    if (renderBox.hasSize && renderBox.attached) {
+      try {
+        // Ensure the selection is valid and not collapsed
+        if (selection.isCollapsed) return;
+        
+        // Get text length from textPainter
+        final textLength = renderBox.textPainter.text?.toPlainText().length ?? 0;
+        
+        // Ensure selection offsets are within valid range
+        if (selection.baseOffset < 0 || selection.extentOffset < 0 ||
+            selection.baseOffset > textLength || selection.extentOffset > textLength) {
+          return;
+        }
+        
+        final boxes = renderBox.getBoxesForSelection(selection);
+        if (boxes.isEmpty) return;
+        
+        final paint = Paint()..color = Colors.blue.withOpacity(0.3);
 
-    for (final box in boxes) {
-      canvas.drawRect(box, paint);
+        for (final box in boxes) {
+          canvas.drawRect(box, paint);
+        }
+      } catch (e) {
+        // If there's an error getting selection boxes, just skip painting
+        // This can happen if the selection is invalid or layout is not ready
+      }
     }
   }
 
   @override
-  bool shouldRepaint(covariant _MongolSelectionPainter oldDelegate) =>
-      oldDelegate.selection != selection;
+  bool shouldRepaint(covariant _MongolSelectionPainter oldDelegate) {
+    // Compare selection by baseOffset and extentOffset, not by reference
+    return oldDelegate.selection.baseOffset != selection.baseOffset ||
+           oldDelegate.selection.extentOffset != selection.extentOffset;
+  }
 }

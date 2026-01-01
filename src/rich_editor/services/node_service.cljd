@@ -1,5 +1,7 @@
 (ns rich-editor.services.node-service
-  (:require ["package:flutter/rendering.dart" :as r]))
+  (:require ["package:flutter/rendering.dart" :as r]
+            ["package:flutter/widgets.dart" :as widgets]
+            [rich-editor.utils.logger :as log]))
 
 ;; --- global node registry ---
 ;; storage structure: {path-vector {:render-box RenderBox :selectable SelectableMixin :focus-node FocusNode}}
@@ -8,17 +10,26 @@
 (defonce !sorted-top-levels (atom []))
 
 (defn- rebuild-cache! [new-registry]
-  (let [grouped (group-by (comp first key) new-registry)
+  (let [registry-size (count new-registry)
+        registry-keys (keys new-registry)
+        ;; group-by expects a collection, so we need to convert map to seq of entries first
+        ;; Each entry is [path value], we group by (first path) which is the top-level index
+        grouped (group-by (fn [[path _]] (first path)) (seq new-registry))
         sorted-keys (vec (sort (keys grouped)))]
+    (log/log-info (str "[Cache Rebuild] rebuild-cache! - registry size: " registry-size ", registry keys: " registry-keys))
+    (log/log-info (str "[Cache Rebuild] grouped keys: " (keys grouped) ", grouped size: " (count grouped)))
+    (log/log-info (str "[Cache Rebuild] sorted-keys: " sorted-keys))
     (reset! !nodes-by-top-level grouped)
     (reset! !sorted-top-levels sorted-keys)))
 
 ;; Keep cache in sync
 (add-watch !node-registry :node-cache
-  (fn [_ _ _ new-registry]
+  (fn [_ _ old-registry new-registry]
+    (log/log-info (str "[Cache Rebuild] ⚠️ watch triggered - old registry size: " (count old-registry) ", new registry size: " (count new-registry)))
     (rebuild-cache! new-registry)))
 
 ;; Initial sync for hot-reloads
+(log/log-info (str "[Cache Rebuild] initial sync - registry size: " (count @!node-registry)))
 (rebuild-cache! @!node-registry)
 
 ;; --- register and unregister ---
@@ -26,19 +37,82 @@
 (defn register-node!
   "when the MongolRichText component is mounted or rendered, cache its render object"
   [path render-box selectable focus-node]
-  (swap! !node-registry assoc path {:render-box render-box
-                                    :selectable selectable
-                                    :focus-node focus-node}))
+  (let [was-registered? (contains? @!node-registry path)
+        old-size (count @!node-registry)]
+    ;; swap! will trigger the add-watch, which will automatically rebuild cache
+    (swap! !node-registry assoc path {:render-box render-box
+                                      :selectable selectable
+                                      :focus-node focus-node})
+    ;; Manually rebuild cache as fallback (watch might not trigger after hot reload)
+    (let [new-registry @!node-registry
+          cache-size (count @!sorted-top-levels)
+          registry-size (count new-registry)]
+      ;; Only log when registering a new node (not re-registering existing one)
+      (when-not was-registered?
+        (log/log-info (str "[Node Registration] register-node! - path: " path ", size before: " old-size ", size after: " registry-size)))
+      ;; Rebuild cache if it's empty or if registry size changed (new node added)
+      (when (or (zero? cache-size) (not= cache-size registry-size))
+        (log/log-info (str "[Node Registration] cache needs rebuild - registry size: " registry-size ", cache size: " cache-size))
+        (rebuild-cache! new-registry)))))
 
 (defn unregister-node!
   "when the component is destroyed, prevent memory leaks"
   [path]
+  ;; swap! will trigger the add-watch, which will automatically rebuild cache
   (swap! !node-registry dissoc path))
 
 (defn focus-node! [path]
   (when-let [node (get @!node-registry path)]
     (when-let [focus-node (:focus-node node)]
-      (.requestFocus focus-node))))
+      ;; Always ensure focus is requested, even if already has focus
+      ;; This ensures cursor visibility in edge cases
+      ;; Even if already has focus, request again to trigger focus change event
+      ;; which will call setState and ensure cursor is visible
+      (if (.-hasFocus focus-node)
+        ;; If already has focus, request again to trigger focus change event
+        ;; This ensures cursor visibility when clicking the same position
+        (do
+          (log/log-info (str "[Focus] focus-node! called, path: " path ", already has focus, re-requesting to trigger update"))
+          (try
+            (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
+              (.addPostFrameCallback widgets-binding-instance
+                (fn [_]
+                  ;; Request focus again to trigger focus change event
+                  (.requestFocus focus-node))))
+            (catch Exception _e
+              ;; Fallback: try immediate request
+              (.requestFocus focus-node))))
+        ;; Request focus if not already focused
+        (do
+          (log/log-info (str "[Focus] focus-node! called, path: " path ", focus-node exists?: " (some? focus-node)))
+          ;; Use addPostFrameCallback to ensure the widget is fully built before requesting focus
+          ;; This is necessary because requestFocus might fail if called before the widget is fully rendered
+          (try
+            ;; Use WidgetsBinding.instance (same as SchedulerBinding.instance)
+            (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
+              (.addPostFrameCallback widgets-binding-instance
+                (fn [_]
+                  (log/log-info (str "[Focus] deferred focus request, path: " path))
+                  (.requestFocus focus-node)
+                  ;; Focus change is asynchronous, check after a short delay
+                  (.addPostFrameCallback widgets-binding-instance
+                    (fn [_]
+                      (log/log-info (str "[Focus] focus request completed, hasFocus: " (.-hasFocus focus-node))))))))
+            (catch Exception e
+              ;; Fallback: try immediate request if SchedulerBinding is not available
+              (log/log-warn (str "[Focus] SchedulerBinding unavailable, using immediate request: " e))
+              (.requestFocus focus-node)
+              ;; Check focus status after a short delay
+              (try
+                (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
+                  (.addPostFrameCallback widgets-binding-instance
+                    (fn [_]
+                      (log/log-info (str "[Focus] immediate request completed, hasFocus: " (.-hasFocus focus-node))))))
+                (catch Exception _e
+                  ;; Ignore errors in fallback focus check
+                  nil)))))))
+    (when-not (get @!node-registry path)
+      (log/log-warn (str "[Focus] ⚠️ node not registered, path: " path)))))
 
 ;; --- core query functions ---
 
@@ -49,9 +123,52 @@
         nodes-map @!nodes-by-top-level
         target-x (.-dx global-offset)
         target-y (.-dy global-offset)
-        n (count top-indices)]
+        n (count top-indices)
+        registry-size (count @!node-registry)
+        registry-keys (keys @!node-registry)]
+    ;; Only log when cache is empty or in debug mode to avoid performance issues during dragging
+    (when (zero? n)
+      (log/log-info (str "[Node Lookup] get-node-at-offset - global-offset: " global-offset ", top-indices count: " n ", registry size: " registry-size ", registry keys: " registry-keys)))
     (if (zero? n)
-      nil
+      (do
+        (log/log-warn (str "[Node Lookup] cache is empty, using direct registry traversal - top-indices: " top-indices ", nodes-map keys: " (keys nodes-map)))
+        ;; Fallback: directly search all nodes in registry
+        (if (zero? registry-size)
+          nil
+          (let [best-result
+                (reduce (fn [best [path {:keys [render-box selectable]}]]
+                          (if (and render-box (.-attached render-box))
+                            (let [size (.-size render-box)
+                                  global-origin (.localToGlobal render-box r/Offset.zero)
+                                  left (.-dx global-origin)
+                                  right (+ left (.-width size))
+                                  top (.-dy global-origin)
+                                  bottom (+ top (.-height size))
+                                  inside? (and (>= target-x left) (<= target-x right)
+                                               (>= target-y top) (<= target-y bottom))]
+                              (if inside?
+                                (reduced {:path path :selectable selectable :render-box render-box})
+                                (let [dist-x (if (< target-x left)
+                                               (- left target-x)
+                                               (if (> target-x right)
+                                                 (- target-x right)
+                                                 0.0))
+                                      dist-y (if (< target-y top)
+                                               (- top target-y)
+                                               (if (> target-y bottom)
+                                                 (- target-y bottom)
+                                                 0.0))
+                                      ;; Use squared distance to avoid sqrt (just for comparison)
+                                      dist-sq (+ (* dist-x dist-x) (* dist-y dist-y))]
+                                  (if (or (nil? best) (< dist-sq (get best :dist-sq 1.7976931348623157e+308)))
+                                    {:path path :selectable selectable :render-box render-box :dist-sq dist-sq}
+                                    best))))
+                            best))
+                        nil
+                        @!node-registry)]
+            (when (and best-result (or (nil? (:dist-sq best-result)) (< (:dist-sq best-result) (* 200.0 200.0))))
+              (log/log-info (str "[Node Lookup] ✅ found node via direct traversal: " (:path best-result)))
+              (dissoc best-result :dist-sq)))))
       (loop [low 0
              high (dec n)
              best-node nil
@@ -77,8 +194,11 @@
                               bottom (+ top (.-height size))
                               inside? (and (>= target-x left) (<= target-x right)
                                            (>= target-y top) (<= target-y bottom))]
+                          ;; Only log when inside to reduce noise during dragging
                           (if inside?
-                            {:found {:path path :selectable selectable :render-box render-box}}
+                            (do
+                              (log/log-info (str "[Node Lookup] ✅ found node: " path))
+                              {:found {:path path :selectable selectable :render-box render-box}})
                             (let [dist-x (cond
                                            (< target-x left) (- left target-x)
                                            (> target-x right) (- target-x right)
@@ -103,8 +223,12 @@
                   (recur (inc mid) high (if (< b-min min-dist) b-best best-node) (min b-min min-dist))))))
           
           ;; Final result
-          (when (and best-node (< min-dist 200.0))
-            best-node))))))
+          (let [result (when (and best-node (< min-dist 200.0))
+                         best-node)]
+            (if result
+              (log/log-info (str "[Node Lookup] ✅ found nearest node: " (:path result) ", distance: " min-dist))
+              (log/log-warn (str "[Node Lookup] ❌ node not found - best-node: " best-node ", min-dist: " min-dist)))
+            result))))))
 
 (defn get-selectable-by-path
   "get the render interface of the node directly by path"

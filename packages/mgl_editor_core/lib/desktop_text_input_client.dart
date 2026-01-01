@@ -35,14 +35,45 @@ class DesktopTextInputClient implements DeltaTextInputClient {
 
   @override
   void updateEditingValueWithDeltas(List<TextEditingDelta> deltas) {
-    if (updatingFromEditor) return;
+    if (updatingFromEditor) {
+      return;
+    }
     
+    // Apply deltas to _currentValue to keep it in sync
+    TextEditingValue updatedValue = _currentValue;
     for (var delta in deltas) {
-      if (delta is TextEditingDeltaInsertion) {
+      // Handle selection-only changes - check if this is a non-text update that only changes selection
+      // These should be ignored when they come from system (not from user input)
+      if (delta is TextEditingDeltaNonTextUpdate) {
+        continue;
+      } else if (delta is TextEditingDeltaInsertion) {
+        // Update _currentValue to reflect the insertion
+        final newText = updatedValue.text.substring(0, delta.insertionOffset) +
+            delta.textInserted +
+            updatedValue.text.substring(delta.insertionOffset);
+        final newSelection = TextSelection.collapsed(
+          offset: delta.insertionOffset + delta.textInserted.length,
+        );
+        updatedValue = TextEditingValue(
+          text: newText,
+          selection: newSelection,
+        );
+        
         if (delta.textInserted.isNotEmpty) {
           onInsertText(delta.textInserted);
         }
       } else if (delta is TextEditingDeltaDeletion) {
+        // Update _currentValue to reflect the deletion
+        final newText = updatedValue.text.substring(0, delta.deletedRange.start) +
+            updatedValue.text.substring(delta.deletedRange.end);
+        final newSelection = TextSelection.collapsed(
+          offset: delta.deletedRange.start,
+        );
+        updatedValue = TextEditingValue(
+          text: newText,
+          selection: newSelection,
+        );
+        
         final deletedLen = delta.deletedRange.end - delta.deletedRange.start;
         if (deletedLen > 0) {
           // Robust check: if IME asks to delete, and we have no selection, it MUST be a backspace/delete.
@@ -59,6 +90,18 @@ class DesktopTextInputClient implements DeltaTextInputClient {
           }
         }
       } else if (delta is TextEditingDeltaReplacement) {
+        // Update _currentValue to reflect the replacement
+        final newText = updatedValue.text.substring(0, delta.replacedRange.start) +
+            delta.replacementText +
+            updatedValue.text.substring(delta.replacedRange.end);
+        final newSelection = TextSelection.collapsed(
+          offset: delta.replacedRange.start + delta.replacementText.length,
+        );
+        updatedValue = TextEditingValue(
+          text: newText,
+          selection: newSelection,
+        );
+        
         if (delta.replacedRange.end - delta.replacedRange.start > 0) {
           if (!_currentValue.selection.isCollapsed) {
             onDeleteSelection();
@@ -71,6 +114,9 @@ class DesktopTextInputClient implements DeltaTextInputClient {
         }
       }
     }
+    
+    // Update _currentValue after processing all deltas
+    _currentValue = updatedValue;
   }
 
   @override

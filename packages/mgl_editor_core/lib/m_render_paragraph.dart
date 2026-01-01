@@ -279,10 +279,14 @@ class MongolRenderParagraph extends RenderBox
   }
 
   List<Rect> getBoxesForSelection(TextSelection selection) {
+    // Ensure layout is complete before getting selection boxes
+    _layoutTextWithConstraints(constraints);
     return textPainter.getBoxesForSelection(selection);
   }
 
   TextPosition getPositionForOffset(Offset offset) {
+    // Ensure layout is complete before getting position
+    _layoutTextWithConstraints(constraints);
     return textPainter.getPositionForOffset(offset);
   }
 }

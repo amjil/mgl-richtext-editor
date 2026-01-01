@@ -15,6 +15,23 @@
          :last-edited-at 0
          :last-op-type nil})) ;; store the timestamp in milliseconds
 
+;; Add watch to track all selection changes (only log path changes or significant offset changes)
+(add-watch !editor-state :selection-tracker
+  (fn [_ _ old-state new-state]
+    (let [old-sel (:selection old-state)
+          new-sel (:selection new-state)]
+      (when (not= old-sel new-sel)
+        (let [old-path (when old-sel (:path (:start old-sel)))
+              new-path (when new-sel (:path (:start new-sel)))
+              old-offset (when old-sel (:offset (:start old-sel)))
+              new-offset (when new-sel (:offset (:start new-sel)))
+              path-changed? (not= old-path new-path)
+              offset-diff (when (and old-offset new-offset) (max (- new-offset old-offset) (- old-offset new-offset)))]
+          ;; Only log when path changes or offset changes very significantly (normal multi-char input like IME is expected)
+          ;; Threshold of 5 allows normal IME input (2-4 chars) without logging
+          (when (or path-changed? (and offset-diff (> offset-diff 5)))
+            (log/log-info (str "[Selection Tracker] selection modified - old: " old-sel ", new: " new-sel))))))))
+
 (defn focus-block! [path]
   (swap! !editor-state assoc :focused-path path))
 
@@ -22,7 +39,20 @@
   (swap! !editor-state assoc :focused-path nil))
 
 (defn update-selection! [new-selection]
-  (swap! !editor-state assoc :selection new-selection))
+  (let [old-selection (:selection @!editor-state)]
+    ;; Only log significant selection changes (path changes or large offset differences)
+    (when (not= old-selection new-selection)
+      (let [old-path (when old-selection (:path (:start old-selection)))
+            new-path (when new-selection (:path (:start new-selection)))
+            old-offset (when old-selection (:offset (:start old-selection)))
+            new-offset (when new-selection (:offset (:start new-selection)))
+            path-changed? (not= old-path new-path)
+            offset-diff (when (and old-offset new-offset) (max (- new-offset old-offset) (- old-offset new-offset)))]
+        ;; Only log when path changes or offset changes very significantly (normal multi-char input like IME is expected)
+        ;; Threshold of 5 allows normal IME input (2-4 chars) without logging
+        (when (or path-changed? (and offset-diff (> offset-diff 5)))
+          (log/log-info (str "[Selection State] update-selection! - old: " old-selection ", new: " new-selection)))))
+    (swap! !editor-state assoc :selection new-selection)))
 
 (defn apply-action! [action-fn & args]
   (swap! !editor-state (fn [curr]
@@ -53,7 +83,8 @@
 (defn on-text-changed! [path new-delta]
   (let [curr @!editor-state
         children (get-in curr [:doc :children])
-        idx (first path)]
+        idx (first path)
+        current-selection (:selection curr)]
     (if (and (number? idx) (>= idx 0) (< idx (count children)))
       (let [;; Determine operation type (insert vs delete) by comparing text length
             old-delta (get-in curr (cons :doc (node/path->ks path)))
@@ -66,7 +97,7 @@
             ;; Wrap the text update in a transaction
             transaction (tx/make-transaction
                          :ops [(tx/update-text-op path new-delta)]
-                         :after-selection (:selection curr))]
+                         :after-selection current-selection)]
         (commit-with-history! transaction current-op-type))
       (log/log-warn (str "Ignored on-text-changed! with invalid path: " path)))))
 

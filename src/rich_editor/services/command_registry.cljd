@@ -1,0 +1,28 @@
+(ns rich-editor.services.command-registry)
+
+;; =============================================================
+;; Command Registry
+;; =============================================================
+;; This registry breaks circular dependencies by allowing
+;; command functions to be registered and accessed without
+;; direct namespace dependencies.
+
+(defonce !commands (atom {}))
+
+(defn register-command!
+  "Register a command function
+   key: command identifier, e.g., :copy-selection, :cut-selection
+   fn: command function"
+  [key fn]
+  (swap! !commands assoc key fn))
+
+(defn get-command
+  "Get a registered command function"
+  [key]
+  (get @!commands key))
+
+(defn register-commands!
+  "Register multiple commands at once"
+  [command-map]
+  (swap! !commands merge command-map))
+

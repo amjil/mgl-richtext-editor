@@ -457,13 +457,10 @@
    (m/GestureDetector
     .behavior m/HitTestBehavior.opaque
     .onTap (fn []
+             ;; Don't automatically move cursor to end - let handle-tap-down! handle cursor positioning
+             ;; Only focus the block if it's not already focused
              (when-not is-focused?
-               (state/focus-block! path)
-               ;; Also update selection to the end of this block when clicking
-               (let [block-delta (get-in block [:data :delta])
-                     text-len (count (delta-utils/delta->text block-delta))
-                     new-pos (sel/make-position path text-len)]
-                 (state/update-selection! (sel/make-selection new-pos new-pos)))))
+               (state/focus-block! path)))
     .child
     (m/AnimatedContainer
      .duration (Duration .milliseconds 250)
@@ -478,20 +475,21 @@
                                           .width 2.0)))
      .child (m/Column
              :mainAxisSize m/MainAxisSize.min
-             :crossAxisAlignment m/CrossAxisAlignment.start
+             :crossAxisAlignment m/CrossAxisAlignment.center
              :children
              [(block-menu-button path block)
-              (if (pos? level)
-                (if (= direction :ttb)
-                  (m/Column
-                   :mainAxisSize m/MainAxisSize.min
-                   :crossAxisAlignment m/CrossAxisAlignment.start
-                   :children [(m/SizedBox :height indent-width) child])
-                  (m/Row
-                   :mainAxisSize m/MainAxisSize.min
-                   :crossAxisAlignment m/CrossAxisAlignment.start
-                   :children [(m/SizedBox :width indent-width) child]))
-                child)])))))
+              (m/Flexible
+               :child (if (pos? level)
+                       (if (= direction :ttb)
+                         (m/Column
+                          :mainAxisSize m/MainAxisSize.min
+                          :crossAxisAlignment m/CrossAxisAlignment.start
+                          :children [(m/SizedBox :height indent-width) child])
+                         (m/Row
+                          :mainAxisSize m/MainAxisSize.min
+                          :crossAxisAlignment m/CrossAxisAlignment.start
+                          :children [(m/SizedBox :width indent-width) child]))
+                       child))])))))
 
 
 (defn block-entry [path block text-keys-atom]

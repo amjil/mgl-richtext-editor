@@ -32,8 +32,8 @@ class _EditorKeyboardListenerState extends State<EditorKeyboardListener> {
       focusNode: _focusNode,
       autofocus: true,
       onKeyEvent: (node, event) {
-        // Only process KeyDownEvent for shortcuts/navigation
-        if (event is KeyDownEvent) {
+        // Process KeyDownEvent and KeyRepeatEvent for shortcuts/navigation
+        if (event is KeyDownEvent || event is KeyRepeatEvent) {
           final logicalKey = event.logicalKey;
           final keyLabel = logicalKey.keyLabel;
           
@@ -52,7 +52,9 @@ class _EditorKeyboardListenerState extends State<EditorKeyboardListener> {
 
           if (isNavigationKey || isShortcut) {
             final handled = widget.onKeyEvent(event);
-            return handled ? KeyEventResult.handled : KeyEventResult.ignored;
+            // Always return handled for shortcuts to prevent system default behavior
+            // even if the handler returns false (e.g., no selection to copy)
+            return handled ? KeyEventResult.handled : KeyEventResult.handled;
           }
         }
         return KeyEventResult.ignored;
