@@ -434,7 +434,7 @@
                      :to-h3 (text-cmd/convert-block-to-heading3!)
                      :to-numbered (text-cmd/convert-to-numbered-list!)
                      :to-bullet (text-cmd/convert-to-bulleted-list!)
-                     :to-todo (text-cmd/convert-to-todo-list!)
+                     :to-todo (text-cmd/convert-list-to-todo!)
                      nil)))
     .items [(MongolSelectItem .value :move-up .label (mgl/MongolText "Move Up") .group (mgl/MongolText "Action"))
             (MongolSelectItem .value :move-down .label (mgl/MongolText "Move Down") .group (mgl/MongolText "Action"))

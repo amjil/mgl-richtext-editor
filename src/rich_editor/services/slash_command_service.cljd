@@ -1,6 +1,7 @@
 (ns rich-editor.services.slash-command-service
   (:require [rich-editor.ui-state :as ui]
             [rich-editor.command.text-commands :as text-cmd]
+            [rich-editor.utils.logger :as log]
             [clojure.string :as str]))
 
 ;; =============================================================
@@ -36,20 +37,10 @@
 ;; Command State Management
 ;; =============================================================
 
-(defn activate-slash-command!
-  "Activate slash command mode"
-  []
-  (ui/set-slash-command! true ""))
-
 (defn deactivate-slash-command!
   "Deactivate slash command mode"
   []
   (ui/set-slash-command! false ""))
-
-(defn update-slash-command-query!
-  "Update query string"
-  [query]
-  (ui/set-slash-command! true query))
 
 ;; =============================================================
 ;; Command Execution
@@ -64,7 +55,7 @@
         (try
           (action)
           (catch Exception e
-            (println "Error executing command:" command-id e))))
+            (log/log-error (str "Error executing command: " command-id) e))))
       (deactivate-slash-command!))))
 
 (defn get-filtered-commands

@@ -5,6 +5,13 @@
             [rich-editor.utils.delta :as delta-utils]
             [rich-editor.utils.logger :as log]))
 
+;; =============================================================
+;; Constants
+;; =============================================================
+
+(def ^:private merge-interval-ms 1000)
+(def ^:private selection-log-threshold 5)
+
 ;; 1. define the initial state
 (defonce !editor-state
   (atom {:doc {:children [{:id "b1" :type :paragraph :data {:delta {:operations []}}}]}
@@ -28,15 +35,12 @@
               path-changed? (not= old-path new-path)
               offset-diff (when (and old-offset new-offset) (max (- new-offset old-offset) (- old-offset new-offset)))]
           ;; Only log when path changes or offset changes very significantly (normal multi-char input like IME is expected)
-          ;; Threshold of 5 allows normal IME input (2-4 chars) without logging
-          (when (or path-changed? (and offset-diff (> offset-diff 5)))
+          ;; Threshold allows normal IME input (2-4 chars) without logging
+          (when (or path-changed? (and offset-diff (> offset-diff selection-log-threshold)))
             (log/log-info (str "[Selection Tracker] selection modified - old: " old-sel ", new: " new-sel))))))))
 
 (defn focus-block! [path]
   (swap! !editor-state assoc :focused-path path))
-
-(defn blur-all! []
-  (swap! !editor-state assoc :focused-path nil))
 
 (defn update-selection! [new-selection]
   (let [old-selection (:selection @!editor-state)]
@@ -49,8 +53,8 @@
             path-changed? (not= old-path new-path)
             offset-diff (when (and old-offset new-offset) (max (- new-offset old-offset) (- old-offset new-offset)))]
         ;; Only log when path changes or offset changes very significantly (normal multi-char input like IME is expected)
-        ;; Threshold of 5 allows normal IME input (2-4 chars) without logging
-        (when (or path-changed? (and offset-diff (> offset-diff 5)))
+        ;; Threshold allows normal IME input (2-4 chars) without logging
+        (when (or path-changed? (and offset-diff (> offset-diff selection-log-threshold)))
           (log/log-info (str "[Selection State] update-selection! - old: " old-selection ", new: " new-selection)))))
     (swap! !editor-state assoc :selection new-selection)))
 
@@ -64,9 +68,9 @@
   (let [last-time (:last-edited-at curr-state)
         last-op-type (:last-op-type curr-state)
         interval (- now-ms last-time)]
-    ;; if the interval between two inputs is less than 1000ms, the state is not empty,
+    ;; if the interval between two inputs is less than merge-interval-ms, the state is not empty,
     ;; and the operation type is the same as the last one, then merge
-    (and (< interval 1000) 
+    (and (< interval merge-interval-ms) 
          (pos? last-time)
          (= last-op-type current-op-type))))
 

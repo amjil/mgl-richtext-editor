@@ -9,13 +9,6 @@
 
 (defonce !commands (atom {}))
 
-(defn register-command!
-  "Register a command function
-   key: command identifier, e.g., :copy-selection, :cut-selection
-   fn: command function"
-  [key fn]
-  (swap! !commands assoc key fn))
-
 (defn get-command
   "Get a registered command function"
   [key]

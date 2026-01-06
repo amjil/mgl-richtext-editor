@@ -22,9 +22,6 @@
   [key handler]
   (swap! !shortcut-handlers assoc key handler))
 
-(defn unregister-shortcut! [key]
-  (swap! !shortcut-handlers dissoc key))
-
 ;; =============================================================
 ;; Default shortcut bindings
 ;; =============================================================
@@ -70,7 +67,7 @@
   (register-shortcut! :cmd-k #(cmd/delete-to-line-end!))
   (register-shortcut! :alt-backspace #(cmd/delete-word-backward!))
   (register-shortcut! :cmd-backspace #(cmd/delete-to-line-start!))
-  (register-shortcut! :cmd-delete #(cmd/delete-to-line-end-forward!))
+  (register-shortcut! :cmd-delete #(cmd/delete-to-line-end!))
   
   ;; Search shortcuts
   (register-shortcut! :cmd-f #(search-cmd/show-find-dialog!))

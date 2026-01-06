@@ -6,6 +6,7 @@
    [rich-editor.command.text-commands :as text-cmd]
    [rich-editor.model.selection :as sel]
    [rich-editor.model.delta :as delta-model]
+   [rich-editor.model.node :as node]
    [rich-editor.utils.delta :as delta-utils]
    [virtual-keyboard.keyboard :as keyboard]
             [virtual-keyboard.options :as keyboard-options]
@@ -73,9 +74,6 @@
                                                                                           (.-onSurfaceVariant color-scheme)
                                                                                           (.-onSurface color-scheme)))))))))]))))))))
 
-(defn- get-block-at-path [doc path]
-  (get-in doc [:children (first path)]))
-
 (defn get-selected-text [editor-state]
   (let [selection (:selection editor-state)]
     (if (and selection (not (sel/collapsed? selection)))
@@ -85,7 +83,7 @@
             start-offset (:offset (:start normalized))
             end-offset (:offset (:end normalized))]
         (if (= start-path end-path)
-          (let [block (get-block-at-path (:doc editor-state) start-path)
+          (let [block (node/get-block-at-path (:doc editor-state) start-path)
                 current-delta (get-in block [:data :delta])
                 sliced (delta-model/slice-delta current-delta start-offset end-offset)]
             (delta-utils/delta->text sliced))

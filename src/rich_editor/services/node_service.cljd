@@ -236,9 +236,3 @@
   (get @!node-registry path))
 
 ;; --- helper tools ---
-
-(defn clear-registry! []
-  (reset! !node-registry {}))
-
-(defn all-selectable-nodes []
-  (vals @!node-registry))

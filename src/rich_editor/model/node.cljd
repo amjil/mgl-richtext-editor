@@ -1,5 +1,4 @@
-(ns rich-editor.model.node
-  (:require [clojure.string :as str]))
+(ns rich-editor.model.node)
 
 ;; =============================================================
 ;; Node constructor
@@ -27,21 +26,10 @@
 ;; Query and attribute operations (pure functions)
 ;; =============================================================
 
-(defn text-content
-  "Get the text content of the node (recursively get the text content of all child nodes)"
-  [node]
-  (let [own-text (get-in node [:data :text] "")]
-    (if (empty? (:children node))
-      own-text
-      (str own-text (str/join "" (map text-content (:children node)))))))
-
 (defn get-attribute
   "Get the attribute of the node"
   [node k default]
   (get-in node [:attributes k] default))
-
-(defn update-data [node k f]
-  (update-in node [:data k] f))
 
 ;; =============================================================
 ;; Document tree path lookup (Path Operations)
@@ -57,20 +45,40 @@
         (recur child (rest path))
         nil))))
 
+(defn get-block-at-path
+  "Get a block from the document by path. This is a convenience function for getting top-level blocks."
+  [doc path]
+  (get-in doc [:children (first path)]))
+
+(defn insert-block-at-index
+  "Insert a new block at the specified index in the document.
+   Returns a new document with the block inserted."
+  [doc block-index new-block]
+  (let [blocks (:children doc)
+        new-blocks (vec (concat (subvec blocks 0 block-index)
+                               [new-block]
+                               (subvec blocks block-index)))]
+    (assoc doc :children new-blocks)))
+
+(defn update-block-at-index
+  "Update a block at the specified index and optionally remove the next block.
+   Returns a new document with the block updated."
+  [doc block-index updated-block & {:keys [remove-next?]}]
+  (let [blocks (:children doc)]
+    (if remove-next?
+      ;; Update block and remove the next one
+      (let [new-blocks (vec (concat (subvec blocks 0 block-index)
+                                    [updated-block]
+                                    (subvec blocks (+ 2 block-index))))]
+        (assoc doc :children new-blocks))
+      ;; Just update the block
+      (assoc-in doc [:children block-index] updated-block))))
+
 
 
 ;; =============================================================
 ;; Auxiliary conversion
 ;; =============================================================
-
-(defn to-json-map
-  "Serialize the node to a plain Map,JSON-friendly"
-  [node]
-  {:id (:id node)
-   :type (name (:type node))
-   :data (:data node)
-   :attributes (:attributes node)
-   :children (mapv to-json-map (:children node))})
 
 (defn path->ks
   "Convert a path vector [0 1] to a keyword sequence [:children 0 :children 1] for use with get-in/assoc-in.
@@ -81,12 +89,3 @@
     (if (some keyword? path)
       (vec (cons :children path))
       (vec (concat [:children] (interpose :children path))))))
-
-(defn from-json-map
-  "Restore the node structure from the Map,JSON-friendly"
-  [m]
-  (make-node (:id m)
-             (keyword (:type m))
-             (:data m)
-             (mapv from-json-map (:children m))
-             (:attributes m)))

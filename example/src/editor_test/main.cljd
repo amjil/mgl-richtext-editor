@@ -17,7 +17,6 @@
              .useMaterial3 true)
      .home (m/Scaffold
             .appBar (m/AppBar
-                     .title (m/Text "MGL Rich Text Editor")
                      .elevation 0)
             .body (mongol-editor-view)
             ;; (m/Text "Hello, World!"))

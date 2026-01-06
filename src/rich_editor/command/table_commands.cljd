@@ -1,25 +1,8 @@
 (ns rich-editor.command.table-commands
   (:require [rich-editor.state :as state]
             [rich-editor.utils.id :as id]
-            [rich-editor.utils.history :as hist]))
-
-;; =============================================================
-;; Helper Functions
-;; =============================================================
-
-(defn- generate-block-id []
-  ;; Use UUID for unique ID generation
-  (id/gen-block-id))
-
-(defn- get-block-at-path [doc path]
-  (get-in doc [:children (first path)]))
-
-(defn- insert-block-at-index! [doc block-index new-block]
-  (let [blocks (:children doc)
-        new-blocks (vec (concat (subvec blocks 0 block-index)
-                               [new-block]
-                               (subvec blocks block-index)))]
-    (assoc doc :children new-blocks)))
+            [rich-editor.utils.history :as hist]
+            [rich-editor.model.node :as node]))
 
 ;; =============================================================
 ;; Table Creation
@@ -28,7 +11,7 @@
 (defn create-table-block
   "Create a new table block with specified rows and columns"
   [rows cols]
-  {:id (generate-block-id)
+  {:id (id/gen-block-id)
    :type :table
    :data {:rows (vec (for [_r (range rows)]
                        {:cells (vec (for [_c (range cols)]
@@ -52,7 +35,7 @@
              new-table (create-table-block rows cols)]
          (swap! state/!editor-state
            (fn [curr]
-             (let [updated-doc (insert-block-at-index! (:doc curr) (inc block-index) new-table)
+             (let [updated-doc (node/insert-block-at-index (:doc curr) (inc block-index) new-table)
                    new-path [(inc block-index)]]
                (-> (hist/push-history curr updated-doc)
                    (assoc :focused-path new-path))))))))))
@@ -68,7 +51,7 @@
          focused-path (:focused-path state)]
      (when focused-path
        (let [block-index (first focused-path)
-             block (get-block-at-path (:doc state) [block-index])]
+             block (node/get-block-at-path (:doc state) [block-index])]
          (when (= (:type block) :table)
            (let [rows (get-in block [:data :rows] [])
                  col-count (if (empty? rows)
@@ -91,7 +74,7 @@
          focused-path (:focused-path state)]
      (when focused-path
        (let [block-index (first focused-path)
-             block (get-block-at-path (:doc state) [block-index])]
+             block (node/get-block-at-path (:doc state) [block-index])]
          (when (= (:type block) :table)
            (let [rows (get-in block [:data :rows] [])
                  col-count (if (empty? rows)
@@ -118,7 +101,7 @@
         focused-path (:focused-path state)]
     (when focused-path
       (let [block-index (first focused-path)
-            block (get-block-at-path (:doc state) [block-index])]
+            block (node/get-block-at-path (:doc state) [block-index])]
         (when (= (:type block) :table)
           (let [rows (get-in block [:data :rows] [])]
             (when (and (>= row-index 0) (< row-index (count rows)) (> (count rows) 1))
@@ -147,7 +130,7 @@
          focused-path (:focused-path state)]
      (when focused-path
        (let [block-index (first focused-path)
-             block (get-block-at-path (:doc state) [block-index])]
+             block (node/get-block-at-path (:doc state) [block-index])]
          (when (= (:type block) :table)
            (let [rows (get-in block [:data :rows] [])
                  default-rows (if (empty? rows)
@@ -169,7 +152,7 @@
          focused-path (:focused-path state)]
      (when focused-path
        (let [block-index (first focused-path)
-             block (get-block-at-path (:doc state) [block-index])]
+             block (node/get-block-at-path (:doc state) [block-index])]
          (when (= (:type block) :table)
            (let [rows (get-in block [:data :rows] [])]
              (when-not (empty? rows)
@@ -198,7 +181,7 @@
         focused-path (:focused-path state)]
     (when focused-path
       (let [block-index (first focused-path)
-            block (get-block-at-path (:doc state) [block-index])]
+            block (node/get-block-at-path (:doc state) [block-index])]
         (when (= (:type block) :table)
           (let [rows (get-in block [:data :rows] [])
                 first-row-cells (get-in rows [0 :cells] [])]
@@ -312,7 +295,7 @@
          focused-path (:focused-path state)]
      (when focused-path
        (let [block-index (first focused-path)
-             block (get-block-at-path (:doc state) [block-index])
+             block (node/get-block-at-path (:doc state) [block-index])
              rows (get-in block [:data :rows] [])]
          (swap! state/!editor-state
            (fn [curr]
