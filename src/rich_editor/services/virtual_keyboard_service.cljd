@@ -68,37 +68,50 @@
   []
   (let [editor-state @state/!editor-state
         selection (:selection editor-state)]
-    ;; When there's a selection, sync to virtual keyboard
-    ;; Even if editing-value is nil, initialize it
-    (when selection
+    (if selection
+      ;; When there's a selection, sync to virtual keyboard
       (let [normalized (sel/normalize selection)
             path (:path (:start normalized))
             ks (node/path->ks path)
             delta-ks (if (some #{:delta} path) ks (conj ks :data :delta))
             delta (get-in editor-state (cons :doc delta-ks))
             text (delta-utils/delta->text delta)
+            text-len (count text)
             start-offset (:offset (:start normalized))
             end-offset (:offset (:end normalized))
+            ;; Clamp offsets to valid range to prevent "Range start X is out of text of length Y" errors
+            clamped-start (max 0 (min start-offset text-len))
+            clamped-end (max 0 (min end-offset text-len))
             
             ;; Only sync if relevant state (text or selection) changed
-            relevant-state {:text text :sel [start-offset end-offset]}]
+            relevant-state {:text text :sel [clamped-start clamped-end]}]
         (when (not= @last-synced-state relevant-state)
           (let [new-selection (w/TextSelection
-                               :baseOffset start-offset
-                               :extentOffset end-offset)
-                editing-val @control/editing-value
-                new-editing-val (if (some? editing-val)
-                                  (.copyWith editing-val
-                                            :text text
-                                            :selection new-selection)
-                                  (w/TextEditingValue
-                                   :text text
-                                   :selection new-selection))]
+                               :baseOffset clamped-start
+                               :extentOffset clamped-end)
+                new-editing-val (w/TextEditingValue
+                                 :text text
+                                 :selection new-selection)]
             ;; Update virtual keyboard's editing state
             (reset! control/editing-value new-editing-val)
             ;; Notify TextInput system to update editing state
             (service/TextInput.updateEditingValue new-editing-val)
-            (reset! last-synced-state relevant-state)))))))
+            (reset! last-synced-state relevant-state))))
+      ;; When selection is nil (e.g., clicked on blank area), reset virtual keyboard to empty state
+      ;; This prevents RangeError when virtual keyboard tries to insert text at invalid positions
+      (let [empty-state {:text "" :sel [0 0]}]
+        (when (not= @last-synced-state empty-state)
+          (let [empty-selection (w/TextSelection
+                                 :baseOffset 0
+                                 :extentOffset 0)
+                empty-editing-val (w/TextEditingValue
+                                   :text ""
+                                   :selection empty-selection)]
+            ;; Reset virtual keyboard's editing state to empty
+            (reset! control/editing-value empty-editing-val)
+            ;; Notify TextInput system to update editing state
+            (service/TextInput.updateEditingValue empty-editing-val)
+            (reset! last-synced-state empty-state)))))))
 
 (defn initialize!
   "Initialize virtual keyboard service

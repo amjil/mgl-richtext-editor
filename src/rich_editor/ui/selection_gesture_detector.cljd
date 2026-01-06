@@ -33,7 +33,7 @@
                 (sel-service/handle-pan-end! !editor-state details))
 
     ;; 5. double click to select a word (optional)
-    :onDoubleTapDown (fn [^g/TapDownDetails details]
+    :onDoubleTapDown (fn [^m/TapDownDetails details]
                        (sel-service/handle-double-tap!
                         !editor-state
                         (.-globalPosition details)))

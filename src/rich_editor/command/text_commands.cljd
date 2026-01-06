@@ -12,6 +12,7 @@
             [rich-editor.services.markdown-service :as markdown-service]
             [rich-editor.command.table-commands :as table-cmd]
             [rich-editor.services.command-registry :as cmd-registry]
+            [rich-editor.services.node-service :as node-service]
             [rich-editor.utils.logger :as log]
             [clojure.string :as str]
             [rich-editor.ui.selection-menu :as sel-menu]
@@ -224,7 +225,10 @@
             transaction (tx/make-transaction
                          :ops [(tx/update-text-op path new-delta)]
                          :after-selection new-selection)]
-        (state/commit-with-history! transaction :insert)))))
+        (state/commit-with-history! transaction :insert)
+        ;; Ensure focus is maintained after text insertion, especially on mobile
+        ;; This is critical for cursor visibility after input (e.g., space character)
+        (node-service/focus-node! path)))))
 
 (defn- process-markdown-pattern!
   "Process Markdown pattern conversion

@@ -300,23 +300,21 @@
    References mgl-notes-app's search-panel Column layout"
   [{:keys [child show-keyboard?]}]
   (f/widget
-   (m/Stack
-    :children
-    [(m/Column
-      :mainAxisSize m/MainAxisSize.max
-      :crossAxisAlignment m/CrossAxisAlignment.stretch
-      :children
-      [(m/Expanded :child (or child (m/SizedBox.shrink)))
-       (if show-keyboard?
-         (m/Column
-          :mainAxisSize m/MainAxisSize.min
-          :children
-          [(virtual-keyboard-toolbar)
-           (virtual-keyboard-component)])
-         (m/SizedBox.shrink))])
-     ;; Candidates panel (floating display)
+   (m/Column
+    .mainAxisSize m/MainAxisSize.max
+    .crossAxisAlignment m/CrossAxisAlignment.stretch
+    .children
+    [(m/Expanded
+      .child (m/Stack
+              .children
+              [(or child (m/SizedBox.shrink))
+               (candidates-panel)]))
      (if show-keyboard?
-       (candidates-panel)
+       (m/Column
+        .mainAxisSize m/MainAxisSize.min
+        .children
+        [(virtual-keyboard-toolbar)
+         (virtual-keyboard-component)])
        (m/SizedBox.shrink))])))
 
 (defn toolbar
@@ -328,6 +326,6 @@
                           (or (some? (:selection state))
                               (some? (:focused-path state)))))]
    (m/Visibility
-    :visible visible
-    :child widget)))
+    .visible visible
+    .child widget)))
 

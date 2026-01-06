@@ -9,6 +9,7 @@
             [rich-editor.ui.slash-command-menu :refer [slash-command-menu]]
             [rich-editor.ui.selection-gesture-detector :refer [selection-gesture-detector]]
             [rich-editor.services.keyboard-service :as kb-service]
+            [rich-editor.services.virtual-keyboard-service :as vk-service]
             [rich-editor.services.slash-command-service :as slash-cmd]
             [rich-editor.model.selection :as sel]
             [rich-editor.services.scroll-service :as scroll-service]
@@ -56,7 +57,10 @@
            has-focus (f/$ (some? (:focused-path (f/<! !editor-state))))
            slash-command-active? (f/$ (:slash-command-active (f/<! ui/!ui-state)))]
    :let [has-selection (some? selection)
-         show-keyboard? (and (not foundation/kIsWeb) (or has-selection has-focus))
+         is-mobile? (let [platform foundation/defaultTargetPlatform]
+                      (or (= platform m/TargetPlatform.iOS)
+                          (= platform m/TargetPlatform.android)))
+         show-keyboard? (and is-mobile? (or has-selection has-focus))
          
          _ (when (and (nil? selection) (seq blocks))
              (let [first-block-path [0]
@@ -64,6 +68,10 @@
                                      (sel/make-position first-block-path 0)
                                      (sel/make-position first-block-path 0))]
                (swap! !editor-state assoc :selection initial-selection)))
+         
+         _ (when show-keyboard?
+             ;; Initialize virtual keyboard editing state when keyboard should be shown
+             (vk-service/initialize-editing-state!))
          
          computed-slash-position (when (and slash-command-active? selection)
                                    (if-let [global-pos (layout-service/get-selection-global-position selection :start)]
@@ -78,7 +86,8 @@
                    (when selection
                      (scroll-service/check-cursor-auto-scroll selection scroll-controller)
                      (when-not foundation/kIsWeb
-                       (desktop-input/attach!)
+                       ;; Only call attach! if connection doesn't exist or path changed
+                       ;; update-editing-state! will handle the attach if needed
                        (desktop-input/update-editing-state!))))
     .content (virtual-keyboard-wrapper
               {:show-keyboard? show-keyboard?

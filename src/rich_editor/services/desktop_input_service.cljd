@@ -186,35 +186,41 @@
                     (set! (.-updatingFromEditor client) false)))))))))))
 
 (defn update-editing-state! []
-  (let [editor-state @state/!editor-state
-        selection (:selection editor-state)]
-    (when (and selection (some? @text-input-connection))
-      (let [normalized (sel/normalize selection)
-            current-path (:path (:start normalized))
-            start-offset (:offset (:start normalized))
-            client ^DesktopTextInputClient @text-input-client-instance]
-        ;; Only log when path changes (which triggers attach!)
-        (when (not= @last-attached-path current-path)
-          (log/log-info (str "[Desktop Input] update-editing-state! - path changed, calling attach! - path: " current-path ", offset: " start-offset)))
-        (if (not= @last-attached-path current-path)
-          (attach!)
-          (when-let [conn @text-input-connection]
-            (when (and (.-attached conn) client)
-              (let [text (get-current-text)
-                    text-selection (get-current-selection)
-                    editing-value (w/TextEditingValue :text text :selection text-selection)
-                    current-value (.-currentTextEditingValue client)]
-                ;; Only update when text or selection actually changes
-                (when (or (nil? current-value)
-                          (not= (.-text current-value) text)
-                          (not= (.-baseOffset (.-selection current-value)) (.-baseOffset text-selection))
-                          (not= (.-extentOffset (.-selection current-value)) (.-extentOffset text-selection)))
-                  (set! (.-updatingFromEditor client) true)
-                  (try
-                    (.updateState client editing-value)
-                    (.setEditingState conn editing-value)
-                    (finally
-                      (set! (.-updatingFromEditor client) false))))))))))))
+  (when-not foundation/kIsWeb
+    (let [editor-state @state/!editor-state
+          selection (:selection editor-state)]
+      (when selection
+        ;; Ensure client is initialized before use
+        (init-client!)
+        (let [normalized (sel/normalize selection)
+              current-path (:path (:start normalized))
+              start-offset (:offset (:start normalized))
+              client ^DesktopTextInputClient @text-input-client-instance]
+          ;; If connection doesn't exist or path changed, call attach!
+          (if (or (nil? @text-input-connection)
+                  (not= @last-attached-path current-path))
+            (do
+              (when (not= @last-attached-path current-path)
+                (log/log-info (str "[Desktop Input] update-editing-state! - path changed, calling attach! - path: " current-path ", offset: " start-offset)))
+              (attach!))
+            ;; Otherwise, update the existing connection's editing state
+            (when-let [conn @text-input-connection]
+              (when (and (.-attached conn) client)
+                (let [text (get-current-text)
+                      text-selection (get-current-selection)
+                      editing-value (w/TextEditingValue :text text :selection text-selection)
+                      current-value (.-currentTextEditingValue client)]
+                  ;; Only update when text or selection actually changes
+                  (when (or (nil? current-value)
+                            (not= (.-text current-value) text)
+                            (not= (.-baseOffset (.-selection current-value)) (.-baseOffset text-selection))
+                            (not= (.-extentOffset (.-selection current-value)) (.-extentOffset text-selection)))
+                    (set! (.-updatingFromEditor client) true)
+                    (try
+                      (.updateState client editing-value)
+                      (.setEditingState conn editing-value)
+                      (finally
+                        (set! (.-updatingFromEditor client) false)))))))))))))
 
 (defn update-caret-position! [size transform rect]
   (when-let [conn @text-input-connection]

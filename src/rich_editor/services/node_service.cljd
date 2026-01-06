@@ -61,56 +61,63 @@
   ;; swap! will trigger the add-watch, which will automatically rebuild cache
   (swap! !node-registry dissoc path))
 
+(defonce ^:private last-focus-request-time (atom {})) ;; {path timestamp-ms}
+
 (defn focus-node! [path]
   (when-let [node (get @!node-registry path)]
     (when-let [focus-node (:focus-node node)]
-      ;; Always ensure focus is requested, even if already has focus
-      ;; This ensures cursor visibility in edge cases
-      ;; Even if already has focus, request again to trigger focus change event
-      ;; which will call setState and ensure cursor is visible
-      (if (.-hasFocus focus-node)
-        ;; If already has focus, request again to trigger focus change event
-        ;; This ensures cursor visibility when clicking the same position
-        (do
-          (log/log-info (str "[Focus] focus-node! called, path: " path ", already has focus, re-requesting to trigger update"))
-          (try
-            (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
-              (.addPostFrameCallback widgets-binding-instance
-                (fn [_]
-                  ;; Request focus again to trigger focus change event
-                  (.requestFocus focus-node))))
-            (catch Exception _e
-              ;; Fallback: try immediate request
-              (.requestFocus focus-node))))
-        ;; Request focus if not already focused
-        (do
-          (log/log-info (str "[Focus] focus-node! called, path: " path ", focus-node exists?: " (some? focus-node)))
-          ;; Use addPostFrameCallback to ensure the widget is fully built before requesting focus
-          ;; This is necessary because requestFocus might fail if called before the widget is fully rendered
-          (try
-            ;; Use WidgetsBinding.instance (same as SchedulerBinding.instance)
-            (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
-              (.addPostFrameCallback widgets-binding-instance
-                (fn [_]
-                  (log/log-info (str "[Focus] deferred focus request, path: " path))
-                  (.requestFocus focus-node)
-                  ;; Focus change is asynchronous, check after a short delay
-                  (.addPostFrameCallback widgets-binding-instance
-                    (fn [_]
-                      (log/log-info (str "[Focus] focus request completed, hasFocus: " (.-hasFocus focus-node))))))))
-            (catch Exception e
-              ;; Fallback: try immediate request if SchedulerBinding is not available
-              (log/log-warn (str "[Focus] SchedulerBinding unavailable, using immediate request: " e))
-              (.requestFocus focus-node)
-              ;; Check focus status after a short delay
+      ;; Only re-request focus if not already focused, or if last request was > 100ms ago
+      ;; This prevents excessive focus requests while still ensuring cursor visibility
+      (let [now-ms (.-millisecondsSinceEpoch (dart:core/DateTime.now))
+            last-time (get @last-focus-request-time path 0)
+            time-since-last-request (- now-ms last-time)
+            should-request? (or (not (.-hasFocus focus-node))
+                               (> time-since-last-request 100))] ;; Throttle to max once per 100ms
+        (when should-request?
+          (swap! last-focus-request-time assoc path now-ms)
+          (if (.-hasFocus focus-node)
+            ;; If already has focus, only re-request if throttling allows
+            ;; This reduces excessive focus requests while maintaining cursor visibility
+            (do
+              (log/log-info (str "[Focus] focus-node! called, path: " path ", already has focus, re-requesting to trigger update (throttled)"))
               (try
                 (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
                   (.addPostFrameCallback widgets-binding-instance
                     (fn [_]
-                      (log/log-info (str "[Focus] immediate request completed, hasFocus: " (.-hasFocus focus-node))))))
+                      ;; Request focus again to trigger focus change event
+                      (.requestFocus focus-node))))
                 (catch Exception _e
-                  ;; Ignore errors in fallback focus check
-                  nil)))))))
+                  ;; Fallback: try immediate request
+                  (.requestFocus focus-node))))
+            ;; Request focus if not already focused
+            (do
+              (log/log-info (str "[Focus] focus-node! called, path: " path ", focus-node exists?: " (some? focus-node)))
+              ;; Use addPostFrameCallback to ensure the widget is fully built before requesting focus
+              ;; This is necessary because requestFocus might fail if called before the widget is fully rendered
+              (try
+                ;; Use WidgetsBinding.instance (same as SchedulerBinding.instance)
+                (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
+                  (.addPostFrameCallback widgets-binding-instance
+                    (fn [_]
+                      (log/log-info (str "[Focus] deferred focus request, path: " path))
+                      (.requestFocus focus-node)
+                      ;; Focus change is asynchronous, check after a short delay
+                      (.addPostFrameCallback widgets-binding-instance
+                        (fn [_]
+                          (log/log-info (str "[Focus] focus request completed, hasFocus: " (.-hasFocus focus-node))))))))
+                (catch Exception e
+                  ;; Fallback: try immediate request if SchedulerBinding is not available
+                  (log/log-warn (str "[Focus] SchedulerBinding unavailable, using immediate request: " e))
+                  (.requestFocus focus-node)
+                  ;; Check focus status after a short delay
+                  (try
+                    (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
+                      (.addPostFrameCallback widgets-binding-instance
+                        (fn [_]
+                          (log/log-info (str "[Focus] immediate request completed, hasFocus: " (.-hasFocus focus-node))))))
+                    (catch Exception _e
+                      ;; Ignore errors in fallback focus check
+                      nil)))))))))
     (when-not (get @!node-registry path)
       (log/log-warn (str "[Focus] ⚠️ node not registered, path: " path)))))
 

@@ -111,8 +111,8 @@
             path-changed? (not= current-path after-path)
             offset-diff (when (and current-offset after-offset) (max (- after-offset current-offset) (- current-offset after-offset)))]
         ;; Only warn on path changes or very large offset differences (normal multi-char input like IME is expected)
-        ;; Threshold allows normal IME input (2-4 chars) without warnings
-        (when (or path-changed? (and offset-diff (> offset-diff 5)))
+        ;; Threshold allows normal IME input, fast typing, and small paste operations (up to 15 chars) without warnings
+        (when (or path-changed? (and offset-diff (> offset-diff 15)))
           (dart:core/print (str "[Transaction Commit] ⚠️ commit-transaction! will modify selection - current: " current-selection ", transaction after-selection: " after-sel))))))
     (swap! !state (fn [current-state]
                     (let [new-doc (apply-transaction (:doc current-state) (:ops transaction))

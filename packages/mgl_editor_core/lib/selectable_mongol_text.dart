@@ -117,11 +117,16 @@ class MglSelectableTextState extends State<MglSelectableText>
     
     // Always ensure caret is visible when focused and selection is collapsed
     // This handles the case where user clicks the same position again
+    // Also ensures focus is maintained after text input (e.g., space character on mobile)
     if (widget.selection != null &&
-        widget.selection!.isCollapsed &&
-        _focusNode.hasFocus) {
+        widget.selection!.isCollapsed) {
+      // If we have a collapsed selection but lost focus, request it again
+      // This is critical for mobile devices where focus can be lost after text input
+      if (!_focusNode.hasFocus) {
+        _focusNode.requestFocus();
+      }
       // Ensure caret animation is running
-      if (!_caretController.isAnimating) {
+      if (_focusNode.hasFocus && !_caretController.isAnimating) {
         _caretController.value = 1.0;
         _caretController.repeat(reverse: true);
       }

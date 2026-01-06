@@ -14,55 +14,64 @@
   "handle the tap down event: locate the cursor or start selection"
   [!editor-state ^g/TapDownDetails details]
   (let [global-pos (.-globalPosition details)
-        node (node-service/get-node-at-offset global-pos)]
-    (log/log-info (str "[Cursor Positioning] handle-tap-down! global-pos: " global-pos))
-    ;; Hide selection menu when clicking
-    (sel-menu/hide-selection-menu!)
-    (if-let [{:keys [path selectable render-box]} node]
-      (let [;; 1. Render box should already be laid out if attached
-            _ (when (and render-box (.-attached render-box))
-                ;; Layout is typically complete when attached, no need to check needsLayout
-                nil)
-            ;; 2. get the logical offset of the click position in the Mongolian block
-            local-pos (.globalToLocal render-box global-pos)
-            _ (log/log-info (str "[Cursor Positioning] path: " path ", local-pos: " local-pos))
-            ;; 3. For MongolRenderParagraph, ensure we're using the correct coordinate system
-            ;; MongolTextPainter expects coordinates in its own rotated coordinate system
-            pos-in-block (try
-                          (.getPositionForOffset selectable local-pos)
-                          (catch Exception e
-                            (log/log-warn (str "[Cursor Positioning] getPositionForOffset failed, using fallback: " e))
-                            ;; Fallback: try to get position using text length bounds
-                            (let [text (.toPlainText (.-text selectable))
-                                  text-len (count text)
-                                  ;; Clamp offset to valid range
-                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
-                                                                       0
-                                                                       text-len)))]
-                              (m/TextPosition :offset clamped-offset))))
-            offset-value (.-offset pos-in-block)
-            ;; 4. Ensure offset is within valid range
-            text (.toPlainText (.-text selectable))
-            text-len (count text)
-            clamped-offset (max 0 (min offset-value text-len))
-            new-pos (sel/make-position path clamped-offset)
-            ;; 5. create a collapsed selection region (i.e. cursor)
-            new-selection (sel/make-selection new-pos new-pos)
-            current-selection (:selection @!editor-state)]
-        (log/log-info (str "[Cursor Positioning] calculation completed - offset: " offset-value ", text-len: " text-len ", clamped-offset: " clamped-offset ", new-pos: " new-pos))
-        ;; Always ensure focus is requested to make cursor visible
-        (node-service/focus-node! path)
-        ;; Always update selection to ensure UI refresh, even if value is the same
-        ;; This ensures didUpdateWidget is called and setState triggers cursor repaint
-        (swap! !editor-state assoc :selection new-selection)
-        (if (not= current-selection new-selection)
-          (log/log-info (str "[Cursor Positioning] selection updated: " new-selection))
-          (log/log-info (str "[Cursor Positioning] forced selection refresh (same value): " new-selection)))
-        (swap! ui/!ui-state assoc :pan-start-position new-pos)) ;; record the starting point for drag usage
-      ;; click on the blank area, clear the selection
-      (do (log/log-info "[Cursor Positioning] clicked on blank area, clearing selection")
-          (swap! !editor-state assoc :selection nil)
-          (swap! ui/!ui-state assoc :pan-start-position nil)))))
+        node (node-service/get-node-at-offset global-pos)
+        ui-state @ui/!ui-state
+        last-double-tap-time (:last-double-tap-time ui-state)
+        current-time-ms (.-millisecondsSinceEpoch (dart:core/DateTime.now))
+        ;; Skip if double tap happened recently (within 300ms)
+        is-recent-double-tap? (and last-double-tap-time
+                                   (< (- current-time-ms last-double-tap-time) 300))]
+    (when is-recent-double-tap?
+      (log/log-info "[Cursor Positioning] skipping handle-tap-down! due to recent double tap"))
+    (when-not is-recent-double-tap?
+      (log/log-info (str "[Cursor Positioning] handle-tap-down! global-pos: " global-pos))
+      ;; Hide selection menu when clicking
+      (sel-menu/hide-selection-menu!)
+      (if-let [{:keys [path selectable render-box]} node]
+        (let [;; 1. Render box should already be laid out if attached
+              _ (when (and render-box (.-attached render-box))
+                  ;; Layout is typically complete when attached, no need to check needsLayout
+                  nil)
+              ;; 2. get the logical offset of the click position in the Mongolian block
+              local-pos (.globalToLocal render-box global-pos)
+              _ (log/log-info (str "[Cursor Positioning] path: " path ", local-pos: " local-pos))
+              ;; 3. For MongolRenderParagraph, ensure we're using the correct coordinate system
+              ;; MongolTextPainter expects coordinates in its own rotated coordinate system
+              pos-in-block (try
+                            (.getPositionForOffset selectable local-pos)
+                            (catch Exception e
+                              (log/log-warn (str "[Cursor Positioning] getPositionForOffset failed, using fallback: " e))
+                              ;; Fallback: try to get position using text length bounds
+                              (let [text (.toPlainText (.-text selectable))
+                                    text-len (count text)
+                                    ;; Clamp offset to valid range
+                                    clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
+                                                                         0
+                                                                         text-len)))]
+                                (m/TextPosition :offset clamped-offset))))
+              offset-value (.-offset pos-in-block)
+              ;; 4. Ensure offset is within valid range
+              text (.toPlainText (.-text selectable))
+              text-len (count text)
+              clamped-offset (max 0 (min offset-value text-len))
+              new-pos (sel/make-position path clamped-offset)
+              ;; 5. create a collapsed selection region (i.e. cursor)
+              new-selection (sel/make-selection new-pos new-pos)
+              current-selection (:selection @!editor-state)]
+          (log/log-info (str "[Cursor Positioning] calculation completed - offset: " offset-value ", text-len: " text-len ", clamped-offset: " clamped-offset ", new-pos: " new-pos))
+          ;; Always ensure focus is requested to make cursor visible
+          (node-service/focus-node! path)
+          ;; Always update selection to ensure UI refresh, even if value is the same
+          ;; This ensures didUpdateWidget is called and setState triggers cursor repaint
+          (swap! !editor-state assoc :selection new-selection)
+          (if (not= current-selection new-selection)
+            (log/log-info (str "[Cursor Positioning] selection updated: " new-selection))
+            (log/log-info (str "[Cursor Positioning] forced selection refresh (same value): " new-selection)))
+          (swap! ui/!ui-state assoc :pan-start-position new-pos)) ;; record the starting point for drag usage
+        ;; click on the blank area, clear the selection
+        (do (log/log-info "[Cursor Positioning] clicked on blank area, clearing selection")
+            (swap! !editor-state assoc :selection nil)
+            (swap! ui/!ui-state assoc :pan-start-position nil))))))
 
 (defn handle-secondary-tap-down!
   "handle the right-click event: show the context menu at the click position"
@@ -174,15 +183,28 @@
 (defn handle-double-tap!
   "double click to select a word"
   [!editor-state global-pos]
+  (log/log-info (str "[Double Tap] handle-double-tap! global-pos: " global-pos))
+  ;; Record the double tap time to prevent onTapDown from overriding
+  (swap! ui/!ui-state assoc :last-double-tap-time (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
+  ;; Hide selection menu when double tapping
+  (sel-menu/hide-selection-menu!)
   (let [node (node-service/get-node-at-offset global-pos)]
-    (when-let [{:keys [selectable render-box path]} node]
-      (let [local-pos (.globalToLocal render-box global-pos)
-            pos-in-block (.getPositionForOffset selectable local-pos)
-            boundary (.getWordBoundary selectable pos-in-block)]
-        (swap! !editor-state assoc :selection 
-               (sel/make-selection
-                (sel/make-position path (.-start boundary))
-                (sel/make-position path (.-end boundary))))))))
+    (if-let [{:keys [selectable render-box path]} node]
+      (try
+        (let [local-pos (.globalToLocal render-box global-pos)
+              pos-in-block (.getPositionForOffset selectable local-pos)
+              boundary (.getWordBoundary selectable pos-in-block)
+              start-offset (.-start boundary)
+              end-offset (.-end boundary)
+              new-selection (sel/make-selection
+                            (sel/make-position path start-offset)
+                            (sel/make-position path end-offset))]
+          (log/log-info (str "[Double Tap] word boundary found - start: " start-offset ", end: " end-offset ", path: " path))
+          (swap! !editor-state assoc :selection new-selection)
+          (log/log-info (str "[Double Tap] selection updated: " new-selection)))
+        (catch Exception e
+          (log/log-warn (str "[Double Tap] failed to get word boundary: " e))))
+      (log/log-warn "[Double Tap] no node found at position"))))
 
 (defn handle-long-press!
   "long press to select a word and show selection menu"

@@ -18,7 +18,9 @@
          :slash-command-active false
          :slash-command-query ""
          ;; Mouse/Gestures transient state
-         :pan-start-position nil}))
+         :pan-start-position nil
+         ;; Track last double tap time to prevent onTapDown from overriding double tap selection
+         :last-double-tap-time nil}))
 
 ;; --- Helpers to update UI state ---
 
