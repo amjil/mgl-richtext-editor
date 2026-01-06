@@ -226,31 +226,123 @@
   [!editor-state global-pos handle-type]
   (.selectionClick srv/HapticFeedback)
   (let [;; 1. use the coordinate to find the node the finger is on
-        node (node-service/get-node-at-offset global-pos)]
-
-    (when-let [{:keys [path selectable render-box]} node]
+        node (node-service/get-node-at-offset global-pos)
+        ;; Fallback: if node not found, use the current selection's node
+        current-sel (:selection @!editor-state)
+        fallback-node (when (and (nil? node) current-sel)
+                        (let [fallback-pos (if (= handle-type :start)
+                                             (:start current-sel)
+                                             (:end current-sel))
+                              fallback-path (:path fallback-pos)]
+                          (when-let [fallback-data (node-service/get-selectable-by-path fallback-path)]
+                            (assoc fallback-data :path fallback-path))))
+        ;; Use node if found, otherwise use fallback
+        target-node (or node fallback-node)]
+    (when-let [{:keys [path selectable render-box]} target-node]
       (let [;; 2. Render box should already be laid out if attached
-            _ (when (and render-box (.-attached render-box))
-                ;; Layout is typically complete when attached
-                nil)
-            ;; 3. call the MongolRenderParagraph logic to get the offset in the text
-            local-pos (.globalToLocal render-box global-pos)
-            ;; Get position with error handling
-            pos-in-block (try
-                          (.getPositionForOffset selectable local-pos)
-                          (catch Exception _
-                            (let [text (.toPlainText (.-text selectable))
+            attached? (and render-box (.-attached render-box))
+            ;; 3. If node is not attached, try to use the current selection position as fallback
+            ;; This prevents issues when node temporarily becomes DETACHED during drag
+            should-use-fallback? (not (and attached? node))
+            current-pos (when current-sel
+                         (if (= handle-type :start)
+                           (:start current-sel)
+                           (:end current-sel)))
+            ;; 4. call the MongolRenderParagraph logic to get the offset in the text
+            pos-in-block (if (and attached? node (not should-use-fallback?))
+                          (try
+                            (let [local-pos (.globalToLocal render-box global-pos)
+                                  render-box-size (.-size render-box)
+                                  render-box-width (.-width render-box-size)
+                                  render-box-height (.-height render-box-size)
+                                  text (.toPlainText (.-text selectable))
                                   text-len (count text)
-                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
-                                                                       0
-                                                                       text-len)))]
-                              (m/TextPosition :offset clamped-offset))))
+                                  ;; For vertical text (Mongol), we need to clamp the local position to the render box bounds
+                                  ;; before calling getPositionForOffset, as it may return the end offset for out-of-bounds coordinates
+                                  ;; However, we should use the actual text height, not the render box height
+                                  ;; For vertical text, the text may not fill the entire render box height
+                                  clamped-local-pos (m/Offset. (max 0.0 (min render-box-width (.-dx local-pos)))
+                                                               (max 0.0 (min render-box-height (.-dy local-pos))))
+                                  _ (when (or (not= (.-dx local-pos) (.-dx clamped-local-pos))
+                                             (not= (.-dy local-pos) (.-dy clamped-local-pos)))
+                                      (log/log-warn (str "[Handle Drag] local-pos clamped from " local-pos " to " clamped-local-pos)))
+                                  result-pos (.getPositionForOffset selectable clamped-local-pos)
+                                  result-offset (.-offset result-pos)
+                                  ;; Check if getPositionForOffset returned the maximum offset, which might indicate
+                                  ;; that it's not handling the vertical text correctly, especially when local-pos
+                                  ;; is within the text bounds but getPositionForOffset returns the end offset
+                                  ;; We check the original local-pos (before clamping) to see if it's within bounds
+                                  original-dy (.-dy local-pos)
+                                  use-fallback-calculation? (and (= result-offset text-len)
+                                                                 (> text-len 0)
+                                                                 (< original-dy render-box-height)
+                                                                 (>= original-dy 0.0))]
+                              (if use-fallback-calculation?
+                                ;; Use fallback calculation based on y coordinate ratio for vertical text
+                                ;; Use the original local-pos y coordinate (not clamped) for more accurate calculation
+                                (let [normalized-dy (max 0.0 (min render-box-height original-dy))
+                                      ratio (/ normalized-dy render-box-height)
+                                      calculated-offset (.round (* ratio text-len))
+                                      clamped-offset (max 0 (min text-len calculated-offset))]
+                                  (m/TextPosition :offset clamped-offset))
+                                result-pos))
+                            (catch Exception e
+                              (log/log-warn (str "[Handle Drag] getPositionForOffset failed, using fallback: " e))
+                              (let [text (.toPlainText (.-text selectable))
+                                    text-len (count text)
+                                    local-pos (.globalToLocal render-box global-pos)
+                                    render-box-size (.-size render-box)
+                                    render-box-height (.-height render-box-size)
+                                    ;; For vertical text, use dy (vertical position) to determine offset
+                                    ;; Top of text (dy=0) = offset 0, bottom of text (dy=height) = offset text-len
+                                    normalized-dy (max 0.0 (min render-box-height (.-dy local-pos)))
+                                    ratio (/ normalized-dy render-box-height)
+                                    calculated-offset (.round (* ratio text-len))
+                                    clamped-offset (max 0 (min text-len calculated-offset))]
+                                (m/TextPosition :offset clamped-offset))))
+                          ;; Fallback when node not found or not attached: use current position or calculate from global position
+                          (let [text (.toPlainText (.-text selectable))
+                                text-len (count text)
+                                ;; If current position is in the same node, try to preserve it or adjust slightly
+                                current-offset (when (and current-pos (= path (:path current-pos)))
+                                                 (:offset current-pos))
+                                ;; If we have a current offset in the same node, try to keep it
+                                ;; Otherwise, try to find the nearest node or use boundary
+                                clamped-offset (cond
+                                                 ;; If we have a valid current offset in the same node, keep it
+                                                 (and current-offset (>= current-offset 0) (<= current-offset text-len))
+                                                 current-offset
+                                                 ;; Otherwise, try to find nearest node or use boundary
+                                                 :else
+                                                 (let [nearest-node (node-service/get-node-at-offset global-pos)
+                                                       nearest-path (when nearest-node (:path nearest-node))]
+                                                   (if (and nearest-path (= nearest-path path))
+                                                     ;; If nearest node is the same, try to calculate offset
+                                                     (let [nearest-render-box (:render-box nearest-node)
+                                                           nearest-attached? (and nearest-render-box (.-attached nearest-render-box))]
+                                                       (if nearest-attached?
+                                                         (try
+                                                           (let [nearest-local-pos (.globalToLocal nearest-render-box global-pos)
+                                                                 nearest-pos (.getPositionForOffset (:selectable nearest-node) nearest-local-pos)]
+                                                             (.-offset nearest-pos))
+                                                           (catch Exception _
+                                                             (if current-offset
+                                                               (max 0 (min text-len current-offset))
+                                                               (if (< (.-dy global-pos) 0) 0 text-len))))
+                                                         (if current-offset
+                                                           (max 0 (min text-len current-offset))
+                                                           (if (< (.-dy global-pos) 0) 0 text-len))))
+                                                     ;; If nearest node is different, use boundary based on direction
+                                                     (if current-offset
+                                                       (max 0 (min text-len current-offset))
+                                                       (if (< (.-dy global-pos) 0) 0 text-len)))))]
+                            (m/TextPosition :offset clamped-offset)))
             offset-value (.-offset pos-in-block)
             ;; Clamp offset to valid range
             text (.toPlainText (.-text selectable))
             text-len (count text)
             clamped-offset (max 0 (min offset-value text-len))
-            ;; 4. construct the new logical position (Position)
+            ;; 5. construct the new logical position (Position)
             new-point (sel/make-position path clamped-offset)]
 
         ;; 5. atomically update the global selection state
@@ -259,11 +351,15 @@
                  (if (nil? current-sel)
                    ;; if there was no selection before (theoretically not possible), create a collapsed selection
                    (sel/make-selection new-point new-point)
-
                    ;; update the corresponding endpoint based on the handle type
-                   (if (= handle-type :start)
-                     (assoc current-sel :start new-point)
-                     (assoc current-sel :end new-point)))))))))
+                   (let [updated-sel (if (= handle-type :start)
+                                       (assoc current-sel :start new-point)
+                                       (assoc current-sel :end new-point))
+                         ;; Normalize selection to ensure start <= end for correct rendering
+                         normalized-sel (sel/normalize updated-sel)]
+                     normalized-sel)))))
+      (when (nil? node)
+        (log/log-warn (str "[Handle Drag] node not found at global-pos: " global-pos ", and no fallback available"))))))
 
 ;; --- coordinate conversion tool ---
 

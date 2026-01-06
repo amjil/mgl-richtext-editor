@@ -2,19 +2,34 @@
   (:require
    ["package:flutter/material.dart" :as m]))
 
-(defn selection-handle-widget [{:keys [type global-offset on-drag]}]
+(defn selection-handle-widget [{:keys [type global-offset direction on-drag]}]
   (let [handle-size 44.0
-        circle-size 14.0]
+        circle-size 14.0
+        direction (or direction :ttb) ;; Default to vertical text
+        ;; Use global coordinates directly since Stack is fill
+        ;; For vertical text (:ttb), handles are on the right side
+        ;; For horizontal text (:ltr, :rtl), handles are on top/bottom
+        [left-pos top-pos] (if (= direction :ttb)
+                             ;; Vertical text: handles on the right, centered vertically
+                             ;; global-offset.x is at the right edge of text
+                             ;; We want handle center to be 8px to the right of text edge for better visibility
+                             ;; So left-pos = (global-offset.x + 8.0) - handle-size/2
+                             [(- (+ (.-dx global-offset) 8.0) (/ handle-size 2))
+                              (- (.-dy global-offset) (/ handle-size 2))]
+                             ;; Horizontal text: handles on top/bottom, centered horizontally
+                             [(- (.-dx global-offset) (/ handle-size 2))
+                             (if (= type :start)
+                               (- (.-dy global-offset) handle-size)
+                               (.-dy global-offset))])]
     (m/Positioned
-     :left (- (.-dx global-offset) (/ handle-size 2))
-     :top (if (= type :start)
-            (- (.-dy global-offset) handle-size)
-            (.-dy global-offset))
+     :left left-pos
+     :top top-pos
      :child
      (m/GestureDetector
       :behavior m/HitTestBehavior.opaque
       :onPanUpdate (fn [details]
-                     (on-drag (.-globalPosition details) type))
+                     (let [global-pos (.-globalPosition details)]
+                       (on-drag global-pos)))
       :child
       (m/Container
        :width handle-size :height handle-size

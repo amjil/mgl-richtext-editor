@@ -1,10 +1,12 @@
 (ns rich-editor.ui.selection-handles-layer
   (:require [cljd.flutter :as f]
             [rich-editor.services.node-service :as node-service]
-            [rich-editor.services.selection-geometry :as geom]
-            [rich-editor.selection-utils :as sel-util]
+            [rich-editor.services.layout-service :as layout-service]
             [rich-editor.ui.selection-handle-view :refer [selection-handle-widget]]
             [rich-editor.services.selection-service :as sel-service]
+            [rich-editor.model.node :as node]
+            [rich-editor.state :as state]
+            [rich-editor.utils.logger :as log]
             ["package:flutter/material.dart" :as m]))
 
 (defn selection-handles-overlay [!editor-state]
@@ -12,40 +14,61 @@
    :watch [sel (f/$ (some-> (f/<! !editor-state) :selection))]
    (if (or (nil? sel) (= (:start sel) (:end sel)))
      (m/SizedBox.shrink)
-
      (let [;; 1. get the render objects of the start and end nodes
            start-path (get-in sel [:start :path])
            end-path (get-in sel [:end :path])
            start-node (node-service/get-selectable-by-path start-path)
            end-node (node-service/get-selectable-by-path end-path)]
-
-       (if (and start-node end-node)
-         (let [;; 2. calculate the global position of the start node
-               start-render (:render-box start-node)
-               start-selectable (:selectable start-node)
-               start-len (.-length (.toPlainText (.-text start-selectable)))
-               start-flutter-sel (sel-util/to-text-selection start-path sel start-len)
-               start-rects (.getBoxesForSelection start-selectable start-flutter-sel)
-               start-local (geom/calculate-handle-offsets start-rects :start)
-               start-global (.localToGlobal start-render start-local)
-
-               ;; 3. calculate the global position of the end node
-               end-render (:render-box end-node)
-               end-selectable (:selectable end-node)
-               end-len (.-length (.toPlainText (.-text end-selectable)))
-               end-flutter-sel (sel-util/to-text-selection end-path sel end-len)
-               end-rects (.getBoxesForSelection end-selectable end-flutter-sel)
-               end-local (geom/calculate-handle-offsets end-rects :end)
-               end-global (.localToGlobal end-render end-local)]
-
-           (m/Stack
-            :children
-            [(selection-handle-widget
-              {:type :start
-               :global-offset start-global
-               :on-drag #(sel-service/handle-handle-drag! !editor-state %1 :start)})
-             (selection-handle-widget
-              {:type :end
-               :global-offset end-global
-               :on-drag #(sel-service/handle-handle-drag! !editor-state %1 :end)})]))
-         (m/SizedBox.shrink))))))
+      (if (and start-node end-node)
+        (let [;; Get text direction from document state
+              block-index (first start-path)
+              doc (:doc @state/!editor-state)
+              block (node/get-block-at-path doc [block-index])
+              direction (get-in block [:attributes :direction] :ttb)
+              ;; 2. calculate the global position of the start handle using layout-service
+              start-global (layout-service/get-selection-global-position sel :start)
+              
+              ;; 3. calculate the global position of the end handle using layout-service
+              end-global (layout-service/get-selection-global-position sel :end)]
+          (if (and start-global end-global)
+            ;; Use LayoutBuilder to get Stack's size and calculate local coordinates
+            ;; The Stack uses StackFit.expand, so it fills the available space
+            ;; We need to convert global coordinates to local coordinates relative to Stack
+            (m/LayoutBuilder
+             :builder (fn [context _constraints]
+                       (let [;; Get Stack's RenderBox to calculate actual global position
+                             render-box (some-> context (.findRenderObject))
+                             ;; Get Stack's actual global position using RenderBox
+                             stack-global-offset (if (and render-box (.-attached render-box))
+                                                  (.localToGlobal render-box (m/Offset.zero))
+                                                  (let [media-query (m/MediaQuery.of context)
+                                                        view-padding (.-viewPadding media-query)]
+                                                    ;; Fallback to viewPadding if RenderBox not available
+                                                    (m/Offset. 0.0 (.-top view-padding))))
+                             stack-left-offset (.-dx stack-global-offset)
+                             stack-top-offset (.-dy stack-global-offset)
+                             ;; Convert global offsets to local coordinates relative to Stack
+                             start-local (m/Offset. (- (.-dx start-global) stack-left-offset)
+                                                    (- (.-dy start-global) stack-top-offset))
+                             end-local (m/Offset. (- (.-dx end-global) stack-left-offset)
+                                                  (- (.-dy end-global) stack-top-offset))]
+                         ;; Stack with fill to use local coordinates
+                         (m/Stack
+                          :fit m/StackFit.expand
+                          :children
+                          [(selection-handle-widget
+                            {:type :start
+                             :global-offset start-local
+                             :direction direction
+                             :on-drag (fn [global-pos]
+                                       (sel-service/handle-handle-drag! !editor-state global-pos :start))})
+                           (selection-handle-widget
+                            {:type :end
+                             :global-offset end-local
+                             :direction direction
+                             :on-drag (fn [global-pos]
+                                       (sel-service/handle-handle-drag! !editor-state global-pos :end))})]))))
+            (let [_ (log/log-warn (str "[Selection Handles Layer] missing global positions - start-global: " start-global ", end-global: " end-global))]
+              (m/SizedBox.shrink))))
+         (let [_ (log/log-warn (str "[Selection Handles Layer] missing nodes - start-node: " start-node ", end-node: " end-node))]
+           (m/SizedBox.shrink)))))))

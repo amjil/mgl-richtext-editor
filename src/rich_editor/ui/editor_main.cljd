@@ -8,6 +8,7 @@
             [rich-editor.ui.selection-menu :refer [selection-menu]]
             [rich-editor.ui.slash-command-menu :refer [slash-command-menu]]
             [rich-editor.ui.selection-gesture-detector :refer [selection-gesture-detector]]
+            [rich-editor.ui.selection-handles-layer :refer [selection-handles-overlay]]
             [rich-editor.services.keyboard-service :as kb-service]
             [rich-editor.services.virtual-keyboard-service :as vk-service]
             [rich-editor.services.slash-command-service :as slash-cmd]
@@ -28,7 +29,13 @@
       (.removeHandler (.-instance srv/HardwareKeyboard) handler))))
 
 (defn- init-keyboard! []
-  (let [handler (when-not foundation/kIsWeb
+  (let [platform foundation/defaultTargetPlatform
+        ;; Only use HardwareKeyboard on desktop platforms (macOS, Windows, Linux)
+        ;; Mobile platforms (iOS, Android) should not use HardwareKeyboard
+        is-desktop? (and (not foundation/kIsWeb)
+                        (not= platform m/TargetPlatform.iOS)
+                        (not= platform m/TargetPlatform.android))
+        handler (when is-desktop?
                   (fn [event]
                     (let [logical-key (.-logicalKey event)
                           key-id (.-keyId logical-key)]
@@ -112,6 +119,9 @@
                                                                            blocks)))))))})})
     .findReplaceDialog (find-replace-dialog)
     .selectionMenu (selection-menu)
+    .selectionHandles (if (and is-mobile? has-selection)
+                       (selection-handles-overlay !editor-state)
+                       nil)
     .slashCommandMenu (if (and slash-command-active? computed-slash-position)
                         (slash-command-menu
                          {:position computed-slash-position

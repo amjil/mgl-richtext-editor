@@ -10,7 +10,8 @@
    [rich-editor.utils.delta :as delta-utils]
    [virtual-keyboard.keyboard :as keyboard]
             [virtual-keyboard.options :as keyboard-options]
-            ["package:flutter/material.dart" :as m]))
+            ["package:flutter/material.dart" :as m]
+            ["package:flutter/foundation.dart" :as foundation]))
 
 ;; =============================================================
 ;; Mongolian virtual keyboard component
@@ -300,6 +301,10 @@
    References mgl-notes-app's search-panel Column layout"
   [{:keys [child show-keyboard?]}]
   (f/widget
+   :let [platform foundation/defaultTargetPlatform
+         is-mobile? (or (= platform m/TargetPlatform.iOS)
+                       (= platform m/TargetPlatform.android))
+         show-toolbar? (or show-keyboard? (not is-mobile?))]
    (m/Column
     .mainAxisSize m/MainAxisSize.max
     .crossAxisAlignment m/CrossAxisAlignment.stretch
@@ -315,7 +320,9 @@
         .children
         [(virtual-keyboard-toolbar)
          (virtual-keyboard-component)])
-       (m/SizedBox.shrink))])))
+       (if show-toolbar?
+         (virtual-keyboard-toolbar)
+         (m/SizedBox.shrink)))])))
 
 (defn toolbar
   "Toolbar wrapper function, references m-v-k's toolbar function

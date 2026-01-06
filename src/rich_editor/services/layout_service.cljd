@@ -1,8 +1,9 @@
 (ns rich-editor.services.layout-service
   (:require [rich-editor.services.node-service :as node-service]
-            [rich-editor.services.selection-geometry :as geom]
-            [rich-editor.selection-utils :as sel-util]
             [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
+            [rich-editor.state :as state]
+            [rich-editor.utils.logger :as log]
             ["package:flutter/material.dart" :as m]))
 
 (defn get-selection-global-position
@@ -16,28 +17,139 @@
             path (:path target-pos)]
         (if-let [node (node-service/get-selectable-by-path path)]
           (let [selectable (:selectable node)
-                render-box (:render-box node)]
-            (if (and selectable render-box (.-attached render-box))
+                render-box (:render-box node)
+                attached? (and render-box (.-attached render-box))]
+            (if (and selectable render-box attached?)
               (let [node-text (.toPlainText (.-text selectable))
                     node-len (count node-text)
-                    flutter-sel (sel-util/to-text-selection path selection node-len)]
-                (if (and flutter-sel (not (.-isCollapsed flutter-sel)))
-                  (let [rects (.getBoxesForSelection selectable flutter-sel)]
-                    (if (seq rects)
-                      (let [local-offset (geom/calculate-handle-offsets rects type)]
-                        (.localToGlobal render-box local-offset))
-                      ;; If no rects (e.g. empty selection), use cursor position
-                      (let [pos (if (= type :start) (.-baseOffset flutter-sel) (.-extentOffset flutter-sel))
-                            local-offset (.getOffsetForCaret selectable (m/TextPosition .offset pos))]
-                        (.localToGlobal render-box local-offset))))
-                  ;; Collapsed or nil selection - use cursor position
-                  (let [pos (if flutter-sel (.-baseOffset flutter-sel) 0)
-                        local-offset (.getOffsetForCaret selectable (m/TextPosition .offset pos))]
-                    (.localToGlobal render-box local-offset))))
+                    target-offset (:offset target-pos)
+                    ;; Get text direction from document state
+                    block-index (first path)
+                    doc (:doc @state/!editor-state)
+                    block (node/get-block-at-path doc [block-index])
+                    direction (get-in block [:attributes :direction] :ttb)
+                    ;; For handle positioning, create a small selection range at the target offset
+                    ;; to get the bounding box for that position
+                    handle-pos (max 0 (min target-offset node-len))
+                    ;; Create a selection from handle-pos to handle-pos+1 (or to end if at end)
+                    ;; This gives us a bounding box for the character at this position
+                    ;; Special handling for end position: if at the end, use the last character
+                    handle-end-pos (if (and (= handle-pos node-len) (> node-len 0))
+                                     node-len  ;; At end, select from last char to end
+                                     (min (+ handle-pos 1) node-len))
+                    ;; For end handle at the end of text, try to get the last character's rect
+                    handle-text-sel (if (and (= type :end) (= handle-pos node-len) (> node-len 0))
+                                      ;; Select the last character
+                                      (m/TextSelection :baseOffset (- node-len 1) :extentOffset node-len)
+                                      ;; Normal selection
+                                      (m/TextSelection :baseOffset handle-pos :extentOffset handle-end-pos))
+                    handle-rects (.getBoxesForSelection selectable handle-text-sel)]
+                (if (seq handle-rects)
+                  ;; Use the rectangle(s) to calculate handle position
+                  ;; For :start, use the first rect; for :end, use the last rect
+                  ;; This ensures different positions even if they're in the same line
+                  (let [target-rect (if (= type :start) (first handle-rects) (last handle-rects))
+                        local-offset (if (= direction :ttb)
+                                       ;; Vertical text: handle on the right side, centered vertically
+                                       (m/Offset. (.-right target-rect)
+                                                  (+ (.-top target-rect) (/ (.-height target-rect) 2)))
+                                       ;; Horizontal text: handle on top/bottom, centered horizontally
+                                       (if (= type :start)
+                                         ;; Start handle on top
+                                         (m/Offset. (+ (.-left target-rect) (/ (.-width target-rect) 2))
+                                                    (.-top target-rect))
+                                         ;; End handle on bottom
+                                         (m/Offset. (+ (.-left target-rect) (/ (.-width target-rect) 2))
+                                                    (.-bottom target-rect))))
+                        global-offset (.localToGlobal render-box local-offset)]
+                    global-offset)
+                  ;; Fallback: use getOffsetForCaret if no rects
+                  (let [caret-pos (m/TextPosition :offset handle-pos)
+                        caret-local-offset (.getOffsetForCaret selectable caret-pos (m/Rect.zero))
+                        ;; For vertical text, get actual character width using getFullHeightForCaret
+                        ;; For horizontal text, adjust vertically based on type
+                        adjusted-local-offset (if (= direction :ttb)
+                                                ;; Vertical: get actual character width and add to x
+                                                (let [char-width (or (when (and render-box (.-getFullHeightForCaret render-box))
+                                                                       (.getFullHeightForCaret render-box caret-pos))
+                                                                     20.0)]  ;; Fallback to 20.0 if method not available
+                                                  (m/Offset. (+ (.-dx caret-local-offset) char-width) (.-dy caret-local-offset)))
+                                                ;; Horizontal: adjust vertically based on type
+                                                (if (= type :start)
+                                                  (m/Offset. (.-dx caret-local-offset) (- (.-dy caret-local-offset) 10.0))
+                                                  (m/Offset. (.-dx caret-local-offset) (+ (.-dy caret-local-offset) 10.0))))
+                        global-offset (.localToGlobal render-box adjusted-local-offset)]
+                    global-offset)))
+              (do
+                (log/log-warn (str "[Layout Service] node not ready - selectable: " selectable ", render-box: " render-box ", attached?: " attached?))
+                nil)))
+          (do
+            (log/log-warn (str "[Layout Service] node not found for path: " path))
+            nil))))
+    (catch Exception e
+      ;; Log error and return nil to avoid crashing UI
+      (log/log-error (str "[Layout Service] Error in get-selection-global-position: " e) e)
+      nil)))
+
+(defn get-selection-boxes-global-positions
+  "Get the global positions of selection boxes for debugging.
+   Returns a map with :start-box and :end-box containing rect info."
+  [selection]
+  (try
+    (when selection
+      (let [normalized (sel/normalize selection)
+            start-pos (:start normalized)
+            end-pos (:end normalized)
+            start-path (:path start-pos)
+            end-path (:path end-pos)]
+        (if-let [start-node (node-service/get-selectable-by-path start-path)]
+          (let [start-selectable (:selectable start-node)
+                start-render-box (:render-box start-node)
+                start-attached? (and start-render-box (.-attached start-render-box))]
+            (if (and start-selectable start-render-box start-attached?)
+              (let [start-node-text (.toPlainText (.-text start-selectable))
+                    start-node-len (count start-node-text)
+                    start-offset (:offset start-pos)
+                    start-handle-pos (max 0 (min start-offset start-node-len))
+                    start-handle-end-pos (min (+ start-handle-pos 1) start-node-len)
+                    start-text-sel (m/TextSelection :baseOffset start-handle-pos :extentOffset start-handle-end-pos)
+                    start-rects (.getBoxesForSelection start-selectable start-text-sel)
+                    start-box (when (seq start-rects) (first start-rects))
+                    start-box-global (when start-box
+                                       (let [local-offset (m/Offset. (.-right start-box) (+ (.-top start-box) (/ (.-height start-box) 2)))]
+                                         (.localToGlobal start-render-box local-offset)))]
+                (if-let [end-node (node-service/get-selectable-by-path end-path)]
+                  (let [end-selectable (:selectable end-node)
+                        end-render-box (:render-box end-node)
+                        end-attached? (and end-render-box (.-attached end-render-box))]
+                    (if (and end-selectable end-render-box end-attached?)
+                      (let [end-node-text (.toPlainText (.-text end-selectable))
+                            end-node-len (count end-node-text)
+                            end-offset (:offset end-pos)
+                            end-handle-pos (max 0 (min end-offset end-node-len))
+                            ;; For end position at the end of text, try to get the last character's rect
+                            end-handle-end-pos (if (and (= end-handle-pos end-node-len) (> end-node-len 0))
+                                                  end-node-len
+                                                  (min (+ end-handle-pos 1) end-node-len))
+                            end-text-sel (if (and (= end-handle-pos end-node-len) (> end-node-len 0))
+                                           ;; Select the last character
+                                           (m/TextSelection :baseOffset (- end-node-len 1) :extentOffset end-node-len)
+                                           ;; Normal selection
+                                           (m/TextSelection :baseOffset end-handle-pos :extentOffset end-handle-end-pos))
+                            end-rects (.getBoxesForSelection end-selectable end-text-sel)
+                            end-box (when (seq end-rects) (last end-rects))
+                            end-box-global (when end-box
+                                             (let [local-offset (m/Offset. (.-right end-box) (+ (.-top end-box) (/ (.-height end-box) 2)))]
+                                               (.localToGlobal end-render-box local-offset)))]
+                        {:start-box start-box
+                         :start-box-global start-box-global
+                         :end-box end-box
+                         :end-box-global end-box-global})
+                      nil))
+                  nil))
               nil))
           nil)))
-    (catch Object e
-      ;; Log error and return nil to avoid crashing UI
-      (dart:core/print (str "Error in get-selection-global-position: " e))
+    (catch Exception e
+      (log/log-error (str "[Layout Service] Error in get-selection-boxes-global-positions: " e) e)
       nil)))
 

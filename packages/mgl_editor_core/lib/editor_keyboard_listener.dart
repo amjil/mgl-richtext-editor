@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 
 typedef KeyEventHandler = bool Function(KeyEvent event);
 
@@ -28,22 +29,41 @@ class _EditorKeyboardListenerState extends State<EditorKeyboardListener> {
 
   @override
   Widget build(BuildContext context) {
+    // Only handle keyboard events on desktop platforms
+    // Mobile platforms should not use HardwareKeyboard
+    final platform = defaultTargetPlatform;
+    final isDesktop = !kIsWeb && 
+                      platform != TargetPlatform.iOS && 
+                      platform != TargetPlatform.android;
+    
     return Focus(
       focusNode: _focusNode,
       autofocus: true,
       onKeyEvent: (node, event) {
+        // Only handle keyboard events on desktop platforms
+        // Mobile platforms should not use HardwareKeyboard
+        if (!isDesktop) {
+          return KeyEventResult.ignored;
+        }
+        
+        final logicalKey = event.logicalKey;
+        final keyLabel = logicalKey.keyLabel;
+        
+        // Let Enter key pass through to TextInputConnection for text input
+        // Check this first, before processing any other events
+        if (keyLabel == 'Enter') {
+          return KeyEventResult.ignored;
+        }
+        
         // Process KeyDownEvent and KeyRepeatEvent for shortcuts/navigation
         if (event is KeyDownEvent || event is KeyRepeatEvent) {
-          final logicalKey = event.logicalKey;
-          final keyLabel = logicalKey.keyLabel;
-          
           // Navigation keys
           final isNavigationKey = [
             'Arrow Left', 'Arrow Right', 'Arrow Up', 'Arrow Down',
             'Home', 'End', 'Page Up', 'Page Down'
           ].contains(keyLabel);
 
-          // Modifiers
+          // Modifiers (only check on desktop)
           final isMeta = HardwareKeyboard.instance.isMetaPressed || 
                          HardwareKeyboard.instance.isControlPressed;
           final isAlt = HardwareKeyboard.instance.isAltPressed;

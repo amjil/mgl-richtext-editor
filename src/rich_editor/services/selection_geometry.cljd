@@ -2,17 +2,30 @@
   (:require 
    ["package:flutter/material.dart" :as m]))
 
-(defn calculate-handle-offsets [rects type]
+(defn calculate-handle-offsets [rects type direction]
 ;;   "calculate the local coordinate of the handle tip based on the rectangle list.
-;;    type: :start (selection start) or :end (selection end)"
+;;    type: :start (selection start) or :end (selection end)
+;;    direction: :ttb (top-to-bottom, vertical), :ltr (left-to-right), :rtl (right-to-left)"
   (if (empty? rects)
     m/Offset.zero
-    (if (= type :start)
-      ;; start handle: located at the top center of the first rectangle
-      (let [first-rect (first rects)]
-        (m/Offset. (+ (.-left first-rect) (/ (.-width first-rect) 2))
-                   (.-top first-rect)))
-      ;; end handle: located at the bottom center of the last rectangle
-      (let [last-rect (last rects)]
-        (m/Offset. (+ (.-left last-rect) (/ (.-width last-rect) 2))
-                   (.-bottom last-rect))))))
+    (if (= direction :ttb)
+      ;; Vertical text (Mongolian): handles on the right side
+      (if (= type :start)
+        ;; start handle: located at the right center of the first rectangle
+        (let [first-rect (first rects)]
+          (m/Offset. (.-right first-rect)
+                     (+ (.-top first-rect) (/ (.-height first-rect) 2))))
+        ;; end handle: located at the right center of the last rectangle
+        (let [last-rect (last rects)]
+          (m/Offset. (.-right last-rect)
+                     (+ (.-top last-rect) (/ (.-height last-rect) 2)))))
+      ;; Horizontal text: handles on top/bottom
+      (if (= type :start)
+        ;; start handle: located at the top center of the first rectangle
+        (let [first-rect (first rects)]
+          (m/Offset. (+ (.-left first-rect) (/ (.-width first-rect) 2))
+                     (.-top first-rect)))
+        ;; end handle: located at the bottom center of the last rectangle
+        (let [last-rect (last rects)]
+          (m/Offset. (+ (.-left last-rect) (/ (.-width last-rect) 2))
+                     (.-bottom last-rect)))))))

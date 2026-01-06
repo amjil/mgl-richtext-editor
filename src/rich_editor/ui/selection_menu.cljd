@@ -3,6 +3,7 @@
             [rich-editor.state :as state]
             [rich-editor.ui-state :as ui]
             [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
             [rich-editor.services.node-service :as node-service]
             [rich-editor.selection-utils :as sel-util]
             [rich-editor.services.selection-geometry :as geom]
@@ -30,7 +31,12 @@
             node-len (.-length (.toPlainText (.-text selectable)))
             flutter-sel (sel-util/to-text-selection start-path selection node-len)
             start-rects (.getBoxesForSelection selectable flutter-sel)
-            start-local (geom/calculate-handle-offsets start-rects :start)
+            ;; Get text direction from document state
+            block-index (first start-path)
+            doc (:doc @state/!editor-state)
+            block (node/get-block-at-path doc [block-index])
+            direction (get-in block [:attributes :direction] :ttb)
+            start-local (geom/calculate-handle-offsets start-rects :start direction)
             start-global (.localToGlobal start-render start-local)
             ;; Position menu above the selection start, offset by menu height
             menu-position (m/Offset. (.-dx start-global) (- (.-dy start-global) 60.0))]

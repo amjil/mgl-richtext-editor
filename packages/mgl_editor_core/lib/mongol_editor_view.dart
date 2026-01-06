@@ -7,6 +7,7 @@ class MongolEditorView extends StatefulWidget {
   final Widget? findReplaceDialog;
   final Widget? selectionMenu;
   final Widget? slashCommandMenu;
+  final Widget? selectionHandles;
   final VoidCallback? onPostFrame;
   final bool hasSelection;
   final bool Function(KeyEvent) onKeyEvent;
@@ -17,6 +18,7 @@ class MongolEditorView extends StatefulWidget {
     this.findReplaceDialog,
     this.selectionMenu,
     this.slashCommandMenu,
+    this.selectionHandles,
     this.onPostFrame,
     this.hasSelection = false,
     required this.onKeyEvent,
@@ -51,6 +53,7 @@ class _MongolEditorViewState extends State<MongolEditorView> {
             if (widget.findReplaceDialog != null) widget.findReplaceDialog!,
             if (widget.selectionMenu != null) widget.selectionMenu!,
             if (widget.slashCommandMenu != null) widget.slashCommandMenu!,
+            if (widget.selectionHandles != null) widget.selectionHandles!,
           ],
         ),
       ),
