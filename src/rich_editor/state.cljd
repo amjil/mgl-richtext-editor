@@ -22,6 +22,19 @@
          :last-edited-at 0
          :last-op-type nil})) ;; store the timestamp in milliseconds
 
+;; Callback for onChange events
+(defonce !on-change-callback (atom nil))
+
+(defn set-on-change-callback!
+  "Set the onChange callback function. Callback receives a map with :doc and :selection keys."
+  [callback]
+  (reset! !on-change-callback callback))
+
+(defn clear-on-change-callback!
+  "Clear the onChange callback."
+  []
+  (reset! !on-change-callback nil))
+
 ;; Add watch to track all selection changes (only log path changes or significant offset changes)
 (add-watch !editor-state :selection-tracker
   (fn [_ _ old-state new-state]
@@ -38,6 +51,20 @@
           ;; Threshold allows normal IME input (2-4 chars) without logging
           (when (or path-changed? (and offset-diff (> offset-diff selection-log-threshold)))
             (log/log-info (str "[Selection Tracker] selection modified - old: " old-sel ", new: " new-sel))))))))
+
+;; Add watch to trigger onChange callback when document changes
+(add-watch !editor-state :on-change-trigger
+  (fn [_ _ old-state new-state]
+    (let [old-doc (:doc old-state)
+          new-doc (:doc new-state)
+          callback @!on-change-callback]
+      ;; Only trigger callback when document actually changes (not just selection)
+      (when (and callback (not= old-doc new-doc))
+        (try
+          (callback {:doc new-doc
+                     :selection (:selection new-state)})
+          (catch Exception e
+            (log/log-warn (str "Error in onChange callback: " e))))))))
 
 (defn focus-block! [path]
   (swap! !editor-state assoc :focused-path path))

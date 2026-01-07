@@ -200,6 +200,97 @@
               (hist/push-history curr updated-doc))))))))
 
 ;; =============================================================
+;; Block Style Commands
+;; =============================================================
+
+(defn set-block-background-color!
+  "Set the background color of a block
+   color: integer (e.g., 0xFFF0F0F0) or string (e.g., \"F0F0F0\" or \"#F0F0F0\")
+   Pass nil to remove background color"
+  [color]
+  (let [state @state/!editor-state
+        selection (:selection state)]
+    (when selection
+      (let [path (:path (:start selection))
+            block-index (first path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [updated-doc (if color
+                               (assoc-in (:doc curr)
+                                        [:children block-index :attributes :background-color]
+                                        color)
+                               (update-in (:doc curr)
+                                        [:children block-index :attributes]
+                                        dissoc :background-color))]
+              (hist/push-history curr updated-doc))))))))
+
+(defn set-block-text-color!
+  "Set the text color of a block
+   color: integer (e.g., 0xFF212121) or string (e.g., \"212121\" or \"#212121\")
+   Pass nil to remove text color"
+  [color]
+  (let [state @state/!editor-state
+        selection (:selection state)]
+    (when selection
+      (let [path (:path (:start selection))
+            block-index (first path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [updated-doc (if color
+                               (assoc-in (:doc curr)
+                                        [:children block-index :attributes :text-color]
+                                        color)
+                               (update-in (:doc curr)
+                                        [:children block-index :attributes]
+                                        dissoc :text-color))]
+              (hist/push-history curr updated-doc))))))))
+
+(defn set-block-font-family!
+  "Set the font family of a block
+   font-family: string (e.g., \"Arial\", \"Roboto\", \"OyunQaganTig\")
+   Pass nil to remove font family (use default font)"
+  [font-family]
+  (let [state @state/!editor-state
+        selection (:selection state)]
+    (when selection
+      (let [path (:path (:start selection))
+            block-index (first path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [updated-doc (if font-family
+                               (assoc-in (:doc curr)
+                                        [:children block-index :attributes :font-family]
+                                        font-family)
+                               (update-in (:doc curr)
+                                        [:children block-index :attributes]
+                                        dissoc :font-family))]
+              (hist/push-history curr updated-doc))))))))
+
+(defn set-block-style!
+  "Set background color, text color, and/or font family of a block
+   options: map with :background-color, :text-color, and/or :font-family keys
+   Pass nil for a key to remove that style"
+  [options]
+  (let [state @state/!editor-state
+        selection (:selection state)]
+    (when selection
+      (let [path (:path (:start selection))
+            block-index (first path)]
+        (swap! state/!editor-state
+          (fn [curr]
+            (let [bg-color (:background-color options)
+                  text-color (:text-color options)
+                  font-family (:font-family options)
+                  updated-doc (cond-> (:doc curr)
+                                (some? bg-color) (assoc-in [:children block-index :attributes :background-color] bg-color)
+                                (nil? bg-color) (update-in [:children block-index :attributes] dissoc :background-color)
+                                (some? text-color) (assoc-in [:children block-index :attributes :text-color] text-color)
+                                (nil? text-color) (update-in [:children block-index :attributes] dissoc :text-color)
+                                (some? font-family) (assoc-in [:children block-index :attributes :font-family] font-family)
+                                (nil? font-family) (update-in [:children block-index :attributes] dissoc :font-family))]
+              (hist/push-history curr updated-doc))))))))
+
+;; =============================================================
 ;; Text Insertion Commands
 ;; =============================================================
 

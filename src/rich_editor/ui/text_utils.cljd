@@ -4,6 +4,9 @@
             ["package:url_launcher/url_launcher.dart" :as url-launcher]
             [clojure.string :as str]))
 
+;; Default font family (should match block-view.cljd)
+(def ^:private default-font-family "OyunQaganTig")
+
 (defn- parse-color [color-str]
   (try
     (if (str/starts-with? color-str "#")
@@ -65,7 +68,7 @@
                 
                 ;; Style for match
                 highlight-style (.copyWith base-style 
-                                           :backgroundColor (if is-current? 
+                                           .backgroundColor (if is-current? 
                                                               (-> m/Colors.orange (.withOpacity 0.5)) 
                                                               (-> m/Colors.yellow (.withOpacity 0.3))))
                 
@@ -104,13 +107,13 @@
                                               .color (if-let [c (get attrs :color)] (parse-color c) nil)
                                               .backgroundColor (if-let [bg (get attrs :background)] (parse-color bg) nil)
                                               .fontSize (or (get attrs :font-size) 16.0)
-                                              .fontFamily (get attrs :font-family))
+                                              .fontFamily (or (get attrs :font-family) default-font-family))
                                   ;; Merge link style and base style using copyWith
                                   final-style (if link-url
                                                 (.copyWith base-style
-                                                          :color m/Colors.blue
-                                                          :decoration m/TextDecoration.underline
-                                                          :decorationColor m/Colors.blue)
+                                                          .color m/Colors.blue
+                                                          .decoration m/TextDecoration.underline
+                                                          .decorationColor m/Colors.blue)
                                                 base-style)
                                   ;; Link click handling
                                   recognizer (when link-url

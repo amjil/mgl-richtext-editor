@@ -1,0 +1,236 @@
+(ns rich-editor.utils.html-export
+  (:require [clojure.string :as str]))
+
+;; =============================================================
+;; HTML Escaping
+;; =============================================================
+
+(defn- escape-html [text]
+  ;; Escape HTML special characters in text
+  (-> text
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")
+      (str/replace "\"" "&quot;")
+      (str/replace "'" "&#39;")))
+
+;; =============================================================
+;; Delta to HTML Conversion
+;; =============================================================
+
+(defn- delta->html [delta]
+  ;; Convert Delta format to HTML with inline formatting
+  (let [ops (or (:operations delta) [])]
+    (apply str
+      (map (fn [op]
+             (let [text (:insert op)
+                   attrs (:attributes op)]
+               (if (string? text)
+                 (let [escaped-text (escape-html text)
+                       bold? (:bold attrs)
+                       italic? (:italic attrs)
+                       strike? (:strikethrough attrs)
+                       code? (:code attrs)
+                       link (:link attrs)
+                       
+                       ;; Build HTML tags from innermost to outermost
+                       result (-> escaped-text
+                                 (#(if code? (str "<code>" % "</code>") %))
+                                 (#(if bold? (str "<strong>" % "</strong>") %))
+                                 (#(if italic? (str "<em>" % "</em>") %))
+                                 (#(if strike? (str "<s>" % "</s>") %))
+                                 (#(if link (str "<a href=\"" (escape-html link) "\">" % "</a>") %)))]
+                   result)
+                 "")))
+           ops))))
+
+;; =============================================================
+;; Table to HTML Conversion
+;; =============================================================
+
+(defn- table->html [rows]
+  ;; Convert table rows to HTML table
+  (if (empty? rows)
+    ""
+    (let [header (first rows)
+          rest-rows (rest rows)
+          header-cells (map #(str "<th>" (delta->html (get-in % [:data :delta])) "</th>") (:cells header))
+          header-row (str "<tr>" (str/join "" header-cells) "</tr>")
+          body-rows (map (fn [row]
+                          (let [cells (map #(str "<td>" (delta->html (get-in % [:data :delta])) "</td>") (:cells row))]
+                            (str "<tr>" (str/join "" cells) "</tr>")))
+                        rest-rows)]
+      (str "<table><thead>" header-row "</thead><tbody>" (str/join "" body-rows) "</tbody></table>"))))
+
+;; =============================================================
+;; Block to HTML Conversion
+;; =============================================================
+
+(defn- color-to-hex [color]
+  ;; Convert color to hex string
+  ;; If it's already a string starting with #, return as is
+  ;; If it's a number (like 0xFF212121), convert to hex without alpha
+  ;; If it's a string without #, assume it's already hex
+  (cond
+    (string? color) (if (str/starts-with? color "#")
+                      color
+                      (str "#" color))
+    (number? color) (let [hex-str (Integer/toHexString color)
+                          ;; Remove alpha channel if present (first 2 chars)
+                          hex-without-alpha (if (> (count hex-str) 6)
+                                              (subs hex-str 2)
+                                              hex-str)]
+                      (str "#" hex-without-alpha))
+    :else ""))
+
+(defn- build-style-attr [attributes]
+  ;; Build style attribute string from block attributes
+  (let [bg-color (get attributes :background-color)
+        text-color (get attributes :text-color)
+        font-family (get attributes :font-family)
+        styles (cond-> []
+                 bg-color (conj (str "background-color: " (color-to-hex bg-color) ";"))
+                 text-color (conj (str "color: " (color-to-hex text-color) ";"))
+                 font-family (conj (str "font-family: " (escape-html font-family) ";")))]
+    (if (seq styles)
+      (str " style=\"" (str/join " " styles) "\"")
+      "")))
+
+(defn block->html [block]
+  ;; Convert a single block to HTML
+  (let [type (:type block)
+        data (:data block)
+        delta (:delta data)
+        text (if delta (delta->html delta) "")
+        attributes (or (:attributes block) {})
+        style-attr (build-style-attr attributes)]
+    (case type
+      :paragraph (if (str/blank? text) 
+                   (str "<p" style-attr "></p>") 
+                   (str "<p" style-attr ">" text "</p>"))
+      :h1 (if (str/blank? text) 
+            (str "<h1" style-attr "></h1>") 
+            (str "<h1" style-attr ">" text "</h1>"))
+      :h2 (if (str/blank? text) 
+            (str "<h2" style-attr "></h2>") 
+            (str "<h2" style-attr ">" text "</h2>"))
+      :h3 (if (str/blank? text) 
+            (str "<h3" style-attr "></h3>") 
+            (str "<h3" style-attr ">" text "</h3>"))
+      :bulleted-list (let [level (or (:level data) 0)
+                           level-style (if (pos? level) (str "margin-left: " (* level 20) "px;") "")
+                           combined-style (if (and (seq style-attr) (seq level-style))
+                                           (str " style=\"" level-style " " (str/trim (subs style-attr 7 (dec (count style-attr)))) "\"")
+                                           (if (pos? level) (str " style=\"" level-style "\"") style-attr))]
+                       (str "<ul" combined-style "><li>" text "</li></ul>"))
+      :numbered-list (let [level (or (:level data) 0)
+                            index (or (:index data) 1)
+                            level-style (if (pos? level) (str "margin-left: " (* level 20) "px;") "")
+                            combined-style (if (and (seq style-attr) (seq level-style))
+                                            (str " style=\"" level-style " " (str/trim (subs style-attr 7 (dec (count style-attr)))) "\"")
+                                            (if (pos? level) (str " style=\"" level-style "\"") style-attr))
+                            start (if (and (zero? level) (pos? index) (> index 1)) (str " start=\"" index "\"") "")]
+                        (str "<ol" combined-style start "><li>" text "</li></ol>"))
+      :quote (if (str/blank? text) 
+               (str "<blockquote" style-attr "></blockquote>") 
+               (str "<blockquote" style-attr ">" text "</blockquote>"))
+      :todo (let [checked? (:checked data)
+                  checked-attr (if checked? " checked" "")
+                  label-text (if (str/blank? text) "" text)]
+              (str "<div" style-attr "><input type=\"checkbox\"" checked-attr " disabled><label>" label-text "</label></div>"))
+      :divider "<hr>"
+      :code-block (let [code-text (or (:code data) "")]
+                    (str "<pre><code" style-attr ">" (escape-html code-text) "</code></pre>"))
+      :image (let [src (or (:src data) "")
+                   alt (or (:alt data) "")
+                   title (or (:title data) "")
+                   title-attr (if (not (str/blank? title)) (str " title=\"" (escape-html title) "\"") "")]
+               (str "<img src=\"" (escape-html src) "\" alt=\"" (escape-html alt) "\"" title-attr ">"))
+      :table (table->html (or (:rows data) []))
+      "")))
+
+;; =============================================================
+;; List Grouping Helper
+;; =============================================================
+
+(defn- group-consecutive-lists [blocks]
+  ;; Group consecutive list items of the same type and level into single lists
+  (loop [remaining blocks
+         result []
+         current-list nil]
+    (if (empty? remaining)
+      (if current-list
+        (conj result current-list)
+        result)
+      (let [block (first remaining)
+            block-type (:type block)
+            is-list? (contains? #{:bulleted-list :numbered-list} block-type)
+            block-level (or (get-in block [:data :level]) 0)]
+        (if (and is-list? current-list
+                 (= (:type current-list) block-type)
+                 (= (:level current-list) block-level))
+          ;; Continue current list
+          (recur (rest remaining)
+                 result
+                 (update current-list :items conj block))
+          ;; Start new group or emit current list
+          (let [new-result (if current-list
+                            (conj result current-list)
+                            result)
+                new-current (if is-list?
+                             {:type block-type
+                              :level block-level
+                              :items [block]}
+                             nil)]
+            (recur (rest remaining)
+                   new-result
+                   new-current)))))))
+
+(defn- render-grouped-blocks [grouped]
+  ;; Render grouped blocks to HTML, merging consecutive list items
+  (map (fn [item]
+         (if (and (map? item) 
+                  (contains? item :items)
+                  (contains? #{:bulleted-list :numbered-list} (:type item)))  ;; It's a grouped list
+           (let [list-type (:type item)
+                 level (:level item)
+                 items (:items item)
+                 list-tag (if (= list-type :bulleted-list) "ul" "ol")
+                 style (if (pos? level) (str " style=\"margin-left: " (* level 20) "px;\"") "")
+                 first-index (when (= list-type :numbered-list)
+                               (or (get-in (first items) [:data :index]) 1))
+                 start-attr (if (and (= list-type :numbered-list)
+                                     first-index
+                                     (> first-index 1))
+                              (str " start=\"" first-index "\"")
+                              "")
+                 list-items (map (fn [block]
+                                  (let [delta (get-in block [:data :delta])
+                                        text (if delta (delta->html delta) "")]
+                                    (str "<li>" text "</li>")))
+                                items)]
+             (str "<" list-tag style start-attr ">" (str/join "" list-items) "</" list-tag ">"))
+           (block->html item)))  ;; Regular block
+       grouped))
+
+;; =============================================================
+;; Document to HTML Conversion
+;; =============================================================
+
+(defn doc->html [doc]
+  ;; Convert entire document to HTML string
+  (let [blocks (or (:children doc) [])
+        grouped (group-consecutive-lists blocks)
+        html-blocks (render-grouped-blocks grouped)
+        body-content (str/join "\n" html-blocks)]
+    (str "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n<title>Document</title>\n</head>\n<body>\n" 
+         body-content 
+         "\n</body>\n</html>")))
+
+(defn doc->html-fragment [doc]
+  ;; Convert document to HTML fragment (without DOCTYPE, html, head, body tags)
+  (let [blocks (or (:children doc) [])
+        grouped (group-consecutive-lists blocks)
+        html-blocks (render-grouped-blocks grouped)]
+    (str/join "\n" html-blocks)))
+

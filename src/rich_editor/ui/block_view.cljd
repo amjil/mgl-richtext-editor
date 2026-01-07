@@ -13,6 +13,61 @@
             ["package:mgl_editor_core/mongol_select.dart" :refer [MongolSelect MongolSelectItem]]
             ["package:flutter/material.dart" :as m]))
 
+;; Default font family
+(def ^:private default-font-family "OyunQaganTig")
+
+;; =============================================================
+;; Block Style Utilities
+;; =============================================================
+
+(defn- get-block-style-attributes
+  "Extract and process style attributes from block
+   Returns a map with:
+   :bg-color - Color object (or transparent if not set)
+   :text-color - Color object (or default if not set)
+   :font-family - String (default font if not set)
+   :bg-color-val - Raw background color value (or nil)
+   :text-color-val - Raw text color value (or nil)
+   :font-family-val - Raw font family value (or nil)"
+  [block & {:keys [default-text-color default-bg-color default-font] 
+            :or {default-text-color (m/Color 0xFF212121)
+                 default-bg-color m/Colors.transparent
+                 default-font default-font-family}}]
+  (let [bg-color-val (get-in block [:attributes :background-color])
+        text-color-val (get-in block [:attributes :text-color])
+        font-family-val (get-in block [:attributes :font-family])
+        bg-color (if bg-color-val (m/Color bg-color-val) default-bg-color)
+        text-color (if text-color-val (m/Color text-color-val) default-text-color)
+        final-font-family (or font-family-val default-font)]
+    {:bg-color bg-color
+     :text-color text-color
+     :font-family final-font-family
+     :bg-color-val bg-color-val
+     :text-color-val text-color-val
+     :font-family-val font-family-val}))
+
+(defn- create-block-decoration
+  "Create BoxDecoration for block background
+   Returns nil if no background color is set"
+  [bg-color & {:keys [border-radius] :or {border-radius 4.0}}]
+  (if (and bg-color (not= bg-color m/Colors.transparent))
+    (m/BoxDecoration :color bg-color :borderRadius (m/BorderRadius.circular border-radius))
+    nil))
+
+(defn- create-block-text-style
+  "Create TextStyle with block style attributes
+   base-style: base TextStyle to extend
+   style-attrs: style attributes map from get-block-style-attributes"
+  [base-style style-attrs]
+  (let [text-color (:text-color style-attrs)
+        font-family (:font-family style-attrs)
+        style-with-color (if text-color
+                          (.copyWith base-style .color text-color)
+                          base-style)]
+    (if font-family
+      (.copyWith style-with-color .fontFamily font-family)
+      style-with-color)))
+
 (defn- get-block-matches
   "Get matches for the current block"
   [matches path current-match-index]
@@ -47,7 +102,12 @@
                                        (when (:is-current? m) idx))
                                      block-matches))
          alignment (get-in block [:attributes :align] :left)
-         direction (get-in block [:attributes :direction] :ttb)]
+         direction (get-in block [:attributes :direction] :ttb)
+         ;; Get style attributes using helper function
+         style-attrs (get-block-style-attributes block)
+         bg-color (:bg-color style-attrs)
+         ;; Merge text color and font family into text style
+         final-text-style (create-block-text-style text-style style-attrs)]
    (if (= direction :ttb)
      (let [align-value (case alignment
                         :center m/Alignment.topCenter
@@ -61,26 +121,31 @@
         :constraints (m/BoxConstraints .minWidth 16.0)
         ;; Added padding to ensure cursor at the bottom/end is visible
         :padding (m/EdgeInsets.only :bottom 4.0)
+        :decoration (create-block-decoration bg-color)
         :child (selectable-mongol-text 
                 {:path path 
                  :delta (get-in block [:data :delta])
-                 :text-style text-style
+                 :text-style final-text-style
                  :matches block-match-positions
                  :current-match-index (or block-current-index -1)
                  :text-keys-atom text-keys-atom})))
-     (selectable-mongol-text 
-      {:path path 
-       :delta (get-in block [:data :delta])
-       :text-style text-style
-       :matches block-match-positions
-       :current-match-index (or block-current-index -1)
-       :text-keys-atom text-keys-atom}))))
+     (m/Container
+      :decoration (if (not= bg-color m/Colors.transparent)
+                   (m/BoxDecoration :color bg-color :borderRadius (m/BorderRadius.circular 4.0))
+                   nil)
+      :child (selectable-mongol-text 
+              {:path path 
+               :delta (get-in block [:data :delta])
+               :text-style final-text-style
+               :matches block-match-positions
+               :current-match-index (or block-current-index -1)
+               :text-keys-atom text-keys-atom})))))
 
 (defn paragraph-block [path block text-keys-atom]
-  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)))
+  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0 :fontFamily default-font-family)))
 
 (defn heading-block [path block text-keys-atom font-size]
-  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize font-size :fontWeight m/FontWeight.bold)))
+  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize font-size :fontWeight m/FontWeight.bold :fontFamily default-font-family)))
 
 (defn todo-block [path block text-keys-atom]
   (f/widget
@@ -95,20 +160,28 @@
          block-current-index (first (keep-indexed
                                      (fn [idx m]
                                        (when (:is-current? m) idx))
-                                     block-matches))]
-   (m/Column ;; vertically arrange checkbox and text
-    :mainAxisSize m/MainAxisSize.min
-    :children
-    [(m/Checkbox 
-       .value (boolean checked?)
-       .onChanged (fn [v] (state/update-block-data! path {:checked v})))
-     (selectable-mongol-text 
-       {:path path 
-        :delta (get-in block [:data :delta])
-        :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
-        :matches block-match-positions
-        :current-match-index (or block-current-index -1)
-        :text-keys-atom text-keys-atom})])))
+                                     block-matches))
+         ;; Get style attributes using helper function
+         style-attrs (get-block-style-attributes block)
+         bg-color (:bg-color style-attrs)
+         text-color (:text-color style-attrs)
+         final-font-family (:font-family style-attrs)]
+   (m/Container
+    :decoration (create-block-decoration bg-color)
+    :padding (m/EdgeInsets.all 4.0)
+    :child (m/Column ;; vertically arrange checkbox and text
+            :mainAxisSize m/MainAxisSize.min
+            :children
+            [(m/Checkbox 
+               .value (boolean checked?)
+               .onChanged (fn [v] (state/update-block-data! path {:checked v})))
+             (selectable-mongol-text 
+               {:path path 
+                :delta (get-in block [:data :delta])
+                :text-style (m/TextStyle :color text-color :fontSize 16.0 :fontFamily final-font-family)
+                :matches block-match-positions
+                :current-match-index (or block-current-index -1)
+                :text-keys-atom text-keys-atom})]))))
 
 (defn image-block [block]
   (m/ClipRRect
@@ -148,7 +221,12 @@
                                        (when (:is-current? m) idx))
                                      block-matches))
          index (get-in block [:data :index] 1)
-         level (get-in block [:data :level] 0)]
+         level (get-in block [:data :level] 0)
+         ;; Get style attributes using helper function
+         style-attrs (get-block-style-attributes block)
+         bg-color (:bg-color style-attrs)
+         text-color (:text-color style-attrs)
+         final-font-family (:font-family style-attrs)]
    (m/Column
     :crossAxisAlignment m/CrossAxisAlignment.start
     :children
@@ -159,14 +237,16 @@
       :child (mgl/MongolText (get-numbered-label index level) 
                             :style (m/TextStyle :fontSize 16.0 
                                               :fontWeight m/FontWeight.bold
-                                              :color m/Colors.blueGrey)))
+                                              :color m/Colors.blueGrey
+                                              :fontFamily default-font-family)))
      (m/Container
       :constraints (m/BoxConstraints .minWidth 16.0)
       :padding (m/EdgeInsets.only :bottom 4.0)
+      :decoration (create-block-decoration bg-color)
       :child (selectable-mongol-text 
               {:path path 
                :delta (get-in block [:data :delta])
-               :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+               :text-style (m/TextStyle :color text-color :fontSize 16.0 :fontFamily final-font-family)
                :matches block-match-positions
                :current-match-index (or block-current-index -1)
                :text-keys-atom text-keys-atom}))])))
@@ -186,7 +266,12 @@
                                      (fn [idx m]
                                        (when (:is-current? m) idx))
                                      block-matches))
-         level (get-in block [:data :level] 0)]
+         level (get-in block [:data :level] 0)
+         ;; Get style attributes using helper function
+         style-attrs (get-block-style-attributes block)
+         bg-color (:bg-color style-attrs)
+         text-color (:text-color style-attrs)
+         final-font-family (:font-family style-attrs)]
    (m/Column
     :crossAxisAlignment m/CrossAxisAlignment.start
     :children
@@ -219,10 +304,11 @@
      (m/Container
       :constraints (m/BoxConstraints .minWidth 16.0)
       :padding (m/EdgeInsets.only :bottom 4.0)
+      :decoration (create-block-decoration bg-color)
       :child (selectable-mongol-text 
               {:path path 
                :delta (get-in block [:data :delta])
-               :text-style (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0)
+               :text-style (m/TextStyle :color text-color :fontSize 16.0 :fontFamily final-font-family)
                :matches block-match-positions
                :current-match-index (or block-current-index -1)
                :text-keys-atom text-keys-atom}))])))
@@ -241,14 +327,21 @@
          block-current-index (first (keep-indexed
                                      (fn [idx m]
                                        (when (:is-current? m) idx))
-                                     block-matches))]
+                                     block-matches))
+         ;; Get style attributes using helper function, with quote-specific defaults
+         style-attrs (get-block-style-attributes block 
+                                                   :default-text-color (m/Color 0xFF444444)
+                                                   :default-bg-color (m/Color 0xFFF0F7FF))
+         bg-color (:bg-color style-attrs)
+         text-color (:text-color style-attrs)
+         final-font-family (:font-family style-attrs)]
    (m/Container
     :padding (m/EdgeInsets.symmetric :vertical 20.0 :horizontal 12.0)
     :decoration (m/BoxDecoration
                  :border (m/Border :top (m/BorderSide
-                                          :color (m/Color 0xFF2196F3)
-                                          :width 4.0))
-                 :color (m/Color 0xFFF0F7FF)
+                                         :color (m/Color 0xFF2196F3)
+                                         :width 4.0))
+                 :color bg-color
                  :borderRadius (m/BorderRadius.only 
                                 :bottomLeft (m/Radius.circular 8.0)
                                 :bottomRight (m/Radius.circular 8.0)))
@@ -257,7 +350,8 @@
              :delta (get-in block [:data :delta])
              :text-style (m/TextStyle :fontStyle m/FontStyle.italic 
                                      :fontSize 16.0 
-                                     :color (m/Color 0xFF444444))
+                                     :color text-color
+                                     :fontFamily final-font-family)
              :matches block-match-positions
              :current-match-index (or block-current-index -1)
              :text-keys-atom text-keys-atom}))))
@@ -275,21 +369,29 @@
 (defn code-block
   "Render code block"
   [_path block]
-  (m/Container
-   :padding (m/EdgeInsets.all 16.0)
-   :decoration (m/BoxDecoration
-                :color (m/Color 0xFF282C34)
-                :borderRadius (m/BorderRadius.circular 8.0)
-                :boxShadow [(m/BoxShadow 
-                             :color (-> m/Colors.black (.withOpacity 0.1))
-                             :blurRadius 4.0
-                             :offset (m/Offset 0.0 2.0))])
-   :child (m/SelectableText
-           (get-in block [:data :code] "")
-           :style (m/TextStyle
-                   :fontFamily "monospace"
-                   :fontSize 14.0
-                   :color (m/Color 0xFFABB2BF)))))
+  (let [;; Get style attributes using helper function, with code-block-specific defaults
+        style-attrs (get-block-style-attributes block 
+                                                :default-text-color (m/Color 0xFFABB2BF)
+                                                :default-bg-color (m/Color 0xFF282C34)
+                                                :default-font "monospace")
+        bg-color (:bg-color style-attrs)
+        text-color (:text-color style-attrs)
+        font-family (:font-family style-attrs)]
+    (m/Container
+     :padding (m/EdgeInsets.all 16.0)
+     :decoration (m/BoxDecoration
+                  :color bg-color
+                  :borderRadius (m/BorderRadius.circular 8.0)
+                  :boxShadow [(m/BoxShadow 
+                               :color (-> m/Colors.black (.withOpacity 0.1))
+                               :blurRadius 4.0
+                               :offset (m/Offset 0.0 2.0))])
+     :child (m/SelectableText
+             (get-in block [:data :code] "")
+             :style (m/TextStyle
+                     :fontFamily font-family
+                     :fontSize 14.0
+                     :color text-color)))))
 
 (defn table-cell
   "Render table cell"
@@ -307,8 +409,12 @@
                       (reduce + (subvec row-heights row-idx (+ row-idx rowspan)))
                       (* rowspan 120.0))
         alignment (or (:align attributes) (get cell :align :left))
-        bg-color-val (get attributes :background-color)
-        bg-color (if bg-color-val (m/Color bg-color-val) m/Colors.white)
+        ;; Get style attributes using helper function (treat cell as block-like structure)
+        cell-block {:attributes attributes}
+        style-attrs (get-block-style-attributes cell-block 
+                                                :default-text-color (m/Color 0xFF000000)
+                                                :default-bg-color m/Colors.white)
+        bg-color (:bg-color style-attrs)
         border-color-val (get attributes :border-color)
         border-color (if border-color-val (m/Color border-color-val) (m/Color 0xFFE0E0E0))
         border-width (get attributes :border-width 1.0)
@@ -336,7 +442,9 @@
                         {:path cell-path
                          :delta current-delta
                          :text-keys-atom text-keys-atom
-                         :text-style (m/TextStyle :color (m/Color 0xFF000000) :fontSize 16.0)}))))
+                         :text-style (create-block-text-style 
+                                      (m/TextStyle :fontSize 16.0) 
+                                      style-attrs)}))))
       ;; Column Resizer (Right edge)
       (m/Positioned
        :right 0.0 :top 0.0 :bottom 0.0

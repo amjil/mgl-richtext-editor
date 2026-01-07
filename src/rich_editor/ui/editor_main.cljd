@@ -1,6 +1,6 @@
 (ns rich-editor.ui.editor-main
   (:require [cljd.flutter :as f]
-            [rich-editor.state :refer [!editor-state]]
+            [rich-editor.state :refer [!editor-state set-on-change-callback! clear-on-change-callback!]]
             [rich-editor.ui-state :as ui]
             [rich-editor.ui.block-view :refer [block-entry]]
             [rich-editor.ui.mongol-virtual-keyboard :refer [virtual-keyboard-wrapper]]
@@ -19,14 +19,8 @@
             ["package:flutter/material.dart" :as m]
             ["package:flutter/services.dart" :as srv]
             ["package:flutter/foundation.dart" :as foundation]
-            ["package:mgl_editor_core/mongol_editor_view.dart" :refer [MongolEditorView]]))
-
-;; Custom resource class to manage global keyboard listener
-(deftype KeyboardHandler [handler]
-  ;; Define a standard Dart dispose method
-  (dispose [_]
-    (when handler
-      (.removeHandler (.-instance srv/HardwareKeyboard) handler))))
+            ["package:mgl_editor_core/mongol_editor_view.dart" :refer [MongolEditorView]]
+            ["package:mgl_editor_core/disposable.dart" :refer [Disposable]]))
 
 (defn- init-keyboard! []
   (let [platform foundation/defaultTargetPlatform
@@ -48,22 +42,32 @@
     (kb-service/init-default-shortcuts!)
     (when handler
       (.addHandler (.-instance srv/HardwareKeyboard) handler))
-    ;; Return the handler wrapped in our custom class
-    (KeyboardHandler. handler)))
+    ;; Return Disposable object that will be automatically disposed by managed
+    (Disposable. (fn []
+                   (when handler
+                     (.removeHandler (.-instance srv/HardwareKeyboard) handler))))))
 
-(defn mongol-editor-view []
+(defn- init-on-change-callback! [onChange]
+  ;; Set onChange callback when widget mounts
+  (when onChange
+    (set-on-change-callback! onChange))
+  ;; Return Disposable object that will be automatically disposed by managed
+  (Disposable. (fn []
+                 (clear-on-change-callback!))))
+
+(defn mongol-editor-view [& {:keys [onChange]}]
   (f/widget
    :managed [scroll-controller (m/ScrollController.)
-             text-keys-atom (atom {})
              ;; Properly managed: only runs ONCE when widget is mounted
              ;; and .dispose() is called automatically when unmounted.
              _kb-handler (init-keyboard!)
-             :dispose false]
+             _on-change-handler (init-on-change-callback! onChange)]
    :watch [blocks (f/$ (:children (:doc (f/<! !editor-state))))
            selection (f/$ (:selection (f/<! !editor-state)))
            has-focus (f/$ (some? (:focused-path (f/<! !editor-state))))
            slash-command-active? (f/$ (:slash-command-active (f/<! ui/!ui-state)))]
-   :let [has-selection (some? selection)
+   :let [text-keys-atom (atom {})
+         has-selection (some? selection)
          is-mobile? (let [platform foundation/defaultTargetPlatform]
                       (or (= platform m/TargetPlatform.iOS)
                           (= platform m/TargetPlatform.android)))

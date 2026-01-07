@@ -11,6 +11,7 @@ class MongolEditorView extends StatefulWidget {
   final VoidCallback? onPostFrame;
   final bool hasSelection;
   final bool Function(KeyEvent) onKeyEvent;
+  final ValueChanged<Map<String, dynamic>>? onChange;
 
   const MongolEditorView({
     super.key,
@@ -22,6 +23,7 @@ class MongolEditorView extends StatefulWidget {
     this.onPostFrame,
     this.hasSelection = false,
     required this.onKeyEvent,
+    this.onChange,
   });
 
   @override
