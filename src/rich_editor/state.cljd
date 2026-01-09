@@ -3,24 +3,42 @@
             [rich-editor.model.transaction :as tx]
             [rich-editor.model.node :as node]
             [rich-editor.utils.delta :as delta-utils]
-            [rich-editor.utils.logger :as log]))
+            [rich-editor.utils.logger :as log]
+            [rich-editor.utils.events :as events]
+            [rich-editor.utils.validation :as validation]
+            [rich-editor.utils.result :as result]))
 
 ;; =============================================================
 ;; Constants
 ;; =============================================================
 
 (def ^:private merge-interval-ms 1000)
-(def ^:private selection-log-threshold 5)
 
-;; 1. define the initial state
-(defonce !editor-state
-  (atom {:doc {:children [{:id "b1" :type :paragraph :data {:delta {:operations []}}}]}
+;; =============================================================
+;; Default Initial State
+;; =============================================================
+
+(def default-doc
+  "Default empty document"
+  {:children [{:id "b1" :type :paragraph :data {:delta {:operations []}}}]})
+
+(defn create-editor-state
+  "Create a new editor state atom (functional, allows dependency injection)"
+  [initial-doc]
+  (atom {:doc (or initial-doc default-doc)
          :selection nil
          :undo-stack []
          :redo-stack []
          :focused-path nil
          :last-edited-at 0
-         :last-op-type nil})) ;; store the timestamp in milliseconds
+         :last-op-type nil}))
+
+;; 1. define the initial state (global, for backward compatibility)
+(defonce !editor-state
+  (create-editor-state default-doc))
+
+;; Setup event dispatcher for global state
+(events/setup-event-dispatcher !editor-state)
 
 ;; Callback for onChange events
 (defonce !on-change-callback (atom nil))
@@ -35,55 +53,79 @@
   []
   (reset! !on-change-callback nil))
 
-;; Add watch to track all selection changes (only log path changes or significant offset changes)
-(add-watch !editor-state :selection-tracker
-  (fn [_ _ old-state new-state]
-    (let [old-sel (:selection old-state)
-          new-sel (:selection new-state)]
-      (when (not= old-sel new-sel)
-        (let [old-path (when old-sel (:path (:start old-sel)))
-              new-path (when new-sel (:path (:start new-sel)))
-              old-offset (when old-sel (:offset (:start old-sel)))
-              new-offset (when new-sel (:offset (:start new-sel)))
-              path-changed? (not= old-path new-path)
-              offset-diff (when (and old-offset new-offset) (max (- new-offset old-offset) (- old-offset new-offset)))]
-          ;; Only log when path changes or offset changes very significantly (normal multi-char input like IME is expected)
-          ;; Threshold allows normal IME input (2-4 chars) without logging
-          (when (or path-changed? (and offset-diff (> offset-diff selection-log-threshold)))
-            (log/log-info (str "[Selection Tracker] selection modified - old: " old-sel ", new: " new-sel))))))))
+;; =============================================================
+;; Functional State Update Functions (Pure)
+;; =============================================================
 
-;; Add watch to trigger onChange callback when document changes
-(add-watch !editor-state :on-change-trigger
-  (fn [_ _ old-state new-state]
-    (let [old-doc (:doc old-state)
-          new-doc (:doc new-state)
-          callback @!on-change-callback]
-      ;; Only trigger callback when document actually changes (not just selection)
-      (when (and callback (not= old-doc new-doc))
-        (try
-          (callback {:doc new-doc
-                     :selection (:selection new-state)})
-          (catch Exception e
-            (log/log-warn (str "Error in onChange callback: " e))))))))
+(defn update-selection
+  "Pure function: update selection in state"
+  [state new-selection]
+  (assoc state :selection new-selection))
 
-(defn focus-block! [path]
-  (swap! !editor-state assoc :focused-path path))
+(defn update-doc
+  "Pure function: update doc in state"
+  [state new-doc]
+  (assoc state :doc new-doc))
 
-(defn update-selection! [new-selection]
-  (let [old-selection (:selection @!editor-state)]
-    ;; Only log significant selection changes (path changes or large offset differences)
-    (when (not= old-selection new-selection)
-      (let [old-path (when old-selection (:path (:start old-selection)))
-            new-path (when new-selection (:path (:start new-selection)))
-            old-offset (when old-selection (:offset (:start old-selection)))
-            new-offset (when new-selection (:offset (:start new-selection)))
-            path-changed? (not= old-path new-path)
-            offset-diff (when (and old-offset new-offset) (max (- new-offset old-offset) (- old-offset new-offset)))]
-        ;; Only log when path changes or offset changes very significantly (normal multi-char input like IME is expected)
-        ;; Threshold allows normal IME input (2-4 chars) without logging
-        (when (or path-changed? (and offset-diff (> offset-diff selection-log-threshold)))
-          (log/log-info (str "[Selection State] update-selection! - old: " old-selection ", new: " new-selection)))))
-    (swap! !editor-state assoc :selection new-selection)))
+(defn update-focused-path
+  "Pure function: update focused path in state"
+  [state focused-path]
+  (assoc state :focused-path focused-path))
+
+(defn compose-state-updates
+  "Compose multiple state update functions"
+  [& update-fns]
+  (fn [state]
+    (reduce (fn [acc update-fn] (update-fn acc)) state update-fns)))
+
+;; =============================================================
+;; Legacy Watch Handlers (kept for backward compatibility, will be replaced by events)
+;; =============================================================
+
+;; Subscribe to events for onChange callback
+(defonce !on-change-unsubscribe
+  (events/subscribe :doc-changed
+                    (fn [event]
+                      (when-let [callback @!on-change-callback]
+                        (try
+                          (callback {:doc (:doc (:data event))
+                                    :selection (:selection @!editor-state)})
+                          (catch Exception e
+                            (log/log-warn (str "Error in onChange callback: " e))))))))
+
+;; =============================================================
+;; State Mutation Functions (with validation and events)
+;; =============================================================
+
+(defn focus-block!
+  "Update focused block path (functional, accepts optional state)"
+  ([path] (focus-block! !editor-state path))
+  ([state path]
+   (if (validation/valid-path? path)
+     (do
+       (swap! state assoc :focused-path path)
+       (events/emit :focus-changed {:focused-path path}))
+     (log/log-warn (str "Invalid path in focus-block!: " path)))))
+
+(defn update-selection!
+  "Update selection (functional, accepts optional state, validates input)"
+  ([new-selection] (update-selection! !editor-state new-selection))
+  ([state new-selection]
+   (let [validation-result (validation/validate-selection new-selection)]
+     (if (result/is-ok? validation-result)
+       (let [valid-selection (:value validation-result)
+             old-selection (:selection @state)]
+         ;; Log significant changes (for debugging)
+         (when (not= old-selection valid-selection)
+           (let [old-path (when old-selection (:path (:start old-selection)))
+                 new-path (when valid-selection (:path (:start valid-selection)))
+                 path-changed? (not= old-path new-path)]
+             (when path-changed?
+               (log/log-info (str "[Selection] path changed: " old-path " -> " new-path)))))
+         (swap! state update-selection valid-selection))
+       (do
+         (log/log-warn (str "Invalid selection in update-selection!: " (:error validation-result)))
+         validation-result)))))
 
 (defn apply-action! [action-fn & args]
   (swap! !editor-state (fn [curr]

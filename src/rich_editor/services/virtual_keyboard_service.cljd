@@ -87,11 +87,11 @@
             relevant-state {:text text :sel [clamped-start clamped-end]}]
         (when (not= @last-synced-state relevant-state)
           (let [new-selection (w/TextSelection
-                               :baseOffset clamped-start
-                               :extentOffset clamped-end)
+                               .baseOffset clamped-start
+                               .extentOffset clamped-end)
                 new-editing-val (w/TextEditingValue
-                                 :text text
-                                 :selection new-selection)]
+                                 .text text
+                                 .selection new-selection)]
             ;; Update virtual keyboard's editing state
             (reset! control/editing-value new-editing-val)
             ;; Notify TextInput system to update editing state
@@ -102,11 +102,11 @@
       (let [empty-state {:text "" :sel [0 0]}]
         (when (not= @last-synced-state empty-state)
           (let [empty-selection (w/TextSelection
-                                 :baseOffset 0
-                                 :extentOffset 0)
+                                 .baseOffset 0
+                                 .extentOffset 0)
                 empty-editing-val (w/TextEditingValue
-                                   :text ""
-                                   :selection empty-selection)]
+                                   .text ""
+                                   .selection empty-selection)]
             ;; Reset virtual keyboard's editing state to empty
             (reset! control/editing-value empty-editing-val)
             ;; Notify TextInput system to update editing state

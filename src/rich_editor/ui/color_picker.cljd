@@ -58,42 +58,42 @@
    Uses a simple color picker (Flutter doesn't have a built-in full ColorPicker, we use a simplified version)"
   [ctx on-selected current-color]
   (m/showDialog
-   :context ctx
-   :builder
+   .context ctx
+   .builder
    (fn [dialog-ctx]
      (m/AlertDialog
-      :title (m/Text "Select Color")
-      :content (m/Container
-                :width 300.0
-                :height 200.0
-                :child (m/Column
-                        :mainAxisSize m/MainAxisSize.min
-                        :children
+      .title (m/Text "Select Color")
+      .content (m/Container
+                .width 300.0
+                .height 200.0
+                .child (m/Column
+                        .mainAxisSize m/MainAxisSize.min
+                        .children
                         [(m/Text "Color Picker (Simplified)"
-                                :style (m/TextStyle :fontSize 14.0))
-                         (m/SizedBox :height 16.0)
+                                .style (m/TextStyle .fontSize 14.0))
+                         (m/SizedBox .height 16.0)
                          (m/Text "Current Color:"
-                                :style (m/TextStyle :fontSize 12.0))
+                                .style (m/TextStyle .fontSize 12.0))
                          (m/Container
-                          :width 50.0
-                          :height 50.0
-                          :decoration (m/BoxDecoration
-                                       :color (if current-color
+                          .width 50.0
+                          .height 50.0
+                          .decoration (m/BoxDecoration
+                                       .color (if current-color
                                                 (hex-to-color current-color)
                                                 m/Colors.grey)
-                                       :borderRadius (m/BorderRadius.circular 4.0)
-                                       :border (m/Border.all :color (m/Color 0xFFE0E0E0) :width 1.0))
-                          :margin (m/EdgeInsets.only :top 8.0))
-                         (m/SizedBox :height 16.0)
+                                       .borderRadius (m/BorderRadius.circular 4.0)
+                                       .border (m/Border.all .color (m/Color 0xFFE0E0E0) .width 1.0))
+                          .margin (m/EdgeInsets.only .top 8.0))
+                         (m/SizedBox .height 16.0)
                          (m/Text "Note: Full color picker requires third-party package"
-                                :style (m/TextStyle :fontSize 12.0 :color m/Colors.grey))]))
+                                .style (m/TextStyle .fontSize 12.0 .color m/Colors.grey))]))
       :actions
       [(m/TextButton
-        :child (m/Text "Cancel")
-        :onPressed (fn [] (m/Navigator.pop dialog-ctx)))
+        .child (m/Text "Cancel")
+        .onPressed (fn [] (m/Navigator.pop dialog-ctx)))
        (m/TextButton
-        :child (m/Text "OK")
-        :onPressed (fn []
+        .child (m/Text "OK")
+        .onPressed (fn []
                      ;; Temporarily use current color, or can add more complex color selection logic
                      (when current-color
                        (on-selected current-color))
@@ -107,53 +107,53 @@
   (f/widget
    :context ctx
    (m/PopupMenuButton
-    :child (m/Container
-            :width 32.0
-            :height 32.0
-            :decoration (m/BoxDecoration
-                         :color (if current-color
+    .child (m/Container
+            .width 32.0
+            .height 32.0
+            .decoration (m/BoxDecoration
+                         .color (if current-color
                                   (hex-to-color current-color)
                                   m/Colors.grey)
-                         :borderRadius (m/BorderRadius.circular 4.0)
-                         :border (m/Border.all :color (m/Color 0xFFE0E0E0) :width 1.0))
-            :child (m/Icon (or icon m/Icons.color_lens)
-                           :size 18.0
-                           :color (if current-color
+                         .borderRadius (m/BorderRadius.circular 4.0)
+                         .border (m/Border.all .color (m/Color 0xFFE0E0E0) .width 1.0))
+            .child (m/Icon (or icon m/Icons.color_lens)
+                           .size 18.0
+                           .color (if current-color
                                     (let [color (hex-to-color current-color)
                                           brightness (.-computeLuminance color)]
                                       (if (< brightness 0.5)
                                         m/Colors.white
                                         m/Colors.black))
                                     m/Colors.white)))
-    :itemBuilder
+    .itemBuilder
     (fn [_ctx]
       (concat
        ;; Predefined colors
        (map-indexed
         (fn [idx color]
           (m/PopupMenuItem
-           :value idx
-           :height 40.0
-           :child (m/Container
-                   :width 32.0
-                   :height 32.0
-                   :decoration (m/BoxDecoration
-                                :color color
-                                :borderRadius (m/BorderRadius.circular 4.0)
-                                :border (m/Border.all :color (m/Color 0xFFE0E0E0) :width 1.0)))))
+           .value idx
+           .height 40.0
+           .child (m/Container
+                   .width 32.0
+                   .height 32.0
+                   .decoration (m/BoxDecoration
+                                .color color
+                                .borderRadius (m/BorderRadius.circular 4.0)
+                                .border (m/Border.all .color (m/Color 0xFFE0E0E0) .width 1.0)))))
         predefined-colors)
        ;; Divider
        [(m/PopupMenuDivider)]
        ;; Custom color option
        [(m/PopupMenuItem
-         :value :custom
-         :height 40.0
-         :child (m/Row
-                 :mainAxisSize m/MainAxisSize.min
-                 :children [(m/Icon m/Icons.color_lens :size 20.0)
-                            (m/SizedBox :width 8.0)
-                            (m/Text "Custom Color" :style (m/TextStyle :fontSize 14.0))]))]))
-    :onSelected
+         .value :custom
+         .height 40.0
+         .child (m/Row
+                 .mainAxisSize m/MainAxisSize.min
+                 .children [(m/Icon m/Icons.color_lens .size 20.0)
+                            (m/SizedBox .width 8.0)
+                            (m/Text "Custom Color" .style (m/TextStyle .fontSize 14.0))]))]))
+    .onSelected
     (fn [value]
       (if (= value :custom)
         ;; Open custom color selection dialog

@@ -1,0 +1,449 @@
+(ns rich-editor.command.text-insertion
+  "Text insertion and deletion commands"
+  (:require [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.model.transaction :as tx]
+            [rich-editor.state :as state]
+            [rich-editor.ui-state :as ui]
+            [rich-editor.utils.history :as hist]
+            [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.utils.id :as id]
+            [rich-editor.command.text-commands-helpers :as helpers]
+            [rich-editor.command.blocks :as blocks]
+            [rich-editor.command.slash-commands :as slash-commands]
+            [rich-editor.services.node-service :as node-service]
+            [clojure.string :as str]))
+
+(declare delete-selection!)
+(declare split-block!)
+
+;; =============================================================
+;; Text Insertion (Pure Functions)
+;; =============================================================
+
+(defn insert-text-into-doc
+  "Pure function: insert text at position in document"
+  [doc path offset text]
+  (let [current-delta (helpers/get-delta-at-path doc path)
+        text-len (helpers/get-delta-text-length current-delta)
+        clamped-offset (max 0 (min offset text-len))
+        new-delta (delta/insert-text-into-delta current-delta clamped-offset text)
+        new-offset (delta/calculate-insert-position clamped-offset text)]
+    {:doc (helpers/update-delta-at-path doc path new-delta)
+     :new-selection (sel/make-selection
+                    (sel/make-position path new-offset)
+                    (sel/make-position path new-offset))}))
+
+;; =============================================================
+;; Text Insertion Commands (with state mutation)
+;; =============================================================
+
+(defn insert-text-internal!
+  "Internal function: actually performs text insertion"
+  ([text] (insert-text-internal! state/!editor-state text))
+  ([state text]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [normalized (sel/normalize selection)
+             path (:path (:start normalized))
+             offset-raw (:offset (:start normalized))
+             current-delta (helpers/get-delta-at-path (:doc current-state) path)
+             text-len (helpers/get-delta-text-length current-delta)
+             offset (max 0 (min offset-raw text-len))
+             result (insert-text-into-doc (:doc current-state) path offset text)
+             new-doc (:doc result)
+             new-selection (:new-selection result)
+             transaction (tx/make-transaction
+                         :ops [(tx/update-text-op path (helpers/get-delta-at-path new-doc path))]
+                         :after-selection new-selection)]
+         (state/commit-with-history! transaction :insert)
+         ;; Ensure focus is maintained after text insertion
+         (node-service/focus-node! path))))))
+
+(defn insert-text!
+  "Insert text at the current selection position.
+   Detects slash commands and Markdown shortcuts.
+   Uses precise Delta operations to preserve existing formatting."
+  ([text] (insert-text! state/!editor-state text))
+  ([state text]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [normalized (sel/normalize selection)
+             path (:path (:start normalized))
+             offset-raw (:offset (:start normalized))
+             current-delta (helpers/get-delta-at-path (:doc current-state) path)
+             current-text (delta-utils/delta->text current-delta)
+             text-len (count current-text)
+             offset (max 0 (min offset-raw text-len))]
+         
+         (cond
+           ;; Detect slash command
+           (and (= text "/") (not (:slash-command-active @ui/!ui-state)))
+           (do
+             (ui/set-slash-command! true "")
+             (insert-text-internal! state text))
+           
+           ;; In slash command mode
+           (:slash-command-active @ui/!ui-state)
+           (cond
+             (str/includes? text "\n") ; Enter executes command
+             (let [ui-state @ui/!ui-state
+                   query (:slash-command-query ui-state)
+                   commands (slash-commands/get-slash-commands)
+                   filtered (if (empty? query)
+                            commands
+                            (let [query-lower (str/lower-case query)]
+                              (filter (fn [cmd]
+                                        (or (str/includes? (str/lower-case (:label cmd)) query-lower)
+                                            (some #(str/includes? (str/lower-case %) query-lower) (:keywords cmd))))
+                                      commands)))]
+               (when (seq filtered)
+                 (let [cmd-id (:id (first filtered))
+                       cmd-query query
+                       query-length (count cmd-query)
+                       delete-start (- offset query-length 1) ; includes "/"
+                       delete-end offset]
+                   ;; Delete slash and query text
+                   (swap! state
+                     (fn [curr]
+                       (let [block (node/get-block-at-path (:doc curr) path)
+                             current-delta (get-in block [:data :delta])
+                             new-delta (delta/delete-delta-range current-delta delete-start delete-end)
+                             updated-doc (helpers/update-delta-at-path (:doc curr) path new-delta)
+                             new-selection (sel/make-selection
+                                           (sel/make-position path delete-start)
+                                           (sel/make-position path delete-start))]
+                         (ui/set-slash-command! false "")
+                         (-> (hist/push-history curr updated-doc)
+                             (assoc :selection new-selection)))))
+                   ;; Execute command
+                   (when-let [cmd (first (filter #(= (:id %) cmd-id) commands))]
+                     (when-let [action (:action cmd)]
+                       (action)))))
+               nil)
+             
+             (= text "\u0008") ; Backspace
+             (let [ui-state @ui/!ui-state
+                   current-query (:slash-command-query ui-state)]
+               (if (empty? current-query)
+                 (do
+                   (ui/set-slash-command! false "")
+                   (let [delete-start (dec offset)
+                         delete-end offset]
+                     (swap! state
+                       (fn [curr]
+                         (let [block (node/get-block-at-path (:doc curr) path)
+                               current-delta (get-in block [:data :delta])
+                               new-delta (delta/delete-delta-range current-delta delete-start delete-end)
+                               updated-doc (helpers/update-delta-at-path (:doc curr) path new-delta)
+                               new-selection (sel/make-selection
+                                             (sel/make-position path delete-start)
+                                             (sel/make-position path delete-start))]
+                           (-> (hist/push-history curr updated-doc)
+                               (assoc :selection new-selection)))))))
+                 (do
+                   (ui/set-slash-command! true (subs current-query 0 (dec (count current-query))))
+                   (insert-text-internal! state text))))
+             
+             :else
+             (do
+               (ui/set-slash-command! true (str (:slash-command-query @ui/!ui-state) text))
+               (insert-text-internal! state text)))
+           
+           ;; Handle newline - split block
+           (str/includes? text "\n")
+           (let [parts (str/split text #"\n" -1)]
+             (loop [p (first parts)
+                    remaining (rest parts)]
+               (if (empty? remaining)
+                 (when (pos? (count p))
+                   (insert-text-internal! state p))
+                 (do
+                   (when (pos? (count p))
+                     (insert-text-internal! state p))
+                   (split-block! state)
+                   (recur (first remaining) (rest remaining))))))
+           
+           :else
+           ;; Normal text input - insert directly
+           (insert-text-internal! state text)))))))
+;; =============================================================
+;; Text Deletion (Pure Functions)
+;; =============================================================
+
+(defn delete-selection-from-doc
+  "Pure function: delete selection from document"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          start-path (:path (:start normalized))
+          end-path (:path (:end normalized))
+          start-offset (:offset (:start normalized))
+          end-offset (:offset (:end normalized))]
+      (if (= start-path end-path)
+        ;; Single block deletion
+        (let [current-delta (helpers/get-delta-at-path doc start-path)
+              new-delta (delta/delete-delta-range current-delta start-offset end-offset)
+              new-selection (sel/make-selection
+                            (sel/make-position start-path start-offset)
+                            (sel/make-position start-path start-offset))]
+          {:doc (helpers/update-delta-at-path doc start-path new-delta)
+           :new-selection new-selection})
+        ;; Cross-block deletion
+        (let [start-idx (first start-path)
+              end-idx (first end-path)
+              start-block (get-in doc [:children start-idx])
+              end-block (get-in doc [:children end-idx])
+              start-delta (get-in start-block [:data :delta])
+              end-delta (get-in end-block [:data :delta])
+              prefix-delta (delta/slice-delta start-delta 0 start-offset)
+              suffix-delta (delta/slice-delta end-delta end-offset (helpers/get-delta-text-length end-delta))
+              merged-delta (delta/concat-deltas prefix-delta suffix-delta)
+              new-selection (sel/make-selection
+                            (sel/make-position start-path start-offset)
+                            (sel/make-position start-path start-offset))
+              ops [(tx/update-text-op start-path merged-delta)
+                   (tx/delete-op [(inc start-idx)] (- end-idx start-idx))]
+              new-doc (tx/apply-transaction doc ops)]
+          {:doc new-doc
+           :new-selection new-selection})))))
+
+;; =============================================================
+;; Text Deletion Commands (with state mutation)
+;; =============================================================
+
+(defn delete-selection!
+  "Delete the currently selected text"
+  ([] (delete-selection! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [result (delete-selection-from-doc (:doc current-state) selection)]
+         (when result
+           (swap! state
+                  (fn [curr]
+                    (let [updated-doc (:doc result)
+                          new-selection (:new-selection result)]
+                      (-> (hist/push-history curr (blocks/update-numbered-list-indices! updated-doc) :new-selection new-selection)))))))))))
+
+(defn delete-backward!
+  "Delete one character backward (Backspace).
+   If at the start of a list item, outdent it first."
+  ([] (delete-backward! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (if (and selection (sel/collapsed? selection))
+       (let [path (:path (:start selection))
+             offset-raw (:offset (:start selection))
+             block-idx (first path)
+             block (node/get-block-at-path (:doc current-state) path)
+             current-delta (helpers/get-delta-at-path (:doc current-state) path)
+             text-len (helpers/get-delta-text-length current-delta)
+             offset (max 0 (min offset-raw text-len))]
+         (cond
+           (pos? offset)
+           ;; Within a block, delete character
+           (let [prev-offset (delta/prev-rune-position current-delta offset)
+                 effective-prev (if (and prev-offset (>= prev-offset 0) (< prev-offset offset)) 
+                                 prev-offset 
+                                 (max 0 (dec offset)))
+                 new-delta (delta/delete-delta-range current-delta effective-prev offset)
+                 new-selection (sel/make-selection
+                               (sel/make-position path effective-prev)
+                               (sel/make-position path effective-prev))
+                 transaction (tx/make-transaction
+                             :ops [(tx/update-text-op path new-delta)]
+                             :after-selection new-selection)]
+             (state/commit-with-history! transaction :delete))
+           
+           ;; At the start of a block (offset 0)
+           (contains? helpers/list-block-types (:type block))
+           ;; If it's a list/todo item at offset 0, outdent it
+           (blocks/outdent-block! state)
+           
+           (pos? block-idx)
+           ;; Merge with previous block
+           (let [prev-block-idx (dec block-idx)
+                 prev-block (get-in (:doc current-state) [:children prev-block-idx])
+                 prev-delta (get-in prev-block [:data :delta])
+                 prev-text-len (helpers/get-delta-text-length prev-delta)
+                 merged-delta (delta/concat-deltas prev-delta current-delta)
+                 new-selection (sel/make-selection
+                               (sel/make-position [prev-block-idx] prev-text-len)
+                               (sel/make-position [prev-block-idx] prev-text-len))
+                 transaction (tx/make-transaction
+                             :ops [(tx/update-text-op [prev-block-idx] merged-delta)
+                                   (tx/delete-op [block-idx] 1)]
+                             :after-selection new-selection)]
+             (swap! state
+                    (fn [curr]
+                      (let [new-doc (blocks/update-numbered-list-indices! 
+                                    (tx/apply-transaction (:doc curr) (:ops transaction)))]
+                        (hist/push-history curr new-doc :new-selection new-selection)))))))
+       (delete-selection! state)))))
+
+(defn delete-forward!
+  "Delete one character forward (Delete key).
+   Uses Unicode-aware rune position calculation.
+   If at the end of a block, merges with the next block."
+  ([] (delete-forward! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (if (and selection (sel/collapsed? selection))
+       (let [path (:path (:start selection))
+             offset-raw (:offset (:start selection))
+             block-idx (first path)
+             current-delta (helpers/get-delta-at-path (:doc current-state) path)
+             text-length (helpers/get-delta-text-length current-delta)
+             offset (max 0 (min offset-raw text-length))
+             blocks (:children (:doc current-state))
+             total-blocks (count blocks)]
+         (if (< offset text-length)
+           ;; Within a block, delete character
+           (let [next-offset (delta/next-rune-position current-delta offset)]
+             (when (<= next-offset text-length)
+               (let [new-delta (delta/delete-delta-range current-delta offset next-offset)
+                     new-selection (sel/make-selection
+                                   (sel/make-position path offset)
+                                   (sel/make-position path offset))
+                     transaction (tx/make-transaction
+                                 :ops [(tx/update-text-op path new-delta)]
+                                 :after-selection new-selection)]
+                 (state/commit-with-history! transaction :delete))))
+           ;; At the end of a block, merge with next block
+           (when (< block-idx (dec total-blocks))
+             (let [next-block-idx (inc block-idx)
+                   next-block (get-in (:doc current-state) [:children next-block-idx])
+                   next-delta (get-in next-block [:data :delta])
+                   merged-delta (delta/concat-deltas current-delta next-delta)
+                   new-selection (sel/make-selection
+                                 (sel/make-position path offset)
+                                 (sel/make-position path offset))
+                   transaction (tx/make-transaction
+                               :ops [(tx/update-text-op [block-idx] merged-delta)
+                                     (tx/delete-op [next-block-idx] 1)]
+                               :after-selection new-selection)]
+               (swap! state
+                      (fn [curr]
+                        (let [new-doc (blocks/update-numbered-list-indices! 
+                                      (tx/apply-transaction (:doc curr) (:ops transaction)))]
+                          (hist/push-history curr new-doc :new-selection new-selection))))))))
+       (delete-selection! state)))))
+
+(defn split-block!
+  "Split the current block into two at the current selection position."
+  ([] (split-block! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [normalized (sel/normalize selection)
+             path (:path (:start normalized))]
+         ;; Only split if it's a top-level block (path length 1)
+         (if (= (count path) 1)
+           (do
+             (when-not (sel/collapsed? selection)
+               (delete-selection! state))
+             (let [updated-state @state
+                   updated-selection (:selection updated-state)
+                   path (:path (:start updated-selection))
+                   offset (:offset (:start updated-selection))
+                   block-idx (first path)
+                   block (node/get-block-at-path (:doc updated-state) path)
+                   current-delta (get-in block [:data :delta])
+                   text-len (if current-delta (helpers/get-delta-text-length current-delta) 0)]
+                 (if (and (zero? text-len) 
+                       (contains? helpers/list-block-types (:type block)))
+                 ;; If it's an empty list/todo item, outdent it instead of splitting
+                 (blocks/outdent-block! state)
+                 (if current-delta
+                   (let [before-delta (delta/slice-delta current-delta 0 offset)
+                         after-delta (delta/slice-delta current-delta offset text-len)
+                         new-block-id (when-let [gen-id id/gen-block-id]
+                                       (gen-id))
+                         new-block-id (or new-block-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now))))
+                         new-block (assoc block 
+                                     :id new-block-id 
+                                     :data (assoc (:data block) :delta after-delta))
+                         new-selection (sel/make-selection
+                                       (sel/make-position [(inc block-idx)] 0)
+                                       (sel/make-position [(inc block-idx)] 0))
+                         transaction (tx/make-transaction
+                                     :ops [(tx/update-text-op path before-delta)
+                                           (tx/insert-op [(inc block-idx)] [new-block])]
+                                     :after-selection new-selection)]
+                     (swap! state
+                       (fn [curr]
+                         (let [new-doc (blocks/update-numbered-list-indices! 
+                                       (tx/apply-transaction (:doc curr) (:ops transaction)))]
+                           (-> (hist/push-history curr new-doc :new-selection new-selection)
+                               (assoc :focused-path (:path (:start new-selection))))))))
+                   (insert-text-internal! state "\n")))))
+           ;; Deep paths (like table cells) - insert newline character for now
+           (insert-text-internal! state "\n")))))))
+
+;; =============================================================
+;; Text Editing Shortcuts
+;; =============================================================
+
+(defn delete-to-line-end!
+  "Delete from cursor position to the end of the line (Cmd/Ctrl + K)"
+  ([] (delete-to-line-end! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (if (and selection (sel/collapsed? selection))
+       (let [path (:path (:start selection))
+             offset (:offset (:start selection))
+             block (node/get-block-at-path (:doc current-state) path)
+             current-delta (get-in block [:data :delta])
+             text-length (helpers/get-delta-text-length current-delta)]
+         (when (< offset text-length)
+           (let [new-selection (sel/make-selection
+                               (sel/make-position path offset)
+                               (sel/make-position path text-length))]
+             (swap! state assoc :selection new-selection)
+             (delete-selection! state))))
+       (delete-selection! state)))))
+
+(defn delete-word-backward!
+  "Delete one word backward (Option/Alt + Backspace)"
+  ([] (delete-word-backward! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (if (and selection (sel/collapsed? selection))
+       (let [path (:path (:start selection))
+             offset (:offset (:start selection))
+             current-delta (helpers/get-delta-at-path (:doc current-state) path)
+             word-start (delta/find-word-boundary-backward current-delta offset)]
+         (when (>= word-start 0)
+           (let [new-selection (sel/make-selection
+                               (sel/make-position path word-start)
+                               (sel/make-position path offset))]
+             (swap! state assoc :selection new-selection)
+             (delete-selection! state))))
+       (delete-selection! state)))))
+
+(defn delete-to-line-start!
+  "Delete from cursor position to the start of the line (Cmd/Ctrl + Backspace)"
+  ([] (delete-to-line-start! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (if (and selection (sel/collapsed? selection))
+       (let [path (:path (:start selection))
+             offset (:offset (:start selection))]
+         (when (pos? offset)
+           (let [new-selection (sel/make-selection
+                               (sel/make-position path 0)
+                               (sel/make-position path offset))]
+             (swap! state assoc :selection new-selection)
+             (delete-selection! state))))
+       (delete-selection! state)))))

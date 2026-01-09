@@ -1,0 +1,372 @@
+(ns rich-editor.command.navigation
+  "Cursor movement and selection navigation commands"
+  (:require [rich-editor.model.selection :as sel]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.model.node :as node]
+            [rich-editor.state :as state]
+            [rich-editor.ui-state :as ui]
+            [rich-editor.ui.selection-menu :as sel-menu]
+            [rich-editor.command.text-commands-helpers :as helpers]
+            [rich-editor.services.scroll-service :as scroll-service]))
+
+;; =============================================================
+;; Cursor Movement (Pure Functions)
+;; =============================================================
+
+(defn move-cursor-left
+  "Pure function: calculate new cursor position when moving left"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          path (:path (:start normalized))
+          offset (:offset (:start normalized))
+          current-delta (helpers/get-delta-at-path doc path)
+          block-index (first path)]
+      (if (and (sel/collapsed? selection) (pos? offset))
+        ;; Move within the same block
+        (let [prev-offset (delta/prev-rune-position current-delta offset)]
+          (when (>= prev-offset 0)
+            (let [new-pos (sel/make-position path prev-offset)]
+              (sel/make-selection new-pos new-pos))))
+        ;; At the start of block, move to end of previous block
+        (when (pos? block-index)
+          (let [prev-block (get-in doc [:children (dec block-index)])
+                prev-path [(dec block-index)]
+                prev-delta (get-in prev-block [:data :delta])
+                prev-length (helpers/get-delta-text-length prev-delta)]
+            (when (pos? prev-length)
+              (let [new-pos (sel/make-position prev-path prev-length)]
+                (sel/make-selection new-pos new-pos)))))))))
+
+(defn move-cursor-right
+  "Pure function: calculate new cursor position when moving right"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          path (:path (:start normalized))
+          offset (:offset (:start normalized))
+          current-delta (helpers/get-delta-at-path doc path)
+          text-length (helpers/get-delta-text-length current-delta)
+          block-index (first path)
+          blocks (:children doc)
+          total-blocks (count blocks)]
+      (if (and (sel/collapsed? selection) (< offset text-length))
+        ;; Move within the same block
+        (let [next-offset (delta/next-rune-position current-delta offset)]
+          (when (< next-offset text-length)
+            (let [new-pos (sel/make-position path next-offset)]
+              (sel/make-selection new-pos new-pos))))
+        ;; At the end of block, move to start of next block
+        (when (< block-index (dec total-blocks))
+          (let [new-pos (sel/make-position [(inc block-index)] 0)]
+            (sel/make-selection new-pos new-pos)))))))
+
+(defn move-cursor-up
+  "Pure function: calculate new cursor position when moving up"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          path (:path (:start normalized))
+          offset (:offset (:start normalized))
+          block-index (first path)]
+      (when (pos? block-index)
+        (let [prev-block-index (dec block-index)
+              prev-block (get-in doc [:children prev-block-index])
+              prev-delta (get-in prev-block [:data :delta])
+              prev-length (helpers/get-delta-text-length prev-delta)
+              target-offset (min offset prev-length)
+              new-pos (sel/make-position [prev-block-index] target-offset)]
+          (sel/make-selection new-pos new-pos))))))
+
+(defn move-cursor-down
+  "Pure function: calculate new cursor position when moving down"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          path (:path (:start normalized))
+          offset (:offset (:start normalized))
+          block-index (first path)
+          blocks (:children doc)
+          total-blocks (count blocks)]
+      (when (< block-index (dec total-blocks))
+        (let [next-block-index (inc block-index)
+              next-block (get-in doc [:children next-block-index])
+              next-delta (get-in next-block [:data :delta])
+              next-length (helpers/get-delta-text-length next-delta)
+              target-offset (min offset next-length)
+              new-pos (sel/make-position [next-block-index] target-offset)]
+          (sel/make-selection new-pos new-pos))))))
+
+;; =============================================================
+;; Cursor Movement Commands (with state mutation)
+;; =============================================================
+
+(defn move-cursor-left!
+  "Move cursor one character to the left.
+   Uses Unicode-aware rune position calculation.
+   If at the start of a block, moves to the end of the previous block."
+  ([] (move-cursor-left! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (move-cursor-left (:doc current-state) (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+(defn move-cursor-right!
+  "Move cursor one character to the right.
+   Uses Unicode-aware rune position calculation.
+   If at the end of a block, moves to the start of the next block."
+  ([] (move-cursor-right! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (move-cursor-right (:doc current-state) (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+(defn move-cursor-up!
+  "Move cursor up (to previous block).
+   Maintains relative position: if cursor is at offset N in current block,
+   moves to offset N in previous block (or end of previous block if it's shorter)."
+  ([] (move-cursor-up! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (move-cursor-up (:doc current-state) (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+(defn move-cursor-down!
+  "Move cursor down (to next block).
+   Maintains relative position: if cursor is at offset N in current block,
+   moves to offset N in next block (or end of next block if it's shorter)."
+  ([] (move-cursor-down! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (move-cursor-down (:doc current-state) (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+;; =============================================================
+;; Selection Extension (Pure Functions)
+;; =============================================================
+
+(defn extend-selection-left
+  "Pure function: calculate new selection when extending left"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          start-path (:path (:start normalized))
+          start-offset (:offset (:start normalized))
+          end-path (:path (:end normalized))
+          end-offset (:offset (:end normalized))
+          start-block (node/get-block-at-path doc start-path)
+          start-delta (get-in start-block [:data :delta])
+          start-block-index (first start-path)]
+      (if (and (sel/collapsed? selection) (pos? start-offset))
+        ;; Extend from collapsed cursor
+        (let [prev-offset (delta/prev-rune-position start-delta start-offset)]
+          (when (>= prev-offset 0)
+            (let [new-start (sel/make-position start-path prev-offset)
+                  new-end (sel/make-position start-path start-offset)]
+              (sel/make-selection new-start new-end))))
+        ;; Extend existing selection
+        (if (pos? start-offset)
+          (let [prev-offset (delta/prev-rune-position start-delta start-offset)]
+            (when (>= prev-offset 0)
+              (let [new-start (sel/make-position start-path prev-offset)
+                    new-end (sel/make-position end-path end-offset)]
+                (sel/make-selection new-start new-end))))
+          ;; At start of block, move to end of previous block
+          (when (pos? start-block-index)
+            (let [prev-block (get-in doc [:children (dec start-block-index)])
+                  prev-path [(dec start-block-index)]
+                  prev-delta (get-in prev-block [:data :delta])
+                  prev-length (helpers/get-delta-text-length prev-delta)]
+              (when (pos? prev-length)
+                (let [new-start (sel/make-position prev-path prev-length)
+                      new-end (sel/make-position end-path end-offset)]
+                  (sel/make-selection new-start new-end))))))))))
+
+(defn extend-selection-right
+  "Pure function: calculate new selection when extending right"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          start-path (:path (:start normalized))
+          start-offset (:offset (:start normalized))
+          end-path (:path (:end normalized))
+          end-offset (:offset (:end normalized))
+          end-block (node/get-block-at-path doc end-path)
+          end-delta (get-in end-block [:data :delta])
+          end-text-length (helpers/get-delta-text-length end-delta)
+          end-block-index (first end-path)
+          blocks (:children doc)
+          total-blocks (count blocks)]
+      (if (and (sel/collapsed? selection) (< end-offset end-text-length))
+        ;; Extend from collapsed cursor
+        (let [next-offset (delta/next-rune-position end-delta end-offset)]
+          (when (< next-offset end-text-length)
+            (let [new-start (sel/make-position end-path end-offset)
+                  new-end (sel/make-position end-path next-offset)]
+              (sel/make-selection new-start new-end))))
+        ;; Extend existing selection
+        (if (< end-offset end-text-length)
+          (let [next-offset (delta/next-rune-position end-delta end-offset)]
+            (when (< next-offset end-text-length)
+              (let [new-start (sel/make-position start-path start-offset)
+                    new-end (sel/make-position end-path next-offset)]
+                (sel/make-selection new-start new-end))))
+          ;; At end of block, move to start of next block
+          (when (< end-block-index (dec total-blocks))
+            (let [new-start (sel/make-position start-path start-offset)
+                  new-end (sel/make-position [(inc end-block-index)] 0)]
+              (sel/make-selection new-start new-end))))))))
+
+;; =============================================================
+;; Selection Extension Commands (with state mutation)
+;; =============================================================
+
+(defn extend-selection-left!
+  "Extend selection one character to the left (Shift + Left Arrow)"
+  ([] (extend-selection-left! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (extend-selection-left (:doc current-state) (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+(defn extend-selection-right!
+  "Extend selection one character to the right (Shift + Right Arrow)"
+  ([] (extend-selection-right! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (extend-selection-right (:doc current-state) (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+;; =============================================================
+;; Line Navigation (Pure Functions)
+;; =============================================================
+
+(defn move-cursor-to-line-start
+  "Pure function: calculate position at line start (block start)"
+  [selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          path (:path (:start normalized))
+          new-pos (sel/make-position path 0)]
+      (sel/make-selection new-pos new-pos))))
+
+(defn move-cursor-to-line-end
+  "Pure function: calculate position at line end (block end)"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          path (:path (:start normalized))
+          current-delta (helpers/get-delta-at-path doc path)
+          text-length (helpers/get-delta-text-length current-delta)
+          new-pos (sel/make-position path text-length)]
+      (sel/make-selection new-pos new-pos))))
+
+;; =============================================================
+;; Line Navigation Commands (with state mutation)
+;; =============================================================
+
+(defn move-cursor-to-line-start!
+  "Move cursor to the start of the current line (Home key).
+   In a block-based editor, this means moving to offset 0 of the current block."
+  ([] (move-cursor-to-line-start! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (move-cursor-to-line-start (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+(defn move-cursor-to-line-end!
+  "Move cursor to the end of the current line (End key).
+   In a block-based editor, this means moving to the end of the current block."
+  ([] (move-cursor-to-line-end! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         new-selection (move-cursor-to-line-end (:doc current-state) (:selection current-state))]
+     (when new-selection
+       (swap! state assoc :selection new-selection)))))
+
+(defn extend-selection-to-line-start!
+  "Extend selection to the start of the current line (Shift + Home)"
+  ([] (extend-selection-to-line-start! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [normalized (sel/normalize selection)
+             start-path (:path (:start normalized))
+             end-path (:path (:end normalized))
+             end-offset (:offset (:end normalized))
+             new-start (sel/make-position start-path 0)
+             new-end (sel/make-position end-path end-offset)
+             new-selection (sel/make-selection new-start new-end)]
+         (swap! state assoc :selection new-selection))))))
+
+(defn extend-selection-to-line-end!
+  "Extend selection to the end of the current line (Shift + End)"
+  ([] (extend-selection-to-line-end! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [normalized (sel/normalize selection)
+             start-path (:path (:start normalized))
+             start-offset (:offset (:start normalized))
+             end-path (:path (:end normalized))
+             end-block (node/get-block-at-path (:doc current-state) end-path)
+             end-delta (get-in end-block [:data :delta])
+             end-text-length (helpers/get-delta-text-length end-delta)
+             new-start (sel/make-position start-path start-offset)
+             new-end (sel/make-position end-path end-text-length)
+             new-selection (sel/make-selection new-start new-end)]
+         (swap! state assoc :selection new-selection))))))
+
+;; =============================================================
+;; Page Navigation Commands
+;; =============================================================
+
+(defn move-cursor-page-up!
+  "Move cursor up by one page (Page Up key).
+   For horizontal scrolling editor, scrolls left by one viewport width."
+  ([] (move-cursor-page-up! state/!editor-state))
+  ([_state]
+   (scroll-service/scroll-page-up)))
+
+(defn move-cursor-page-down!
+  "Move cursor down by one page (Page Down key).
+   For horizontal scrolling editor, scrolls right by one viewport width."
+  ([] (move-cursor-page-down! state/!editor-state))
+  ([_state]
+   (scroll-service/scroll-page-down)))
+
+;; =============================================================
+;; Select All
+;; =============================================================
+
+(defn select-all!
+  "Select all text in the document"
+  ([] (select-all! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         blocks (:children (:doc current-state))]
+     (when (seq blocks)
+       (let [first-path [0]
+             last-block (last blocks)
+             last-path [(dec (count blocks))]
+             last-delta (get-in last-block [:data :delta])
+             last-length (helpers/get-delta-text-length last-delta)
+             start-pos (sel/make-position first-path 0)
+             end-pos (sel/make-position last-path last-length)
+             new-selection (sel/make-selection start-pos end-pos)]
+         (swap! state assoc :selection new-selection)
+         ;; Set pan-start-position to enable drag selection after select-all
+         (swap! ui/!ui-state assoc :pan-start-position start-pos)
+         ;; Show selection menu only if selection is not collapsed
+         (when (and new-selection (not (sel/collapsed? new-selection)))
+           (sel-menu/show-menu-at-selection! new-selection))
+         true)))))

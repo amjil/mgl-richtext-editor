@@ -22,21 +22,21 @@
                                (- (.-dy global-offset) handle-size)
                                (.-dy global-offset))])]
     (m/Positioned
-     :left left-pos
-     :top top-pos
-     :child
+     .left left-pos
+     .top top-pos
+     .child
      (m/GestureDetector
-      :behavior m/HitTestBehavior.opaque
-      :onPanUpdate (fn [details]
+      .behavior m/HitTestBehavior.opaque
+      .onPanUpdate (fn [details]
                      (let [global-pos (.-globalPosition details)]
                        (on-drag global-pos)))
-      :child
+      .child
       (m/Container
-       :width handle-size :height handle-size
-       :color m/Colors.transparent
-       :child (m/Center
-               :child (m/Container
-                       :width circle-size :height circle-size
-                       :decoration (m/BoxDecoration
-                                    :color m/Colors.blue
-                                    :shape m/BoxShape.circle))))))))
+       .width handle-size .height handle-size
+       .color m/Colors.transparent
+       .child (m/Center
+               .child (m/Container
+                       .width circle-size .height circle-size
+                       .decoration (m/BoxDecoration
+                                    .color m/Colors.blue
+                                    .shape m/BoxShape.circle))))))))

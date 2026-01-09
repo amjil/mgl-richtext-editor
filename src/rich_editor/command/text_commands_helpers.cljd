@@ -1,0 +1,36 @@
+(ns rich-editor.command.text-commands-helpers
+  "Shared helper functions for text commands"
+  (:require [rich-editor.model.node :as node]
+            [rich-editor.utils.delta :as delta-utils]))
+
+;; =============================================================
+;; Constants
+;; =============================================================
+
+(def list-block-types #{:numbered-list :bulleted-list :todo})
+(def max-indent-level 5)
+
+;; =============================================================
+;; Helper Functions (Pure)
+;; =============================================================
+
+(defn get-delta-at-path
+  "Get delta at path in document (pure function)"
+  [doc path]
+  (let [ks (node/path->ks path)
+        delta-ks (if (some #{:delta} path) ks (conj ks :data :delta))]
+    (get-in doc delta-ks)))
+
+(defn update-delta-at-path
+  "Update delta at path in document (pure function)"
+  [doc path new-delta]
+  (let [ks (node/path->ks path)
+        delta-ks (if (some #{:delta} path) ks (conj ks :data :delta))]
+    (assoc-in doc delta-ks new-delta)))
+
+(defn get-delta-text-length
+  "Get text length of delta (pure function)"
+  [delta]
+  (if (nil? delta)
+    0
+    (count (delta-utils/delta->text delta))))

@@ -1,0 +1,160 @@
+(ns rich-editor.utils.validation
+  "Validation utilities for functional type checking"
+  (:require [rich-editor.utils.result :as result]
+            [clojure.set :as set]))
+
+;; =============================================================
+;; Basic Validators
+;; =============================================================
+
+(defn valid-path?
+  "Check if path is valid (vector of non-negative integers)"
+  [path]
+  (and (vector? path)
+       (not (empty? path))
+       (every? number? path)
+       (every? #(>= % 0) path)
+       (every? integer? path)))
+
+(defn valid-offset?
+  "Check if offset is valid (non-negative integer)"
+  [offset]
+  (and (number? offset)
+       (>= offset 0)
+       (integer? offset)))
+
+(defn valid-position?
+  "Check if position is valid"
+  [position]
+  (and (map? position)
+       (valid-path? (:path position))
+       (valid-offset? (:offset position))))
+
+(defn valid-selection?
+  "Check if selection is valid (nil or contains valid start/end positions)"
+  [selection]
+  (or (nil? selection)
+      (and (map? selection)
+           (valid-position? (:start selection))
+           (valid-position? (:end selection)))))
+
+;; =============================================================
+;; Validation Combinators
+;; =============================================================
+
+(defn validate
+  "Validate value with one or more validators, returns Result"
+  [value & validators]
+  (reduce (fn [acc validator]
+            (if (result/is-err? acc)
+              acc
+              (if (validator value)
+                (result/ok value)
+                (result/err {:type :validation-failed
+                            :value value
+                            :validator validator}))))
+          (result/ok value)
+          validators))
+
+(defn validate-all
+  "Validate value with all validators (all must pass)"
+  [value validators]
+  (apply validate value validators))
+
+(defn validate-any
+  "Validate value with validators (at least one must pass)"
+  [value validators]
+  (if (some #(% value) validators)
+    (result/ok value)
+    (result/err {:type :validation-failed
+                :value value
+                :validators validators})))
+
+;; =============================================================
+;; Schema Validation (Simple Functional Implementation)
+;; =============================================================
+
+(defn validate-map
+  "Validate map against schema (map of key -> validator function)"
+  [value schema]
+  (if (not (map? value))
+    (result/err {:type :not-a-map :value value})
+    (let [required-keys (set (keys schema))
+          actual-keys (set (keys value))
+          missing-keys (set/difference required-keys actual-keys)]
+      (if (seq missing-keys)
+        (result/err {:type :missing-keys :keys missing-keys})
+        (reduce (fn [acc [k validator]]
+                  (if (result/is-err? acc)
+                    acc
+                    (let [v (get value k)
+                          validated (if (fn? validator)
+                                     (if (validator v)
+                                       (result/ok v)
+                                       (result/err {:type :invalid-value :key k :value v}))
+                                     (result/ok v))]
+                      (result/map-result validated
+                                        (fn [valid-v] (assoc value k valid-v))))))
+                (result/ok value)
+                schema)))))
+
+(defn validate-schema
+  "Validate value against schema"
+  [value schema]
+  (cond
+    (fn? schema) (if (schema value) (result/ok value) (result/err {:type :schema-mismatch}))
+    (map? schema) (validate-map value schema)
+    (vector? schema) (if (vector? value)
+                      (result/sequence-results (map-indexed
+                                                (fn [idx v]
+                                                  (validate-schema v (nth schema idx)))
+                                                value))
+                      (result/err {:type :not-a-vector}))
+    :else (result/ok value)))
+
+;; =============================================================
+;; Validation Helpers for Common Types
+;; =============================================================
+
+(def position-schema
+  "Schema for position validation"
+  {:path valid-path?
+   :offset valid-offset?})
+
+(def selection-schema
+  "Schema for selection validation"
+  (fn [selection]
+    (valid-selection? selection)))
+
+(defn validate-position
+  "Validate position using schema"
+  [position]
+  (validate-schema position position-schema))
+
+(defn validate-selection
+  "Validate selection"
+  [selection]
+  (if (nil? selection)
+    (result/ok selection)
+    (let [start-result (validate-position (:start selection))
+          end-result (validate-position (:end selection))]
+      (result/flat-map-result start-result
+                              (fn [_] end-result)))))
+
+;; =============================================================
+;; Safe Constructors
+;; =============================================================
+
+(defn make-position-safe
+  "Safely create position with validation"
+  [path offset]
+  (-> (validate path valid-path?)
+      (result/flat-map-result (fn [_] (validate offset valid-offset?)))
+      (result/map-result (fn [_] {:path path :offset offset}))))
+
+(defn make-selection-safe
+  "Safely create selection with validation"
+  [start end]
+  (-> (validate-position start)
+      (result/flat-map-result (fn [_] (validate-position end)))
+      (result/map-result (fn [_] {:start start :end end}))))

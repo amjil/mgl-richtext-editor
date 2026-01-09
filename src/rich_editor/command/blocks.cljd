@@ -1,0 +1,400 @@
+(ns rich-editor.command.blocks
+  "Block operations (conversion, movement, indentation, etc.)"
+  (:require [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.state :as state]
+            [rich-editor.utils.history :as hist]
+            [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.command.text-commands-helpers :as helpers]
+            [rich-editor.utils.id :as id]))
+
+;; =============================================================
+;; Numbered List Indices (Pure Function) - Defined first for use in other functions
+;; =============================================================
+
+(defn update-numbered-list-indices!
+  "Update the index numbers for all numbered list items in the document.
+   This is a pure function that can be used in pure contexts."
+  [doc]
+  (let [blocks (:children doc)
+        updated-blocks (loop [idx 0
+                             remaining blocks
+                             level-indices {}
+                             result []]
+                        (if (empty? remaining)
+                          result
+                          (let [block (first remaining)
+                                is-numbered? (= (:type block) :numbered-list)
+                                level (get-in block [:data :level] 0)
+                                new-level-indices (if is-numbered?
+                                                   (let [curr-idx (get level-indices level 1)
+                                                         base (into {} (filter (fn [[l _]] (<= l level)) level-indices))]
+                                                     (assoc base level (inc curr-idx)))
+                                                   {})
+                                new-index (if is-numbered? (get level-indices level 1) 1)
+                                updated-block (if is-numbered?
+                                              (assoc-in block [:data :index] new-index)
+                                              block)]
+                            (recur (inc idx)
+                                  (rest remaining)
+                                  new-level-indices
+                                  (conj result updated-block)))))]
+    (assoc doc :children (vec updated-blocks))))
+
+;; =============================================================
+;; Block Conversion (Pure Functions)
+;; =============================================================
+
+(defn convert-block-type
+  "Pure function: convert block type in document"
+  [doc path type & {:keys [data-fn update-indices?] :or {data-fn (fn [delta _block] {:delta delta}) update-indices? false}}]
+  (when-let [block (node/get-block-at-path doc path)]
+    (let [block-index (first path)
+          current-delta (helpers/get-delta-at-path doc path)
+          new-block (assoc block 
+                     :type type
+                     :data (data-fn current-delta block))
+          updated-doc (assoc-in doc [:children block-index] new-block)
+          final-doc (if update-indices?
+                     (update-numbered-list-indices! updated-doc)
+                     updated-doc)]
+      final-doc)))
+
+;; =============================================================
+;; Block Conversion Commands (with state mutation)
+;; =============================================================
+
+(defn convert-block-type!
+  "Helper function to convert block type.
+   type: new block type (e.g., :paragraph, :h1, :quote)
+   data-fn: function to build new data from current-delta and block (default: preserves delta)
+   update-indices?: whether to update numbered list indices (default: false)"
+  ([type & {:keys [data-fn update-indices?] :or {data-fn (fn [delta _block] {:delta delta}) update-indices? false}}]
+   (convert-block-type! state/!editor-state type :data-fn data-fn :update-indices? update-indices?))
+  ([state type & {:keys [data-fn update-indices?] :or {data-fn (fn [delta _block] {:delta delta}) update-indices? false}}]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             new-doc (convert-block-type (:doc current-state) path type
+                                        :data-fn data-fn
+                                        :update-indices? update-indices?)]
+         (when new-doc
+           (swap! state (fn [curr] (hist/push-history curr new-doc)))))))))
+
+(defn convert-block-to-list!
+  "Convert the current block to a list item (numbered or bulleted)"
+  ([list-type] (convert-block-to-list! state/!editor-state list-type))
+  ([state list-type]
+   (convert-block-type! state list-type 
+                       :data-fn (fn [delta block] 
+                                 (assoc (:data block) 
+                                        :delta delta
+                                        :level 0
+                                        :index 1))
+                       :update-indices? true)))
+
+(defn convert-to-numbered-list! 
+  "Convert current block to numbered list"
+  ([] (convert-to-numbered-list! state/!editor-state))
+  ([state] (convert-block-to-list! state :numbered-list)))
+
+(defn convert-to-bulleted-list! 
+  "Convert current block to bulleted list"
+  ([] (convert-to-bulleted-list! state/!editor-state))
+  ([state] (convert-block-to-list! state :bulleted-list)))
+
+(defn convert-block-to-heading!
+  "Convert the current block to a heading (h1)"
+  ([] (convert-block-to-heading! state/!editor-state))
+  ([state] (convert-block-type! state :h1)))
+
+(defn convert-block-to-heading2!
+  "Convert the current block to a heading (h2)"
+  ([] (convert-block-to-heading2! state/!editor-state))
+  ([state] (convert-block-type! state :h2)))
+
+(defn convert-block-to-heading3!
+  "Convert the current block to a heading (h3)"
+  ([] (convert-block-to-heading3! state/!editor-state))
+  ([state] (convert-block-type! state :h3)))
+
+(defn convert-block-to-paragraph!
+  "Convert the current block to a paragraph"
+  ([] (convert-block-to-paragraph! state/!editor-state))
+  ([state] (convert-block-type! state :paragraph :update-indices? true)))
+
+(defn convert-block-to-quote!
+  "Convert the current block to a quote block"
+  ([] (convert-block-to-quote! state/!editor-state))
+  ([state] (convert-block-type! state :quote)))
+
+(defn convert-block-to-code-block!
+  "Convert the current block to a code block"
+  ([] (convert-block-to-code-block! state/!editor-state))
+  ([state] (convert-block-type! state :code-block 
+                               :data-fn (fn [delta _block] 
+                                         {:code (delta-utils/delta->text delta)}))))
+
+(defn convert-list-to-todo!
+  "Convert a list item to a todo item"
+  ([] (convert-list-to-todo! state/!editor-state))
+  ([state] (convert-block-type! state :todo :data-fn (fn [delta _block] {:delta delta :checked false}))))
+
+(defn convert-todo-to-list!
+  "Convert a todo item to a list item (numbered or bulleted)"
+  ([list-type] (convert-todo-to-list! state/!editor-state list-type))
+  ([state list-type]
+   (convert-block-type! state list-type 
+                       :data-fn (fn [delta _block] 
+                                 {:delta delta
+                                  :level 0
+                                  :index 1})
+                       :update-indices? true)))
+
+;; =============================================================
+;; Block Movement (Pure Functions)
+;; =============================================================
+
+(defn move-block-direction
+  "Pure function: move block in direction"
+  [doc selection direction]
+  (when selection
+    (let [path (:path (:start selection))
+          block-index (first path)
+          blocks (:children doc)
+          total-blocks (count blocks)
+          target-idx (case direction
+                      :up (dec block-index)
+                      :down (inc block-index)
+                      block-index)
+          can-move? (case direction
+                     :up (and (pos? block-index) (< block-index total-blocks))
+                     :down (and (>= block-index 0) (< target-idx total-blocks))
+                     false)]
+      (when can-move?
+        (let [old-blocks (vec blocks)
+              target-block (nth old-blocks block-index)
+              swap-block (nth old-blocks target-idx)
+              new-blocks (-> old-blocks
+                           (assoc block-index swap-block)
+                           (assoc target-idx target-block))
+              new-doc (assoc doc :children new-blocks)
+              final-doc (update-numbered-list-indices! new-doc)
+              new-selection (-> selection
+                              (assoc-in [:start :path 0] target-idx)
+                              (assoc-in [:end :path 0] target-idx))
+              new-focused-path [target-idx]]
+          {:doc final-doc
+           :selection new-selection
+           :focused-path new-focused-path})))))
+
+;; =============================================================
+;; Block Movement Commands (with state mutation)
+;; =============================================================
+
+(defn move-block-direction!
+  "Helper function to move block in a direction.
+   direction: :up or :down"
+  ([direction] (move-block-direction! state/!editor-state direction))
+  ([state direction]
+   (let [current-state @state
+         result (move-block-direction (:doc current-state) (:selection current-state) direction)]
+     (when result
+       (swap! state (fn [curr]
+                     (-> (hist/push-history curr (:doc result) :new-selection (:selection result))
+                         (assoc :focused-path (:focused-path result)))))))))
+
+(defn move-block-up!
+  "Move the current block up by one position"
+  ([] (move-block-up! state/!editor-state))
+  ([state] (move-block-direction! state :up)))
+
+(defn move-block-down!
+  "Move the current block down by one position"
+  ([] (move-block-down! state/!editor-state))
+  ([state] (move-block-direction! state :down)))
+
+;; =============================================================
+;; Block Copy and Merge
+;; =============================================================
+
+(defn copy-block!
+  "Copy the current block and insert it after the current block"
+  ([] (copy-block! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)
+             block (node/get-block-at-path (:doc current-state) path)
+             blocks (:children (:doc current-state))]
+         (when (and block (< block-index (count blocks)))
+           (swap! state
+                  (fn [curr]
+                    (let [copied-block (assoc block :id (id/gen-block-id))
+                          new-doc (-> (node/insert-block-at-index (:doc curr) (inc block-index) copied-block)
+                                    update-numbered-list-indices!)
+                          new-focused-path [(inc block-index)]]
+                      (-> (hist/push-history curr new-doc)
+                          (assoc :focused-path new-focused-path)))))))))))
+
+(defn merge-block-with-next!
+  "Merge the current block with the next block by appending the next block's content"
+  ([] (merge-block-with-next! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)
+             blocks (:children (:doc current-state))]
+         (when (and (< block-index (dec (count blocks))) (>= block-index 0))
+           (let [current-block (get blocks block-index)
+                 next-block (get blocks (inc block-index))
+                 current-delta (or (get-in current-block [:data :delta]) {:operations []})
+                 next-delta (or (get-in next-block [:data :delta]) {:operations []})
+                 merged-delta (delta/concat-deltas current-delta next-delta)]
+             (swap! state
+                    (fn [curr]
+                      (let [updated-current-block (assoc-in current-block [:data :delta] merged-delta)
+                            new-doc (-> (node/update-block-at-index (:doc curr) block-index updated-current-block :remove-next? true)
+                                      update-numbered-list-indices!)
+                            new-focused-path [block-index]]
+                        (-> (hist/push-history curr new-doc)
+                            (assoc :focused-path new-focused-path))))))))))))
+
+;; =============================================================
+;; Block Indentation (Pure Functions)
+;; =============================================================
+
+(defn indent-blocks
+  "Pure function: increase indentation level of blocks in selection"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          start-idx (first (:path (:start normalized)))
+          end-idx (first (:path (:end normalized)))
+          updated-doc (loop [idx start-idx
+                            doc-state doc]
+                       (if (> idx end-idx)
+                         doc-state
+                         (let [blocks-internal (:children doc-state)
+                               block (get blocks-internal idx)
+                               current-level (get-in block [:data :level] 0)
+                               prev-block (when (pos? idx) (get blocks-internal (dec idx)))
+                               prev-level (if prev-block (get-in prev-block [:data :level] 0) -1)
+                               max-level helpers/max-indent-level
+                               new-level (min (inc current-level) (inc prev-level) max-level)]
+                           (if (and (< current-level max-level)
+                                    (<= (inc current-level) (inc prev-level)))
+                             (recur (inc idx)
+                                   (update-in doc-state [:children idx :data :level] (constantly new-level)))
+                             (recur (inc idx) doc-state)))))]
+      (update-numbered-list-indices! updated-doc))))
+
+(defn outdent-blocks
+  "Pure function: decrease indentation level of blocks in selection"
+  [doc selection]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          start-idx (first (:path (:start normalized)))
+          end-idx (first (:path (:end normalized)))
+          updated-doc (loop [idx start-idx
+                            doc-state doc]
+                       (if (> idx end-idx)
+                         doc-state
+                         (let [block (get-in doc-state [:children idx])
+                               current-level (get-in block [:data :level] 0)]
+                           (if (pos? current-level)
+                             (recur (inc idx)
+                                   (update-in doc-state [:children idx :data :level] dec))
+                             (if (contains? helpers/list-block-types (:type block))
+                               (let [new-block (assoc block :type :paragraph
+                                                  :data (dissoc (:data block) :level :index :checked))]
+                                 (recur (inc idx)
+                                       (assoc-in doc-state [:children idx] new-block)))
+                               (recur (inc idx) doc-state))))))]
+      (update-numbered-list-indices! updated-doc))))
+
+;; =============================================================
+;; Block Indentation Commands (with state mutation)
+;; =============================================================
+
+(defn indent-block!
+  "Increase the indentation level of blocks in the current selection.
+   Constraint: A block cannot be more than 1 level deeper than its previous block."
+  ([] (indent-block! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [new-doc (indent-blocks (:doc current-state) selection)]
+         (swap! state (fn [curr] (hist/push-history curr new-doc))))))))
+
+(defn outdent-block!
+  "Decrease the indentation level of blocks in the current selection.
+   If a list item at level 0 is outdented, it converts back to a paragraph."
+  ([] (outdent-block! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [new-doc (outdent-blocks (:doc current-state) selection)]
+         (swap! state (fn [curr] (hist/push-history curr new-doc))))))))
+
+
+;; =============================================================
+;; Block Deletion and Insertion
+;; =============================================================
+
+(defn delete-current-block!
+  "Delete the current block"
+  ([] (delete-current-block! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         focused-path (:focused-path current-state)
+         selection (:selection current-state)]
+     (when (or focused-path selection)
+       (let [path (or focused-path (:path (:start selection)))
+             block-index (first path)
+             blocks (:children (:doc current-state))
+             total-blocks (count blocks)]
+         (when (and (>= block-index 0) (< block-index total-blocks))
+           (swap! state
+                  (fn [curr]
+                    (let [new-doc (-> (update (:doc curr) :children #(vec (concat (take block-index %) (drop (inc block-index) %))))
+                                    update-numbered-list-indices!)
+                          new-selection (if (pos? (count (:children new-doc)))
+                                        (let [target-idx (min block-index (dec (count (:children new-doc))))
+                                              target-block (get (:children new-doc) target-idx)
+                                              target-delta (get-in target-block [:data :delta])
+                                              target-length (helpers/get-delta-text-length target-delta)
+                                              new-pos (sel/make-position [target-idx] (min target-length (or (:offset (:start selection)) 0)))]
+                                          (sel/make-selection new-pos new-pos))
+                                        nil)]
+                      (-> (hist/push-history curr new-doc :new-selection new-selection)
+                          (assoc :focused-path (when new-selection (:path (:start new-selection))))))))))))))
+
+(defn insert-divider-block!
+  "Insert a divider block after the current block"
+  ([] (insert-divider-block! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         focused-path (:focused-path current-state)
+         selection (:selection current-state)]
+     (when (or focused-path selection)
+       (let [path (or focused-path (:path (:start selection)))
+             block-index (first path)
+             divider-block {:id (id/gen-block-id)
+                           :type :divider
+                           :data {}}]
+         (swap! state
+                (fn [curr]
+                  (let [new-doc (-> (node/insert-block-at-index (:doc curr) (inc block-index) divider-block)
+                                  update-numbered-list-indices!)
+                        new-focused-path [(inc block-index)]]
+                    (-> (hist/push-history curr new-doc)
+                        (assoc :focused-path new-focused-path))))))))))

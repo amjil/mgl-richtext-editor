@@ -51,7 +51,7 @@
    Returns nil if no background color is set"
   [bg-color & {:keys [border-radius] :or {border-radius 4.0}}]
   (if (and bg-color (not= bg-color m/Colors.transparent))
-    (m/BoxDecoration :color bg-color :borderRadius (m/BorderRadius.circular border-radius))
+    (m/BoxDecoration .color bg-color .borderRadius (m/BorderRadius.circular border-radius))
     nil))
 
 (defn- create-block-text-style
@@ -116,13 +116,13 @@
                         :justify m/Alignment.topLeft
                         m/Alignment.topLeft)]
        (m/Container
-        :alignment align-value
+        .alignment align-value
         ;; Ensure even empty paragraphs have a width to receive clicks and show cursor
-        :constraints (m/BoxConstraints .minWidth 16.0)
+        .constraints (m/BoxConstraints .minWidth 16.0)
         ;; Added padding to ensure cursor at the bottom/end is visible
-        :padding (m/EdgeInsets.only :bottom 4.0)
-        :decoration (create-block-decoration bg-color)
-        :child (selectable-mongol-text 
+        .padding (m/EdgeInsets.only .bottom 4.0)
+        .decoration (create-block-decoration bg-color)
+        .child (selectable-mongol-text 
                 {:path path 
                  :delta (get-in block [:data :delta])
                  :text-style final-text-style
@@ -130,10 +130,10 @@
                  :current-match-index (or block-current-index -1)
                  :text-keys-atom text-keys-atom})))
      (m/Container
-      :decoration (if (not= bg-color m/Colors.transparent)
-                   (m/BoxDecoration :color bg-color :borderRadius (m/BorderRadius.circular 4.0))
+      .decoration (if (not= bg-color m/Colors.transparent)
+                   (m/BoxDecoration .color bg-color .borderRadius (m/BorderRadius.circular 4.0))
                    nil)
-      :child (selectable-mongol-text 
+      .child (selectable-mongol-text 
               {:path path 
                :delta (get-in block [:data :delta])
                :text-style final-text-style
@@ -142,10 +142,10 @@
                :text-keys-atom text-keys-atom})))))
 
 (defn paragraph-block [path block text-keys-atom]
-  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize 16.0 :fontFamily default-font-family)))
+  (base-text-block path block text-keys-atom (m/TextStyle .color (m/Color 0xFF212121) .fontSize 16.0 .fontFamily default-font-family)))
 
 (defn heading-block [path block text-keys-atom font-size]
-  (base-text-block path block text-keys-atom (m/TextStyle :color (m/Color 0xFF212121) :fontSize font-size :fontWeight m/FontWeight.bold :fontFamily default-font-family)))
+  (base-text-block path block text-keys-atom (m/TextStyle .color (m/Color 0xFF212121) .fontSize font-size .fontWeight m/FontWeight.bold .fontFamily default-font-family)))
 
 (defn todo-block [path block text-keys-atom]
   (f/widget
@@ -167,18 +167,18 @@
          text-color (:text-color style-attrs)
          final-font-family (:font-family style-attrs)]
    (m/Container
-    :decoration (create-block-decoration bg-color)
-    :padding (m/EdgeInsets.all 4.0)
-    :child (m/Column ;; vertically arrange checkbox and text
-            :mainAxisSize m/MainAxisSize.min
-            :children
+    .decoration (create-block-decoration bg-color)
+    .padding (m/EdgeInsets.all 4.0)
+    .child (m/Column ;; vertically arrange checkbox and text
+            .mainAxisSize m/MainAxisSize.min
+            .children
             [(m/Checkbox 
                .value (boolean checked?)
                .onChanged (fn [v] (state/update-block-data! path {:checked v})))
              (selectable-mongol-text 
                {:path path 
                 :delta (get-in block [:data :delta])
-                :text-style (m/TextStyle :color text-color :fontSize 16.0 :fontFamily final-font-family)
+                :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
                 :matches block-match-positions
                 :current-match-index (or block-current-index -1)
                 :text-keys-atom text-keys-atom})]))))
@@ -186,7 +186,7 @@
 (defn image-block [block]
   (m/ClipRRect
     .borderRadius (m/BorderRadius.circular 8.0)
-    :child (m/Image.network 
+    .child (m/Image.network 
              (get-in block [:data :url])
              .width 200.0
              .fit m/BoxFit.fitWidth)))
@@ -228,25 +228,25 @@
          text-color (:text-color style-attrs)
          final-font-family (:font-family style-attrs)]
    (m/Column
-    :crossAxisAlignment m/CrossAxisAlignment.start
-    :children
+    .crossAxisAlignment m/CrossAxisAlignment.start
+    .children
     [(m/Container
-      :height 36.0
-      :alignment m/Alignment.topCenter
-      :padding (m/EdgeInsets.only .top 2.0)
-      :child (mgl/MongolText (get-numbered-label index level) 
-                            :style (m/TextStyle :fontSize 16.0 
-                                              :fontWeight m/FontWeight.bold
-                                              :color m/Colors.blueGrey
-                                              :fontFamily default-font-family)))
+      .height 36.0
+      .alignment m/Alignment.topCenter
+      .padding (m/EdgeInsets.only .top 2.0)
+      .child (mgl/MongolText (get-numbered-label index level) 
+                            .style (m/TextStyle .fontSize 16.0 
+                                              .fontWeight m/FontWeight.bold
+                                              .color m/Colors.blueGrey
+                                              .fontFamily default-font-family)))
      (m/Container
-      :constraints (m/BoxConstraints .minWidth 16.0)
-      :padding (m/EdgeInsets.only :bottom 4.0)
-      :decoration (create-block-decoration bg-color)
-      :child (selectable-mongol-text 
+      .constraints (m/BoxConstraints .minWidth 16.0)
+      .padding (m/EdgeInsets.only .bottom 4.0)
+      .decoration (create-block-decoration bg-color)
+      .child (selectable-mongol-text 
               {:path path 
                :delta (get-in block [:data :delta])
-               :text-style (m/TextStyle :color text-color :fontSize 16.0 :fontFamily final-font-family)
+               :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
                :matches block-match-positions
                :current-match-index (or block-current-index -1)
                :text-keys-atom text-keys-atom}))])))
@@ -273,42 +273,42 @@
          text-color (:text-color style-attrs)
          final-font-family (:font-family style-attrs)]
    (m/Column
-    :crossAxisAlignment m/CrossAxisAlignment.start
-    :children
+    .crossAxisAlignment m/CrossAxisAlignment.start
+    .children
     [(m/Container
-      :height 36.0
-      :alignment m/Alignment.topCenter
-      :padding (m/EdgeInsets.only .top 4.0)
-      :child (let [bullet-type (mod level 3)]
+      .height 36.0
+      .alignment m/Alignment.topCenter
+      .padding (m/EdgeInsets.only .top 4.0)
+      .child (let [bullet-type (mod level 3)]
                (case bullet-type
                  ;; Level 0: Solid circle
                  0 (m/Container
-                    :width 8.0
-                    :height 8.0
-                    :decoration (m/BoxDecoration
-                                 :color m/Colors.blueGrey
-                                 :shape m/BoxShape.circle))
+                    .width 8.0
+                    .height 8.0
+                    .decoration (m/BoxDecoration
+                                 .color m/Colors.blueGrey
+                                 .shape m/BoxShape.circle))
                  ;; Level 1: Hollow circle
                  1 (m/Container
-                    :width 8.0
-                    :height 8.0
-                    :decoration (m/BoxDecoration
-                                 :border (m/Border.all :color m/Colors.blueGrey :width 1.5)
-                                 :shape m/BoxShape.circle))
+                    .width 8.0
+                    .height 8.0
+                    .decoration (m/BoxDecoration
+                                 .border (m/Border.all .color m/Colors.blueGrey .width 1.5)
+                                 .shape m/BoxShape.circle))
                  ;; Level 2: Solid square
                  2 (m/Container
-                    :width 6.0
-                    :height 6.0
-                    :decoration (m/BoxDecoration
-                                 :color m/Colors.blueGrey)))))
+                    .width 6.0
+                    .height 6.0
+                    .decoration (m/BoxDecoration
+                                 .color m/Colors.blueGrey)))))
      (m/Container
-      :constraints (m/BoxConstraints .minWidth 16.0)
-      :padding (m/EdgeInsets.only :bottom 4.0)
-      :decoration (create-block-decoration bg-color)
-      :child (selectable-mongol-text 
+      .constraints (m/BoxConstraints .minWidth 16.0)
+      .padding (m/EdgeInsets.only .bottom 4.0)
+      .decoration (create-block-decoration bg-color)
+      .child (selectable-mongol-text 
               {:path path 
                :delta (get-in block [:data :delta])
-               :text-style (m/TextStyle :color text-color :fontSize 16.0 :fontFamily final-font-family)
+               :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
                :matches block-match-positions
                :current-match-index (or block-current-index -1)
                :text-keys-atom text-keys-atom}))])))
@@ -336,22 +336,22 @@
          text-color (:text-color style-attrs)
          final-font-family (:font-family style-attrs)]
    (m/Container
-    :padding (m/EdgeInsets.symmetric :vertical 20.0 :horizontal 12.0)
-    :decoration (m/BoxDecoration
-                 :border (m/Border :top (m/BorderSide
-                                         :color (m/Color 0xFF2196F3)
-                                         :width 4.0))
-                 :color bg-color
-                 :borderRadius (m/BorderRadius.only 
-                                :bottomLeft (m/Radius.circular 8.0)
-                                :bottomRight (m/Radius.circular 8.0)))
-    :child (selectable-mongol-text 
+    .padding (m/EdgeInsets.symmetric .vertical 20.0 .horizontal 12.0)
+    .decoration (m/BoxDecoration
+                 .border (m/Border .top (m/BorderSide
+                                         .color (m/Color 0xFF2196F3)
+                                         .width 4.0))
+                 .color bg-color
+                 .borderRadius (m/BorderRadius.only 
+                                .bottomLeft (m/Radius.circular 8.0)
+                                .bottomRight (m/Radius.circular 8.0)))
+    .child (selectable-mongol-text 
             {:path path 
              :delta (get-in block [:data :delta])
-             :text-style (m/TextStyle :fontStyle m/FontStyle.italic 
-                                     :fontSize 16.0 
-                                     :color text-color
-                                     :fontFamily final-font-family)
+             :text-style (m/TextStyle .fontStyle m/FontStyle.italic 
+                                     .fontSize 16.0 
+                                     .color text-color
+                                     .fontFamily final-font-family)
              :matches block-match-positions
              :current-match-index (or block-current-index -1)
              :text-keys-atom text-keys-atom}))))
@@ -360,11 +360,11 @@
   "Render divider line"
   [_path _block]
   (m/Container
-   :width 2.0
-   :margin (m/EdgeInsets.symmetric :horizontal 24.0)
-   :decoration (m/BoxDecoration
-                :color (-> m/Colors.blueGrey (.withOpacity 0.2))
-                :borderRadius (m/BorderRadius.circular 1.0))))
+   .width 2.0
+   .margin (m/EdgeInsets.symmetric .horizontal 24.0)
+   .decoration (m/BoxDecoration
+                .color (-> m/Colors.blueGrey (.withOpacity 0.2))
+                .borderRadius (m/BorderRadius.circular 1.0))))
 
 (defn code-block
   "Render code block"
@@ -378,20 +378,20 @@
         text-color (:text-color style-attrs)
         font-family (:font-family style-attrs)]
     (m/Container
-     :padding (m/EdgeInsets.all 16.0)
-     :decoration (m/BoxDecoration
-                  :color bg-color
-                  :borderRadius (m/BorderRadius.circular 8.0)
-                  :boxShadow [(m/BoxShadow 
-                               :color (-> m/Colors.black (.withOpacity 0.1))
-                               :blurRadius 4.0
-                               :offset (m/Offset 0.0 2.0))])
-     :child (m/SelectableText
+     .padding (m/EdgeInsets.all 16.0)
+     .decoration (m/BoxDecoration
+                  .color bg-color
+                  .borderRadius (m/BorderRadius.circular 8.0)
+                  .boxShadow [(m/BoxShadow 
+                               .color (-> m/Colors.black (.withOpacity 0.1))
+                               .blurRadius 4.0
+                               .offset (m/Offset 0.0 2.0))])
+     .child (m/SelectableText
              (get-in block [:data :code] "")
-             :style (m/TextStyle
-                     :fontFamily font-family
-                     :fontSize 14.0
-                     :color text-color)))))
+             .style (m/TextStyle
+                     .fontFamily font-family
+                     .fontSize 14.0
+                     .color text-color)))))
 
 (defn table-cell
   "Render table cell"
@@ -424,7 +424,7 @@
                       :left m/Alignment.topLeft
                       m/Alignment.topLeft)]
     (m/Stack
-     :children
+     .children
      [(m/Container
        .width cell-width
        .height cell-height
@@ -443,36 +443,36 @@
                          :delta current-delta
                          :text-keys-atom text-keys-atom
                          :text-style (create-block-text-style 
-                                      (m/TextStyle :fontSize 16.0) 
+                                      (m/TextStyle .fontSize 16.0) 
                                       style-attrs)}))))
       ;; Column Resizer (Right edge)
       (m/Positioned
-       :right 0.0 :top 0.0 :bottom 0.0
-       :child (m/GestureDetector
-               :behavior m/HitTestBehavior.opaque
-               :onHorizontalDragUpdate (fn [details]
+       .right 0.0 .top 0.0 .bottom 0.0
+       .child (m/GestureDetector
+               .behavior m/HitTestBehavior.opaque
+               .onHorizontalDragUpdate (fn [details]
                                          (let [delta (.-dx (.-delta details))
                                                current-width (nth col-widths col-idx)]
                                            (table-cmd/update-column-width! block-idx col-idx (+ current-width delta))))
-               :child (m/Container :width 8.0 :color m/Colors.transparent)))
+               .child (m/Container .width 8.0 .color m/Colors.transparent)))
       ;; Row Resizer (Bottom edge)
       (m/Positioned
-       :left 0.0 :right 0.0 :bottom 0.0
-       :child (m/GestureDetector
-               :behavior m/HitTestBehavior.opaque
-               :onVerticalDragUpdate (fn [details]
+       .left 0.0 .right 0.0 .bottom 0.0
+       .child (m/GestureDetector
+               .behavior m/HitTestBehavior.opaque
+               .onVerticalDragUpdate (fn [details]
                                        (let [delta (.-dy (.-delta details))
                                              current-height (nth row-heights row-idx)]
                                          (table-cmd/update-row-height! block-idx row-idx (+ current-height delta))))
-               :child (m/Container :height 8.0 :color m/Colors.transparent)))])))
+               .child (m/Container .height 8.0 .color m/Colors.transparent)))])))
 
 (defn table-row
   "Render table row"
   [table-path row-idx row text-keys-atom col-widths row-heights]
   (m/Row
-   :mainAxisSize m/MainAxisSize.min
-   :crossAxisAlignment m/CrossAxisAlignment.start
-   :children (->> (get-in row [:cells] [])
+   .mainAxisSize m/MainAxisSize.min
+   .crossAxisAlignment m/CrossAxisAlignment.start
+   .children (->> (get-in row [:cells] [])
                   (map-indexed (fn [col-idx cell] {:idx col-idx :cell cell}))
                   (remove (fn [{:keys [cell]}] (get-in cell [:attributes :hidden])))
                   (map (fn [{:keys [idx cell]}]
@@ -492,17 +492,17 @@
                                  {:delta {:operations []} :attributes {:rowspan 1 :colspan 1}}]}]
                        rows)]
     (m/Container
-     :margin (m/EdgeInsets.symmetric :vertical 8.0)
-     :decoration (m/BoxDecoration
-                  :color (m/Color 0xFFF8F9FA)
-                  :border (m/Border.all :color (m/Color 0xFFCFD8DC) :width 1.0)
-                  :borderRadius (m/BorderRadius.circular 8.0)
-                  :boxShadow [(m/BoxShadow 
-                               :color (-> m/Colors.black (.withOpacity 0.05))
-                               :blurRadius 4.0
-                               :offset (m/Offset 0.0 2.0))])
-     :clipBehavior m/Clip.antiAlias
-     :child (m/SingleChildScrollView
+     .margin (m/EdgeInsets.symmetric .vertical 8.0)
+     .decoration (m/BoxDecoration
+                  .color (m/Color 0xFFF8F9FA)
+                  .border (m/Border.all .color (m/Color 0xFFCFD8DC) .width 1.0)
+                  .borderRadius (m/BorderRadius.circular 8.0)
+                  .boxShadow [(m/BoxShadow 
+                               .color (-> m/Colors.black (.withOpacity 0.05))
+                               .blurRadius 4.0
+                               .offset (m/Offset 0.0 2.0))])
+     .clipBehavior m/Clip.antiAlias
+     .child (m/SingleChildScrollView
              .scrollDirection m/Axis.vertical
              .child (m/SingleChildScrollView
                      .scrollDirection m/Axis.horizontal
@@ -521,9 +521,9 @@
     .showArrow false
     .valueBuilder (fn [_] 
                     (m/Container
-                     :width 40.0 :height 40.0
-                     :alignment m/Alignment.center
-                     :child (m/Icon m/Icons.more_vert .size 20.0 .color m/Colors.grey)))
+                     .width 40.0 .height 40.0
+                     .alignment m/Alignment.center
+                     .child (m/Icon m/Icons.more_vert .size 20.0 .color m/Colors.grey)))
     .onChanged (fn [value]
                  (when value
                    (state/focus-block! path)
@@ -554,7 +554,7 @@
             (MongolSelectItem .value :to-numbered .label (mgl/MongolText "Numbered List") .group (mgl/MongolText "Type"))
             (MongolSelectItem .value :to-bullet .label (mgl/MongolText "Bullet List") .group (mgl/MongolText "Type"))
             (MongolSelectItem .value :to-todo .label (mgl/MongolText "To-do List") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :delete .label (mgl/MongolText "Delete" .style (m/TextStyle :color m/Colors.red)) .group (mgl/MongolText "Danger"))])))
+            (MongolSelectItem .value :delete .label (mgl/MongolText "Delete" .style (m/TextStyle .color m/Colors.red)) .group (mgl/MongolText "Danger"))])))
 
 (defn block-wrapper [path block child]
   (f/widget
@@ -582,21 +582,21 @@
                                           .color (if is-focused? m/Colors.blue m/Colors.transparent)
                                           .width 2.0)))
      .child (m/Column
-             :mainAxisSize m/MainAxisSize.min
-             :crossAxisAlignment m/CrossAxisAlignment.center
-             :children
+             .mainAxisSize m/MainAxisSize.min
+             .crossAxisAlignment m/CrossAxisAlignment.center
+             .children
              [(block-menu-button path block)
               (m/Flexible
-               :child (if (pos? level)
+               .child (if (pos? level)
                        (if (= direction :ttb)
                          (m/Column
-                          :mainAxisSize m/MainAxisSize.min
-                          :crossAxisAlignment m/CrossAxisAlignment.start
-                          :children [(m/SizedBox :height indent-width) child])
+                          .mainAxisSize m/MainAxisSize.min
+                          .crossAxisAlignment m/CrossAxisAlignment.start
+                          .children [(m/SizedBox .height indent-width) child])
                          (m/Row
-                          :mainAxisSize m/MainAxisSize.min
-                          :crossAxisAlignment m/CrossAxisAlignment.start
-                          :children [(m/SizedBox :width indent-width) child]))
+                          .mainAxisSize m/MainAxisSize.min
+                          .crossAxisAlignment m/CrossAxisAlignment.start
+                          .children [(m/SizedBox .width indent-width) child]))
                        child))])))))
 
 

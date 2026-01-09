@@ -1,0 +1,108 @@
+(ns rich-editor.command.clipboard
+  "Clipboard operations (copy, cut, paste)"
+  (:require [rich-editor.model.selection :as sel]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.state :as state]
+            [rich-editor.command.text-commands-helpers :as helpers]
+            [rich-editor.command.text-insertion :as text-insertion]
+            [rich-editor.utils.delta :as delta-utils]
+            [rich-editor.utils.logger :as log]
+            [clojure.string :as str]
+            ["package:flutter/services.dart" :as services]))
+
+;; =============================================================
+;; Internal Clipboard
+;; =============================================================
+
+(defonce !clipboard-content (atom nil))
+
+;; =============================================================
+;; Copy Operations (Pure Functions)
+;; =============================================================
+
+(defn copy-selection-text
+  "Pure function: extract text from selection in document"
+  [doc selection]
+  (when (and selection (not (sel/collapsed? selection)))
+    (let [normalized (sel/normalize selection)
+          start-path (:path (:start normalized))
+          end-path (:path (:end normalized))
+          start-offset (:offset (:start normalized))
+          end-offset (:offset (:end normalized))]
+      (if (= start-path end-path)
+        ;; Single block copy
+        (let [current-delta (helpers/get-delta-at-path doc start-path)
+              selected-text (delta-utils/delta->text 
+                            (delta/slice-delta current-delta start-offset end-offset))]
+          selected-text)
+        ;; Cross-block copy - concatenate text from multiple blocks
+        (let [start-idx (first start-path)
+              end-idx (first end-path)
+              text-parts (loop [idx start-idx
+                               parts []]
+                          (if (> idx end-idx)
+                            parts
+                            (let [block (get-in doc [:children idx])
+                                  current-delta (get-in block [:data :delta])
+                                  copy-start (if (= idx start-idx) start-offset 0)
+                                  copy-end (if (= idx end-idx) 
+                                            end-offset 
+                                            (helpers/get-delta-text-length current-delta))
+                                  text (delta-utils/delta->text 
+                                       (delta/slice-delta current-delta copy-start copy-end))]
+                              (recur (inc idx) (conj parts text)))))
+              full-text (str/join "\n" text-parts)]
+          full-text)))))
+
+;; =============================================================
+;; Clipboard Commands
+;; =============================================================
+
+(defn copy-selection!
+  "Copy the selected text to clipboard.
+   Returns true if there was a selection to copy, false otherwise."
+  ([] (copy-selection! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (log/log-info (str "[Copy] copy-selection! called, selection: " selection))
+     (if (and selection (not (sel/collapsed? selection)))
+       (let [text (copy-selection-text (:doc current-state) selection)]
+         (log/log-info (str "[Copy] copied text: \"" text "\" (length: " (count text) ")"))
+         (reset! !clipboard-content text)
+         ;; Copy to system clipboard
+         (services/Clipboard.setData (services/ClipboardData. :text text))
+         (log/log-info "[Copy] copied to system clipboard")
+         true)
+       (do
+         (log/log-warn (str "[Copy] no selection or selection is collapsed - selection: " selection))
+         false)))))
+
+(defn cut-selection!
+  "Cut the selected text to clipboard (copy + delete)"
+  ([] (cut-selection! state/!editor-state))
+  ([state]
+   (copy-selection! state)
+   (text-insertion/delete-selection! state)))
+
+(defn paste-selection!
+  "Paste text from clipboard at the current selection"
+  ([] (paste-selection! state/!editor-state))
+  ([state]
+   ;; Clipboard.getData is async, so we use .then and .catchError to handle it
+   (let [clipboard-future (services/Clipboard.getData services/Clipboard.kTextPlain)]
+     (-> clipboard-future
+         (.then (fn [clipboard-data]
+                  (let [clipboard-text (when clipboard-data (.-text clipboard-data))
+                        ;; Fallback to internal clipboard if system clipboard is empty
+                        text (or clipboard-text @!clipboard-content)]
+                    (when text
+                      (text-insertion/delete-selection! state) ;; Delete current selection if any
+                      (text-insertion/insert-text! state text)
+                      ;; Also update internal clipboard
+                      (reset! !clipboard-content text)))))
+         (.catchError (fn [_error]
+                       ;; If clipboard access fails, fallback to internal clipboard
+                       (when-let [text @!clipboard-content]
+                         (text-insertion/delete-selection! state)
+                         (text-insertion/insert-text! state text))))))))

@@ -1,0 +1,119 @@
+(ns rich-editor.utils.events
+  "Functional event bus system"
+  (:require [rich-editor.utils.logger :as log]))
+
+;; =============================================================
+;; Event Types
+;; =============================================================
+
+(def event-types #{:doc-changed :selection-changed :focus-changed :block-changed})
+
+;; =============================================================
+;; Event Data Structure
+;; =============================================================
+
+(defn make-event
+  "Create an event"
+  [type data]
+  {:type type
+   :data data
+   :timestamp (dart:core/DateTime.now)})
+
+;; =============================================================
+;; Event Bus
+;; =============================================================
+
+(defonce !event-subscribers (atom {}))
+
+(defn subscribe
+  "Subscribe to event type, returns unsubscribe function"
+  [event-type handler]
+  (swap! !event-subscribers update event-type (fnil conj []) handler)
+  ;; Return unsubscribe function
+  (fn []
+    (swap! !event-subscribers update event-type
+           (fn [handlers]
+             (remove #(= % handler) handlers)))))
+
+(defn unsubscribe
+  "Unsubscribe handler from event type"
+  [event-type handler]
+  (swap! !event-subscribers update event-type
+         (fn [handlers]
+           (remove #(= % handler) handlers))))
+
+(defn emit
+  "Emit event to all subscribers"
+  [event-type data]
+  (let [event (make-event event-type data)
+        handlers (get @!event-subscribers event-type [])]
+    (doseq [handler handlers]
+      (try
+        (handler event)
+        (catch Exception e
+          (log/log-error (str "Error in event handler for " event-type) e))))))
+
+;; =============================================================
+;; Event Filters
+;; =============================================================
+
+(defn filter-events
+  "Filter events by predicate before handling"
+  [predicate handler]
+  (fn [event]
+    (when (predicate event)
+      (handler event))))
+
+(defn debounce-events
+  "Debounce events by time in milliseconds (simplified: handles immediate events if enough time has passed)"
+  [ms handler]
+  (let [last-time (atom 0)
+        pending-event (atom nil)]
+    (fn [event]
+      (reset! pending-event event)
+      (let [now (dart:core/DateTime.now)
+            now-ms (.-millisecondsSinceEpoch now)
+            elapsed-ms (- now-ms @last-time)]
+        ;; If enough time has passed, handle immediately
+        (when (>= elapsed-ms ms)
+          (reset! last-time now-ms)
+          (handler @pending-event)
+          (reset! pending-event nil))))))
+
+(defn throttle-events
+  "Throttle events to at most one per time period"
+  [ms handler]
+  (let [last-time (atom (dart:core/DateTime.now))
+        pending (atom nil)]
+    (fn [event]
+      (let [now (dart:core/DateTime.now)
+            elapsed-ms (.inMilliseconds (.difference now @last-time))]
+        (reset! pending event)
+        (when (>= elapsed-ms ms)
+          (reset! last-time now)
+          (handler @pending)
+          (reset! pending nil))))))
+
+;; =============================================================
+;; Event Dispatcher for State
+;; =============================================================
+
+(defn setup-event-dispatcher
+  "Setup event dispatcher for state atom"
+  [state]
+  (add-watch state :event-dispatcher
+    (fn [_ _ old-state new-state]
+      (when (not= (:doc old-state) (:doc new-state))
+        (emit :doc-changed {:doc (:doc new-state)
+                           :old-doc (:doc old-state)}))
+      (when (not= (:selection old-state) (:selection new-state))
+        (emit :selection-changed {:selection (:selection new-state)
+                                 :old-selection (:selection old-state)}))
+      (when (not= (:focused-path old-state) (:focused-path new-state))
+        (emit :focus-changed {:focused-path (:focused-path new-state)
+                             :old-focused-path (:focused-path old-state)})))))
+
+(defn teardown-event-dispatcher
+  "Remove event dispatcher from state atom"
+  [state]
+  (remove-watch state :event-dispatcher))

@@ -1,0 +1,228 @@
+(ns rich-editor.command.command-system
+  "Functional command system - commands as data"
+  (:require [rich-editor.utils.result :as result]))
+
+;; =============================================================
+;; Command Data Structure
+;; =============================================================
+
+(defn make-command
+  "Create a command definition as data structure.
+   id: keyword identifying the command
+   handler: function to execute the command (can accept state as first parameter)
+   metadata: map with optional :description, :category, :shortcut, :enabled?, etc."
+  [id handler & {:keys [description category shortcut enabled?] 
+                 :or {enabled? true 
+                      description "" 
+                      category :general 
+                      shortcut nil}}]
+  {:id id
+   :handler handler
+   :metadata {:enabled? enabled?
+             :description description
+             :category category
+             :shortcut shortcut}})
+
+;; =============================================================
+;; Command Registry (Pure Functions)
+;; =============================================================
+
+(defn register-command
+  "Pure function: register a command in registry
+   registry: map of id -> command
+   command: command definition (from make-command)"
+  [registry command]
+  (assoc registry (:id command) command))
+
+(defn register-commands
+  "Pure function: register multiple commands
+   registry: map of id -> command
+   commands: sequence of command definitions"
+  [registry commands]
+  (reduce register-command registry commands))
+
+(defn find-command
+  "Pure function: find a command by id
+   registry: map of id -> command
+   id: command id"
+  [registry id]
+  (get registry id))
+
+(defn find-enabled-commands
+  "Pure function: filter enabled commands from registry
+   registry: map of id -> command"
+  [registry]
+  (filter (fn [[_ cmd]] (get-in cmd [:metadata :enabled?])) registry))
+
+(defn find-commands-by-category
+  "Pure function: find commands by category
+   registry: map of id -> command
+   category: category keyword"
+  [registry category]
+  (filter (fn [[_ cmd]] (= category (get-in cmd [:metadata :category]))) registry))
+
+;; =============================================================
+;; Command Execution (with Result type)
+;; =============================================================
+
+(defn execute-command
+  "Execute a command with optional arguments.
+   Returns Result type for error handling.
+   registry: map of id -> command
+   id: command id
+   args: optional arguments to pass to handler"
+  [registry id & args]
+  (if-let [cmd (find-command registry id)]
+    (if (get-in cmd [:metadata :enabled?])
+      (try
+        (result/ok (apply (:handler cmd) args))
+        (catch Exception e
+          (result/err {:type :command-error 
+                      :command id 
+                      :error (str e)})))
+      (result/err {:type :command-disabled :command id}))
+    (result/err {:type :command-not-found :command id})))
+
+(defn execute-command!
+  "Execute a command (mutable version, for convenience).
+   Throws exception on error instead of returning Result.
+   registry: map of id -> command
+   id: command id
+   args: optional arguments to pass to handler"
+  [registry id & args]
+  (let [cmd-result (apply execute-command registry id args)]
+    (if (result/is-ok? cmd-result)
+      (:value cmd-result)
+      (let [error-data (:error cmd-result)]
+        (throw (Exception. (str "Command execution failed: " (pr-str error-data))))))))
+
+;; =============================================================
+;; Command Composition
+;; =============================================================
+
+(defn execute-command-sequence
+  "Execute a sequence of commands in order.
+   Stops on first error and returns Result.
+   registry: map of id -> command
+   command-ids: sequence of command ids
+   args: optional arguments to pass to each handler"
+  [registry command-ids & args]
+  (reduce (fn [acc id]
+            (if (result/is-err? acc)
+              acc
+              (apply execute-command registry id args)))
+          (result/ok nil)
+          command-ids))
+
+(defn make-conditional-command
+  "Create a conditional command that executes one of two commands based on predicate.
+   predicate: function that returns boolean
+   then-command: command to execute if predicate is true
+   else-command: command to execute if predicate is false"
+  [predicate then-command else-command]
+  (make-command 
+   (keyword (str (name (:id then-command)) "-conditional"))
+   (fn [& args]
+     (if (apply predicate args)
+       (apply (:handler then-command) args)
+       (apply (:handler else-command) args)))
+   :description "Conditional command"
+   :category :control))
+
+(defn make-command-pipeline
+  "Create a command pipeline that executes commands in sequence.
+   commands: sequence of command definitions"
+  [& commands]
+  (make-command
+   (keyword (str "pipeline-" (hash commands)))
+   (fn [& args]
+     (reduce (fn [acc cmd]
+               (if (result/is-err? acc)
+                 acc
+                 (let [cmd-result (apply execute-command {:temp (assoc cmd :id :temp)} :temp args)]
+                   (if (result/is-ok? cmd-result)
+                     (:value cmd-result)
+                     cmd-result))))
+             (result/ok nil)
+             commands))
+   :description "Command pipeline"
+   :category :composite))
+
+;; =============================================================
+;; Command Metadata and Queries
+;; =============================================================
+
+(defn get-command-description
+  "Pure function: get command description
+   command: command definition"
+  [command]
+  (get-in command [:metadata :description]))
+
+(defn get-command-shortcut
+  "Pure function: get command shortcut
+   command: command definition"
+  [command]
+  (get-in command [:metadata :shortcut]))
+
+(defn is-command-enabled?
+  "Pure function: check if command is enabled
+   command: command definition"
+  [command]
+  (get-in command [:metadata :enabled?]))
+
+(defn enable-command
+  "Pure function: enable a command (returns new command definition)
+   command: command definition"
+  [command]
+  (assoc-in command [:metadata :enabled?] true))
+
+(defn disable-command
+  "Pure function: disable a command (returns new command definition)
+   command: command definition"
+  [command]
+  (assoc-in command [:metadata :enabled?] false))
+
+(defn update-command-metadata
+  "Pure function: update command metadata
+   command: command definition
+   metadata-updates: map of metadata keys to update"
+  [command metadata-updates]
+  (update command :metadata merge metadata-updates))
+
+;; =============================================================
+;; Command Registry State (for backward compatibility)
+;; =============================================================
+
+(defonce !command-registry (atom {}))
+
+(defn register-command!
+  "Register a command in global registry (mutable)
+   command: command definition"
+  [command]
+  (swap! !command-registry register-command command))
+
+(defn register-commands!
+  "Register multiple commands in global registry (mutable)
+   commands: sequence of command definitions"
+  [commands]
+  (swap! !command-registry register-commands commands))
+
+(defn get-command
+  "Get a command from global registry
+   id: command id"
+  [id]
+  (find-command @!command-registry id))
+
+(defn execute-command-global
+  "Execute a command from global registry
+   id: command id
+   args: optional arguments"
+  [id & args]
+  (apply execute-command @!command-registry id args))
+
+(defn execute-command-global!
+  "Execute a command from global registry (mutable, throws on error)
+   id: command id
+   args: optional arguments"
+  [id & args]
+  (apply execute-command! @!command-registry id args))

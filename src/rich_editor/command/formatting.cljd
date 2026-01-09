@@ -1,0 +1,252 @@
+(ns rich-editor.command.formatting
+  "Text formatting commands (bold, italic, underline, etc.)"
+  (:require [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.state :as state]
+            [rich-editor.utils.history :as hist]
+            [rich-editor.command.text-commands-helpers :as helpers]))
+
+;; =============================================================
+;; Text Formatting (Pure Functions)
+;; =============================================================
+
+(defn format-selection
+  "Pure function: format selection in document with attributes"
+  [doc selection attributes]
+  (when selection
+    (let [normalized (sel/normalize selection)
+          start-path (:path (:start normalized))
+          end-path (:path (:end normalized))
+          start-offset (:offset (:start normalized))
+          end-offset (:offset (:end normalized))]
+      ;; Handle single block selection
+      (if (= start-path end-path)
+        (let [block (node/get-block-at-path doc start-path)
+              current-delta (get-in block [:data :delta])
+              new-delta (delta/format-delta-range current-delta start-offset end-offset attributes)]
+          (helpers/update-delta-at-path doc start-path new-delta))
+        ;; Cross-block selection
+        (let [start-idx (first start-path)
+              end-idx (first end-path)]
+          (loop [doc-state doc
+                 block-idx start-idx]
+            (if (> block-idx end-idx)
+              doc-state
+              (let [block (get-in doc-state [:children block-idx])
+                    current-delta (get-in block [:data :delta])
+                    format-start (if (= block-idx start-idx) start-offset 0)
+                    format-end (if (= block-idx end-idx) 
+                                end-offset 
+                                (helpers/get-delta-text-length current-delta))
+                    new-delta (delta/format-delta-range current-delta format-start format-end attributes)]
+                (recur (helpers/update-delta-at-path doc-state [block-idx] new-delta)
+                      (inc block-idx))))))))))
+
+;; =============================================================
+;; Text Formatting Commands (with state mutation)
+;; =============================================================
+
+(defn format-selection!
+  "Format the selected text with the given attributes.
+   Attributes can be: {:bold true}, {:italic true}, {:underline true}, {:strikethrough true}, etc.
+   Uses precise Delta operations to preserve existing formatting."
+  ([attributes] (format-selection! state/!editor-state attributes))
+  ([state attributes]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [new-doc (format-selection (:doc current-state) selection attributes)]
+         (swap! state
+                (fn [curr]
+                  (hist/push-history curr new-doc))))))))
+
+(defn toggle-format!
+  "Toggle a format attribute on the selected text."
+  ([attribute-key] (toggle-format! state/!editor-state attribute-key))
+  ([state attribute-key]
+   (format-selection! state {attribute-key true})))
+
+;; =============================================================
+;; Convenience functions for common formats
+;; =============================================================
+
+(defn format-bold! 
+  ([] (format-bold! state/!editor-state))
+  ([state] (toggle-format! state :bold)))
+
+(defn format-italic!
+  ([] (format-italic! state/!editor-state))
+  ([state] (toggle-format! state :italic)))
+
+(defn format-underline!
+  ([] (format-underline! state/!editor-state))
+  ([state] (toggle-format! state :underline)))
+
+(defn format-strikethrough!
+  ([] (format-strikethrough! state/!editor-state))
+  ([state] (toggle-format! state :strikethrough)))
+
+(defn format-color!
+  ([color] (format-color! state/!editor-state color))
+  ([state color]
+   (format-selection! state {:color color})))
+
+(defn format-background!
+  ([color] (format-background! state/!editor-state color))
+  ([state color]
+   (format-selection! state {:background color})))
+
+(defn format-font-size!
+  ([size] (format-font-size! state/!editor-state size))
+  ([state size]
+   (format-selection! state {:font-size size})))
+
+(defn format-font-family!
+  ([family] (format-font-family! state/!editor-state family))
+  ([state family]
+   (format-selection! state {:font-family family})))
+
+;; =============================================================
+;; Block Alignment Commands
+;; =============================================================
+
+(defn set-block-alignment!
+  "Set the alignment of a block
+   alignment: :left, :center, :right, :justify"
+  ([alignment] (set-block-alignment! state/!editor-state alignment))
+  ([state alignment]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)]
+         (swap! state
+                (fn [curr]
+                  (let [updated-doc (assoc-in (:doc curr)
+                                             [:children block-index :attributes :align]
+                                             alignment)]
+                    (hist/push-history curr updated-doc)))))))))
+
+;; =============================================================
+;; Text Direction Commands
+;; =============================================================
+
+(defn toggle-text-direction!
+  "Toggle text direction
+   Cycles between :ttb (top-to-bottom, Mongolian), :ltr (left-to-right), :rtl (right-to-left)"
+  ([] (toggle-text-direction! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)
+             block (node/get-block-at-path (:doc current-state) [block-index])
+             current-direction (get-in block [:attributes :direction] :ttb)
+             new-direction (case current-direction
+                            :ttb :ltr
+                            :ltr :rtl
+                            :rtl :ttb
+                            :ttb)]
+         (swap! state
+                (fn [curr]
+                  (let [updated-doc (assoc-in (:doc curr)
+                                             [:children block-index :attributes :direction]
+                                             new-direction)]
+                    (hist/push-history curr updated-doc)))))))))
+
+;; =============================================================
+;; Block Style Commands
+;; =============================================================
+
+(defn set-block-background-color!
+  "Set the background color of a block
+   color: integer (e.g., 0xFFF0F0F0) or string (e.g., \"F0F0F0\" or \"#F0F0F0\")
+   Pass nil to remove background color"
+  ([color] (set-block-background-color! state/!editor-state color))
+  ([state color]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)]
+         (swap! state
+                (fn [curr]
+                  (let [updated-doc (if color
+                                    (assoc-in (:doc curr)
+                                             [:children block-index :attributes :background-color]
+                                             color)
+                                    (update-in (:doc curr)
+                                             [:children block-index :attributes]
+                                             dissoc :background-color))]
+                    (hist/push-history curr updated-doc)))))))))
+
+(defn set-block-text-color!
+  "Set the text color of a block
+   color: integer (e.g., 0xFF212121) or string (e.g., \"212121\" or \"#212121\")
+   Pass nil to remove text color"
+  ([color] (set-block-text-color! state/!editor-state color))
+  ([state color]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)]
+         (swap! state
+                (fn [curr]
+                  (let [updated-doc (if color
+                                    (assoc-in (:doc curr)
+                                             [:children block-index :attributes :text-color]
+                                             color)
+                                    (update-in (:doc curr)
+                                             [:children block-index :attributes]
+                                             dissoc :text-color))]
+                    (hist/push-history curr updated-doc)))))))))
+
+(defn set-block-font-family!
+  "Set the font family of a block
+   font-family: string (e.g., \"Arial\", \"Roboto\", \"OyunQaganTig\")
+   Pass nil to remove font family (use default font)"
+  ([font-family] (set-block-font-family! state/!editor-state font-family))
+  ([state font-family]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)]
+         (swap! state
+                (fn [curr]
+                  (let [updated-doc (if font-family
+                                    (assoc-in (:doc curr)
+                                             [:children block-index :attributes :font-family]
+                                             font-family)
+                                    (update-in (:doc curr)
+                                             [:children block-index :attributes]
+                                             dissoc :font-family))]
+                    (hist/push-history curr updated-doc)))))))))
+
+(defn set-block-style!
+  "Set background color, text color, and/or font family of a block
+   options: map with :background-color, :text-color, and/or :font-family keys
+   Pass nil for a key to remove that style"
+  ([options] (set-block-style! state/!editor-state options))
+  ([state options]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [path (:path (:start selection))
+             block-index (first path)]
+         (swap! state
+                (fn [curr]
+                  (let [bg-color (:background-color options)
+                        text-color (:text-color options)
+                        font-family (:font-family options)
+                        updated-doc (cond-> (:doc curr)
+                                      (some? bg-color) (assoc-in [:children block-index :attributes :background-color] bg-color)
+                                      (nil? bg-color) (update-in [:children block-index :attributes] dissoc :background-color)
+                                      (some? text-color) (assoc-in [:children block-index :attributes :text-color] text-color)
+                                      (nil? text-color) (update-in [:children block-index :attributes] dissoc :text-color)
+                                      (some? font-family) (assoc-in [:children block-index :attributes :font-family] font-family)
+                                      (nil? font-family) (update-in [:children block-index :attributes] dissoc :font-family))]
+                    (hist/push-history curr updated-doc)))))))))

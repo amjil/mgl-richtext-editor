@@ -1,0 +1,143 @@
+(ns rich-editor.command.commands
+  "Command definitions using functional command system"
+  (:require [rich-editor.command.command-system :as cmd]
+            [rich-editor.command.formatting :as formatting]
+            [rich-editor.command.clipboard :as clipboard]
+            [rich-editor.command.navigation :as navigation]
+            [rich-editor.command.text-insertion :as text-insertion]
+            [rich-editor.command.blocks :as blocks]))
+
+;; =============================================================
+;; Command Definitions (as data)
+;; =============================================================
+
+;; Formatting commands
+(def format-bold-command
+  (cmd/make-command :format-bold
+                   formatting/format-bold!
+                   :description "Make text bold"
+                   :category :formatting
+                   :shortcut "Cmd+B"))
+
+(def format-italic-command
+  (cmd/make-command :format-italic
+                   formatting/format-italic!
+                   :description "Make text italic"
+                   :category :formatting
+                   :shortcut "Cmd+I"))
+
+(def format-underline-command
+  (cmd/make-command :format-underline
+                   formatting/format-underline!
+                   :description "Underline text"
+                   :category :formatting
+                   :shortcut "Cmd+U"))
+
+(def format-strikethrough-command
+  (cmd/make-command :format-strikethrough
+                   formatting/format-strikethrough!
+                   :description "Strikethrough text"
+                   :category :formatting
+                   :shortcut "Cmd+Shift+S"))
+
+;; Clipboard commands
+(def copy-command
+  (cmd/make-command :copy
+                   clipboard/copy-selection!
+                   :description "Copy selected text"
+                   :category :clipboard
+                   :shortcut "Cmd+C"))
+
+(def cut-command
+  (cmd/make-command :cut
+                   clipboard/cut-selection!
+                   :description "Cut selected text"
+                   :category :clipboard
+                   :shortcut "Cmd+X"))
+
+(def paste-command
+  (cmd/make-command :paste
+                   clipboard/paste-selection!
+                   :description "Paste text"
+                   :category :clipboard
+                   :shortcut "Cmd+V"))
+
+;; Navigation commands
+(def select-all-command
+  (cmd/make-command :select-all
+                   navigation/select-all!
+                   :description "Select all text"
+                   :category :navigation
+                   :shortcut "Cmd+A"))
+
+;; Text editing commands
+(def delete-backward-command
+  (cmd/make-command :delete-backward
+                   text-insertion/delete-backward!
+                   :description "Delete character backward"
+                   :category :editing
+                   :shortcut "Backspace"))
+
+(def delete-forward-command
+  (cmd/make-command :delete-forward
+                   text-insertion/delete-forward!
+                   :description "Delete character forward"
+                   :category :editing
+                   :shortcut "Delete"))
+
+;; Block commands
+(def convert-to-heading-command
+  (cmd/make-command :convert-to-heading
+                   blocks/convert-block-to-heading!
+                   :description "Convert block to heading"
+                   :category :block))
+
+(def indent-command
+  (cmd/make-command :indent
+                   blocks/indent-block!
+                   :description "Indent block"
+                   :category :block
+                   :shortcut "Tab"))
+
+(def outdent-command
+  (cmd/make-command :outdent
+                   blocks/outdent-block!
+                   :description "Outdent block"
+                   :category :block
+                   :shortcut "Shift+Tab"))
+
+;; =============================================================
+;; Command Registry
+;; =============================================================
+
+(def default-command-registry
+  "Default command registry with all commands"
+  (-> {}
+      (cmd/register-command format-bold-command)
+      (cmd/register-command format-italic-command)
+      (cmd/register-command format-underline-command)
+      (cmd/register-command format-strikethrough-command)
+      (cmd/register-command copy-command)
+      (cmd/register-command cut-command)
+      (cmd/register-command paste-command)
+      (cmd/register-command select-all-command)
+      (cmd/register-command delete-backward-command)
+      (cmd/register-command delete-forward-command)
+      (cmd/register-command convert-to-heading-command)
+      (cmd/register-command indent-command)
+      (cmd/register-command outdent-command)))
+
+;; Initialize global registry
+(cmd/register-commands! [format-bold-command
+                         format-italic-command
+                         format-underline-command
+                         format-strikethrough-command
+                         copy-command
+                         cut-command
+                         paste-command
+                         select-all-command
+                         delete-backward-command
+                         delete-forward-command
+                         convert-to-heading-command
+                         indent-command
+                         outdent-command])

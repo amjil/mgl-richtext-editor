@@ -169,9 +169,9 @@
                     text-selection (get-current-selection)
                     editing-value (w/TextEditingValue .text text .selection text-selection)
                     config (service/TextInputConfiguration
-                            :inputAction service/TextInputAction.newline
-                            :inputType service/TextInputType.multiline
-                            :enableDeltaModel true)
+                            .inputAction service/TextInputAction.newline
+                            .inputType service/TextInputType.multiline
+                            .enableDeltaModel true)
                     new-conn (service.TextInput/attach client config)]
                 (log/log-info (str "[Desktop Input] attach! - new connection created, attached?: " (.-attached new-conn)))
                 (reset! text-input-connection new-conn)

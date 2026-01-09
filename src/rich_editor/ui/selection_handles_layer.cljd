@@ -54,8 +54,8 @@
                                                   (- (.-dy end-global) stack-top-offset))]
                          ;; Stack with fill to use local coordinates
                          (m/Stack
-                          :fit m/StackFit.expand
-                          :children
+                          .fit m/StackFit.expand
+                          .children
                           [(selection-handle-widget
                             {:type :start
                              :global-offset start-local

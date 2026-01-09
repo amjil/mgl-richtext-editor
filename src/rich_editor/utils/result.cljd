@@ -1,0 +1,118 @@
+(ns rich-editor.utils.result
+  "Result type utilities for functional error handling (Either pattern)")
+
+;; =============================================================
+;; Result Type
+;; =============================================================
+;; Result 类型：{:ok true :value ...} 或 {:ok false :error ...}
+
+(defn ok
+  "Create a successful result"
+  [value]
+  {:ok true :value value})
+
+(defn err
+  "Create an error result"
+  [error]
+  {:ok false :error error})
+
+(defn is-ok?
+  "Check if result is successful"
+  [result]
+  (:ok result))
+
+(defn is-err?
+  "Check if result is an error"
+  [result]
+  (not (:ok result)))
+
+;; =============================================================
+;; Result Combinators
+;; =============================================================
+
+(defn map-result
+  "Apply function to value if result is ok, otherwise return error"
+  [result f]
+  (if (is-ok? result)
+    (ok (f (:value result)))
+    result))
+
+(defn flat-map-result
+  "Apply function that returns result to value if result is ok"
+  [result f]
+  (if (is-ok? result)
+    (f (:value result))
+    result))
+
+(defn recover
+  "Recover from error by providing default value"
+  [result default-value]
+  (if (is-ok? result)
+    result
+    (ok default-value)))
+
+(defn recover-with
+  "Recover from error by applying function"
+  [result f]
+  (if (is-ok? result)
+    result
+    (ok (f (:error result)))))
+
+(defn unwrap-or
+  "Unwrap result value or return default"
+  [result default]
+  (if (is-ok? result)
+    (:value result)
+    default))
+
+(defn unwrap-or-else
+  "Unwrap result value or compute default from error"
+  [result f]
+  (if (is-ok? result)
+    (:value result)
+    (f (:error result))))
+
+;; =============================================================
+;; Result Combination
+;; =============================================================
+
+(defn combine-results
+  "Combine multiple results into one, fails if any fails"
+  [& results]
+  (if (every? is-ok? results)
+    (ok (map :value results))
+    (err {:type :combined-error
+          :errors (map :error (filter is-err? results))})))
+
+(defn sequence-results
+  "Sequence a list of results, fails at first error"
+  [results]
+  (loop [remaining results
+         acc []]
+    (if (empty? remaining)
+      (ok acc)
+      (let [first-result (first remaining)]
+        (if (is-err? first-result)
+          first-result
+          (recur (rest remaining) (conj acc (:value first-result))))))))
+
+;; =============================================================
+;; Safe Execution
+;; =============================================================
+
+(defn safe-execute
+  "Execute function safely, wrapping result in Result type"
+  [f & args]
+  (try
+    (ok (apply f args))
+    (catch Exception e
+      (err {:type :execution-error :error e}))))
+
+(defn with-error-handling
+  "Wrap function with error handling"
+  [f error-handler]
+  (fn [& args]
+    (try
+      (ok (apply f args))
+      (catch Exception e
+        (error-handler e)))))

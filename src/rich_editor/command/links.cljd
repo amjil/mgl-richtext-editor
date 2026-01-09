@@ -1,0 +1,136 @@
+(ns rich-editor.command.links
+  "Link operations (insert, remove, get link)"
+  (:require [rich-editor.model.selection :as sel]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.state :as state]
+            [rich-editor.utils.history :as hist]
+            [rich-editor.command.text-commands-helpers :as helpers]
+            [rich-editor.command.formatting :as formatting]))
+
+;; =============================================================
+;; Link Operations (Pure Functions)
+;; =============================================================
+
+(defn remove-link-from-delta
+  "Pure function: remove link attribute from delta operations"
+  [ops]
+  (map (fn [op]
+         (if-let [attrs (:attributes op)]
+           (let [new-attrs (dissoc attrs :link)]
+             (if (empty? new-attrs)
+               (dissoc op :attributes)
+               (assoc op :attributes new-attrs)))
+           op))
+       ops))
+
+(defn remove-link-from-range
+  "Pure function: remove link formatting from a delta range"
+  [delta start-offset end-offset]
+  (let [sliced-delta (delta/slice-delta delta start-offset end-offset)
+        updated-ops (remove-link-from-delta (:operations sliced-delta))
+        updated-sliced-delta {:operations updated-ops}
+        before-delta (delta/slice-delta delta 0 start-offset)
+        after-delta (delta/slice-delta delta end-offset (helpers/get-delta-text-length delta))]
+    (delta/compose (delta/compose before-delta updated-sliced-delta) after-delta)))
+
+;; =============================================================
+;; Link Commands
+;; =============================================================
+
+(defn insert-link!
+  "Insert or update a link.
+   If text is selected, applies link attribute to selection.
+   If no selection, inserts display-text with link attribute."
+  ([display-text url] (insert-link! state/!editor-state display-text url))
+  ([state display-text url]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (if (and selection (not (sel/collapsed? selection)))
+       ;; Has selection: apply link attribute to selection
+       (formatting/format-selection! state {:link url})
+       ;; No selection or collapsed: insert display-text with link formatting
+       (let [normalized (sel/normalize selection)
+             path (:path (:start normalized))
+             offset (:offset (:start normalized))
+             current-delta (helpers/get-delta-at-path (:doc current-state) path)
+             ;; Insert display-text
+             new-delta (delta/insert-text-into-delta current-delta offset display-text)
+             new-offset (delta/calculate-insert-position offset display-text)]
+         (swap! state
+                (fn [curr]
+                  (let [updated-doc (helpers/update-delta-at-path (:doc curr) path new-delta)
+                        new-selection (sel/make-selection
+                                      (sel/make-position path new-offset)
+                                      (sel/make-position path new-offset))
+                        ;; Apply link formatting to the inserted text
+                        final-doc (helpers/update-delta-at-path updated-doc path
+                                                               (delta/format-delta-range new-delta offset new-offset {:link url}))]
+                    (-> (hist/push-history curr final-doc)
+                        (assoc :selection new-selection))))))))))
+
+(defn remove-link!
+  "Remove link formatting from the selected text.
+   Preserves other formatting attributes."
+  ([] (remove-link! state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [normalized (sel/normalize selection)
+             start-path (:path (:start normalized))
+             end-path (:path (:end normalized))
+             start-offset (:offset (:start normalized))
+             end-offset (:offset (:end normalized))]
+         ;; Remove link by slicing the delta, removing link from operations, and recomposing
+         (if (= start-path end-path)
+           ;; Single block
+           (let [current-delta (helpers/get-delta-at-path (:doc current-state) start-path)
+                 new-delta (remove-link-from-range current-delta start-offset end-offset)]
+             (swap! state
+                    (fn [curr]
+                      (hist/push-history curr (helpers/update-delta-at-path (:doc curr) start-path new-delta)))))
+           ;; Cross-block: remove link from each affected block
+           (let [start-idx (first start-path)
+                 end-idx (first end-path)]
+             (swap! state
+                    (fn [curr]
+                      (loop [doc-state (hist/push-history curr (:doc curr))
+                             block-idx start-idx]
+                        (if (> block-idx end-idx)
+                          doc-state
+                          (let [block (get-in doc-state [:children block-idx])
+                                current-delta (get-in block [:data :delta])
+                                format-start (if (= block-idx start-idx) start-offset 0)
+                                format-end (if (= block-idx end-idx) 
+                                            end-offset 
+                                            (helpers/get-delta-text-length current-delta))
+                                new-delta (remove-link-from-range current-delta format-start format-end)]
+                            (recur (helpers/update-delta-at-path doc-state [block-idx] new-delta)
+                                  (inc block-idx))))))))))))))
+
+(defn get-link-at-selection
+  "Get the link URL at the current selection position.
+   Returns the URL if the cursor is within a link, nil otherwise."
+  ([] (get-link-at-selection state/!editor-state))
+  ([state]
+   (let [current-state @state
+         selection (:selection current-state)]
+     (when selection
+       (let [normalized (sel/normalize selection)
+             path (:path (:start normalized))
+             offset (:offset (:start normalized))
+             current-delta (helpers/get-delta-at-path (:doc current-state) path)
+             ops (:operations current-delta)]
+         ;; Find the operation containing the offset
+         (loop [remaining-ops ops
+                current-offset 0]
+           (if (empty? remaining-ops)
+             nil
+             (let [op (first remaining-ops)
+                   op-len (delta/op-len op)
+                   op-start current-offset
+                   op-end (+ op-start op-len)]
+               (if (and (>= offset op-start) (< offset op-end))
+                 ;; Found the operation containing the offset
+                 (get-in op [:attributes :link])
+                 (recur (rest remaining-ops) op-end))))))))))

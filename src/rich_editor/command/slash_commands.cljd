@@ -1,0 +1,86 @@
+(ns rich-editor.command.slash-commands
+  "Slash command definitions"
+  (:require [rich-editor.command.blocks :as blocks]
+            [rich-editor.command.table-commands :as table-cmd]
+            [rich-editor.state :as state]))
+
+;; =============================================================
+;; Slash Command Definitions
+;; =============================================================
+
+(defn get-slash-commands
+  "Get slash command definitions. This function is called by slash-command-service."
+  []
+  [{:id :heading1 
+    :label "Heading 1" 
+    :keywords ["h1" "heading" "title"] 
+    :action #(blocks/convert-block-to-heading!)}
+   {:id :heading2 
+    :label "Heading 2" 
+    :keywords ["h2" "heading2"] 
+    :action #(blocks/convert-block-to-heading2!)}
+   {:id :bullet-list 
+    :label "Bullet List" 
+    :keywords ["list" "bullet" "ul"] 
+    :action #(blocks/convert-to-bulleted-list!)}
+   {:id :numbered-list 
+    :label "Numbered List" 
+    :keywords ["numbered" "ol" "number"] 
+    :action #(blocks/convert-to-numbered-list!)}
+   {:id :quote 
+    :label "Quote" 
+    :keywords ["quote" "blockquote"] 
+    :action #(blocks/convert-block-to-quote!)}
+   {:id :code-block 
+    :label "Code Block" 
+    :keywords ["code" "codeblock"] 
+    :action #(blocks/convert-block-to-code-block!)}
+   {:id :divider 
+    :label "Divider" 
+    :keywords ["divider" "hr" "horizontal"] 
+    :action #(blocks/insert-divider-block!)}
+   {:id :table 
+    :label "Table" 
+    :keywords ["table"] 
+    :action #(table-cmd/insert-table!)}
+   {:id :move-up
+    :label "Move Up"
+    :keywords ["move" "up"]
+    :action #(blocks/move-block-up!)}
+   {:id :move-down
+    :label "Move Down"
+    :keywords ["move" "down"]
+    :action #(blocks/move-block-down!)}
+   {:id :delete-block
+    :label "Delete Block"
+    :keywords ["delete" "remove" "block"]
+    :action #(blocks/delete-current-block!)}
+   {:id :add-row
+    :label "Add Table Row"
+    :keywords ["table" "row" "add"]
+    :action #(table-cmd/add-table-row!)}
+   {:id :delete-row
+    :label "Delete Table Row"
+    :keywords ["table" "row" "delete" "remove"]
+    :action #(let [current-state @state/!editor-state
+                   focused-path (:focused-path current-state)
+                   block (when focused-path (get-in current-state [:doc :children (first focused-path)]))
+                   rows (when block (get-in block [:data :rows] []))
+                   row-count (count rows)]
+               (when (> row-count 1)
+                 (table-cmd/delete-table-row! (dec row-count))))}
+   {:id :add-column
+    :label "Add Table Column"
+    :keywords ["table" "column" "add"]
+    :action #(table-cmd/add-table-column!)}
+   {:id :delete-column
+    :label "Delete Table Column"
+    :keywords ["table" "column" "delete" "remove"]
+    :action #(let [current-state @state/!editor-state
+                   focused-path (:focused-path current-state)
+                   block (when focused-path (get-in current-state [:doc :children (first focused-path)]))
+                   rows (when block (get-in block [:data :rows] []))
+                   first-row (first rows)
+                   col-count (when first-row (count (get-in first-row [:cells] [])))]
+               (when (and col-count (> col-count 1))
+                 (table-cmd/delete-table-column! (dec col-count))))}])

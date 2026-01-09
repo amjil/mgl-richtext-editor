@@ -13,15 +13,15 @@
 
    (m/GestureDetector
     ;; 1. handle the tap down (determine the starting point)
-    :onTapDown (fn [^m/TapDownDetails details]
+    .onTapDown (fn [^m/TapDownDetails details]
                  (sel-service/handle-tap-down! !editor-state details))
 
     ;; 2. handle the drag start (set starting position for selection)
-    :onPanStart (fn [^g/DragStartDetails details]
+    .onPanStart (fn [^g/DragStartDetails details]
                   (sel-service/handle-pan-start! !editor-state details))
 
     ;; 3. handle the drag update (cross-block selection + automatic scrolling)
-    :onPanUpdate (fn [^m/DragUpdateDetails details]
+    .onPanUpdate (fn [^m/DragUpdateDetails details]
                    (sel-service/handle-pan-update!
                     !editor-state
                     details
@@ -29,19 +29,19 @@
                     scroll-controller))
 
     ;; 4. handle the drag end (clean the state)
-    :onPanEnd (fn [^m/DragEndDetails details]
+    .onPanEnd (fn [^m/DragEndDetails details]
                 (sel-service/handle-pan-end! !editor-state details))
 
     ;; 5. double click to select a word (optional)
-    :onDoubleTapDown (fn [^m/TapDownDetails details]
+    .onDoubleTapDown (fn [^m/TapDownDetails details]
                        (sel-service/handle-double-tap!
                         !editor-state
                         (.-globalPosition details)))
 
-    :onSecondaryTapDown (fn [^m/TapDownDetails details]
+    .onSecondaryTapDown (fn [^m/TapDownDetails details]
                           (sel-service/handle-secondary-tap-down! !editor-state details))
 
-    :onLongPressStart (fn [^m/LongPressStartDetails details]
+    .onLongPressStart (fn [^m/LongPressStartDetails details]
                        (sel-service/handle-long-press! !editor-state details))
 
-    :child child)))
+    .child child)))
