@@ -1,11 +1,19 @@
 (ns editor-test.main
   (:require
    ["package:flutter/material.dart" :as m]
+   ["package:flutter/foundation.dart" :as foundation]
    [cljd.flutter :as f]
-   [rich-editor.ui.editor-main :refer [mongol-editor-view]]))
+   [rich-editor.ui.editor-main :refer [mongol-editor-view]]
+   [rich-editor.services.virtual-keyboard-service :as vk-service]))
 
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)
+  
+  ;; Initialize virtual keyboard service on mobile platforms
+  (when (or 
+          (= foundation/defaultTargetPlatform m/TargetPlatform.iOS)
+          (= foundation/defaultTargetPlatform m/TargetPlatform.android)) 
+    (vk-service/initialize!))
 
   (f/run
    (f/widget
