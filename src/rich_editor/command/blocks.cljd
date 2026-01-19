@@ -70,8 +70,8 @@
    type: new block type (e.g., :paragraph, :h1, :quote)
    data-fn: function to build new data from current-delta and block (default: preserves delta)
    update-indices?: whether to update numbered list indices (default: false)"
-  ([type & {:keys [data-fn update-indices?] :or {data-fn (fn [delta _block] {:delta delta}) update-indices? false}}]
-   (convert-block-type! state/!editor-state type :data-fn data-fn :update-indices? update-indices?))
+  ([state type]
+   (convert-block-type! state type :update-indices? false))
   ([state type & {:keys [data-fn update-indices?] :or {data-fn (fn [delta _block] {:delta delta}) update-indices? false}}]
    (let [current-state @state
          selection (:selection current-state)]

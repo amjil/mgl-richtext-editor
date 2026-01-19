@@ -234,22 +234,24 @@
       .height 36.0
       .alignment m/Alignment.topCenter
       .padding (m/EdgeInsets.only .top 2.0)
-      .child (mgl/MongolText (get-numbered-label index level) 
-                            .style (m/TextStyle .fontSize 16.0 
-                                              .fontWeight m/FontWeight.bold
-                                              .color m/Colors.blueGrey
-                                              .fontFamily default-font-family)))
-     (m/Container
-      .constraints (m/BoxConstraints .minWidth 16.0)
-      .padding (m/EdgeInsets.only .bottom 4.0)
-      .decoration (create-block-decoration bg-color)
-      .child (selectable-mongol-text 
-              {:path path 
-               :delta (get-in block [:data :delta])
-               :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
-               :matches block-match-positions
-               :current-match-index (or block-current-index -1)
-               :text-keys-atom text-keys-atom}))])))
+      .child (mgl/MongolText (get-numbered-label index level)
+                             .style (m/TextStyle .fontSize 16.0
+                                                 .fontWeight m/FontWeight.bold
+                                                 .color m/Colors.blueGrey
+                                                 .fontFamily default-font-family)))
+     (m/Expanded
+      .child
+      (m/Container
+       .constraints (m/BoxConstraints .minWidth 16.0)
+       .padding (m/EdgeInsets.only .bottom 4.0)
+       .decoration (create-block-decoration bg-color)
+       .child (selectable-mongol-text
+               {:path path
+                :delta (get-in block [:data :delta])
+                :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
+                :matches block-match-positions
+                :current-match-index (or block-current-index -1)
+                :text-keys-atom text-keys-atom})))])))
 
 (defn bulleted-list-block 
   "Render bulleted list item"
@@ -301,17 +303,19 @@
                     .height 6.0
                     .decoration (m/BoxDecoration
                                  .color m/Colors.blueGrey)))))
-     (m/Container
-      .constraints (m/BoxConstraints .minWidth 16.0)
-      .padding (m/EdgeInsets.only .bottom 4.0)
-      .decoration (create-block-decoration bg-color)
-      .child (selectable-mongol-text 
-              {:path path 
-               :delta (get-in block [:data :delta])
-               :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
-               :matches block-match-positions
-               :current-match-index (or block-current-index -1)
-               :text-keys-atom text-keys-atom}))])))
+     (m/Expanded
+      .child
+      (m/Container
+       .constraints (m/BoxConstraints .minWidth 16.0)
+       .padding (m/EdgeInsets.only .bottom 4.0)
+       .decoration (create-block-decoration bg-color)
+       .child (selectable-mongol-text
+               {:path path
+                :delta (get-in block [:data :delta])
+                :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
+                :matches block-match-positions
+                :current-match-index (or block-current-index -1)
+                :text-keys-atom text-keys-atom})))])))
 
 (defn quote-block
   "Render quote block"

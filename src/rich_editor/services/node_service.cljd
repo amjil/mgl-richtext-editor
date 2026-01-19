@@ -133,9 +133,9 @@
         n (count top-indices)
         registry-size (count @!node-registry)
         registry-keys (keys @!node-registry)]
-    ;; Only log when cache is empty or in debug mode to avoid performance issues during dragging
-    (when (zero? n)
-      (log/log-info (str "[Node Lookup] get-node-at-offset - global-offset: " global-offset ", top-indices count: " n ", registry size: " registry-size ", registry keys: " registry-keys)))
+    ;; Log cache state when cache is empty or when binary search might fail
+    (when (or (zero? n) (and (pos? registry-size) (zero? n)))
+      (log/log-info (str "[Node Lookup] get-node-at-offset - global-offset: " global-offset ", top-indices count: " n ", registry size: " registry-size ", registry keys: " registry-keys ", nodes-map keys: " (keys nodes-map))))
     (if (zero? n)
       (do
         (log/log-warn (str "[Node Lookup] cache is empty, using direct registry traversal - top-indices: " top-indices ", nodes-map keys: " (keys nodes-map)))
@@ -184,45 +184,56 @@
           (let [mid (quot (+ low high) 2)
                 top-idx (nth top-indices mid)
                 block-nodes (get nodes-map top-idx)
+                _ (when (nil? block-nodes)
+                    (log/log-warn (str "[Node Lookup] ⚠️ block-nodes is nil for top-idx: " top-idx ", nodes-map keys: " (keys nodes-map))))
                 
                 ;; 1. Check all nodes in this top-level block
                 block-result
-                (loop [entries (seq block-nodes)
-                       b-best nil
-                       b-min 1.7976931348623157e+308]
-                  (if-let [entry (first entries)]
-                    (let [[path {:keys [render-box selectable]}] entry]
-                      (if (and render-box (.-attached render-box))
-                        (let [size (.-size render-box)
-                              global-origin (.localToGlobal render-box r/Offset.zero)
-                              left (.-dx global-origin)
-                              right (+ left (.-width size))
-                              top (.-dy global-origin)
-                              bottom (+ top (.-height size))
-                              inside? (and (>= target-x left) (<= target-x right)
-                                           (>= target-y top) (<= target-y bottom))]
-                          ;; Only log when inside to reduce noise during dragging
-                          (if inside?
-                            (do
-                              (log/log-info (str "[Node Lookup] ✅ found node: " path))
-                              {:found {:path path :selectable selectable :render-box render-box}})
-                            (let [dist-x (cond
-                                           (< target-x left) (- left target-x)
-                                           (> target-x right) (- target-x right)
-                                           :else 0.0)]
-                              (if (< dist-x b-min)
-                                (recur (rest entries) {:path path :selectable selectable :render-box render-box} dist-x)
-                                (recur (rest entries) b-best b-min)))))
-                        (recur (rest entries) b-best b-min)))
-                    {:best b-best :min-dist b-min}))]
+                (if block-nodes
+                  (loop [entries (seq block-nodes)
+                         b-best nil
+                         b-min 1.7976931348623157e+308]
+                    (if-let [entry (first entries)]
+                      (let [[path {:keys [render-box selectable]}] entry]
+                        (if (and render-box (.-attached render-box))
+                          (let [size (.-size render-box)
+                                global-origin (.localToGlobal render-box r/Offset.zero)
+                                left (.-dx global-origin)
+                                right (+ left (.-width size))
+                                top (.-dy global-origin)
+                                bottom (+ top (.-height size))
+                                inside? (and (>= target-x left) (<= target-x right)
+                                             (>= target-y top) (<= target-y bottom))]
+                            ;; Only log when inside to reduce noise during dragging
+                            (if inside?
+                              (do
+                                (log/log-info (str "[Node Lookup] ✅ found node: " path))
+                                {:found {:path path :selectable selectable :render-box render-box}})
+                              (let [dist-x (cond
+                                             (< target-x left) (- left target-x)
+                                             (> target-x right) (- target-x right)
+                                             :else 0.0)
+                                    dist-y (cond
+                                             (< target-y top) (- top target-y)
+                                             (> target-y bottom) (- target-y bottom)
+                                             :else 0.0)
+                                    ;; Use squared distance to avoid sqrt (just for comparison)
+                                    dist-sq (+ (* dist-x dist-x) (* dist-y dist-y))]
+                                (if (< dist-sq b-min)
+                                  (recur (rest entries) {:path path :selectable selectable :render-box render-box} dist-sq)
+                                  (recur (rest entries) b-best b-min)))))
+                          (recur (rest entries) b-best b-min)))
+                      {:best b-best :min-dist b-min}))
+                  ;; block-nodes is nil, skip this block
+                  {:best nil :min-dist 1.7976931348623157e+308})]
             
             (if-let [found (:found block-result)]
               found
               (let [b-best (:best block-result)
                     b-min (:min-dist block-result)
                     ;; Decide direction based on the first node of the block
-                    representative (second (first block-nodes))
-                    rb (:render-box representative)
+                    representative (when block-nodes (second (first block-nodes)))
+                    rb (when representative (:render-box representative))
                     go (when (and rb (.-attached rb)) (.localToGlobal rb r/Offset.zero))
                     left (if go (.-dx go) 0.0)]
                 (if (< target-x left)
@@ -230,12 +241,53 @@
                   (recur (inc mid) high (if (< b-min min-dist) b-best best-node) (min b-min min-dist))))))
           
           ;; Final result
-          (let [result (when (and best-node (< min-dist 200.0))
-                         best-node)]
+          ;; Note: min-dist is squared distance, so compare with squared threshold
+          (let [result (when (and best-node (< min-dist (* 200.0 200.0)))
+                         best-node)
+                fallback-result (when-not result
+                                  (log/log-warn (str "[Node Lookup] ❌ node not found via binary search - best-node: " best-node ", min-dist: " min-dist ", registry size: " registry-size))
+                                  ;; Fallback to direct traversal if binary search failed
+                                  (if (zero? registry-size)
+                                    nil
+                                    (let [best-result
+                                          (reduce (fn [best [path {:keys [render-box selectable]}]]
+                                                    (if (and render-box (.-attached render-box))
+                                                      (let [size (.-size render-box)
+                                                            global-origin (.localToGlobal render-box r/Offset.zero)
+                                                            left (.-dx global-origin)
+                                                            right (+ left (.-width size))
+                                                            top (.-dy global-origin)
+                                                            bottom (+ top (.-height size))
+                                                            inside? (and (>= target-x left) (<= target-x right)
+                                                                         (>= target-y top) (<= target-y bottom))]
+                                                        (if inside?
+                                                          (reduced {:path path :selectable selectable :render-box render-box})
+                                                          (let [dist-x (if (< target-x left)
+                                                                         (- left target-x)
+                                                                         (if (> target-x right)
+                                                                           (- target-x right)
+                                                                           0.0))
+                                                                dist-y (if (< target-y top)
+                                                                         (- top target-y)
+                                                                         (if (> target-y bottom)
+                                                                           (- target-y bottom)
+                                                                           0.0))
+                                                                ;; Use squared distance to avoid sqrt (just for comparison)
+                                                                dist-sq (+ (* dist-x dist-x) (* dist-y dist-y))]
+                                                            (if (or (nil? best) (< dist-sq (get best :dist-sq 1.7976931348623157e+308)))
+                                                              {:path path :selectable selectable :render-box render-box :dist-sq dist-sq}
+                                                              best))))
+                                                      best))
+                                                  nil
+                                                  @!node-registry)]
+                                      (when (and best-result (or (nil? (:dist-sq best-result)) (< (:dist-sq best-result) (* 200.0 200.0))))
+                                        (log/log-info (str "[Node Lookup] ✅ found node via fallback traversal: " (:path best-result)))
+                                        (dissoc best-result :dist-sq)))))]
             (if result
               (log/log-info (str "[Node Lookup] ✅ found nearest node: " (:path result) ", distance: " min-dist))
-              (log/log-warn (str "[Node Lookup] ❌ node not found - best-node: " best-node ", min-dist: " min-dist)))
-            result))))))
+              (when fallback-result
+                (log/log-info (str "[Node Lookup] ✅ using fallback result: " (:path fallback-result)))))
+            (or result fallback-result)))))))
 
 (defn get-selectable-by-path
   "get the render interface of the node directly by path"
