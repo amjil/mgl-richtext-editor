@@ -278,6 +278,12 @@ class MongolRenderParagraph extends RenderBox
     return textPainter.getWordBoundary(position);
   }
 
+  TextRange getLineBoundary(TextPosition position) {
+    // Ensure layout is complete before getting selection boxes
+    _layoutTextWithConstraints(constraints);
+    return textPainter.getLineBoundary(position);
+  }
+
   List<Rect> getBoxesForSelection(TextSelection selection) {
     // Ensure layout is complete before getting selection boxes
     _layoutTextWithConstraints(constraints);
