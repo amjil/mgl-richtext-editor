@@ -3,14 +3,10 @@
             [rich-editor.ui.selectable-text :refer [selectable-mongol-text]]
             [rich-editor.state :as state]
             [rich-editor.ui-state :as ui]
-            [rich-editor.utils.delta :as delta-utils]
-            [rich-editor.model.selection :as sel]
             [rich-editor.model.node :as node]
             [rich-editor.utils.logger :as log]
-            [rich-editor.command.text-commands :as text-cmd]
             [rich-editor.command.table-commands :as table-cmd]
             ["package:mongol/mongol.dart" :as mgl]
-            ["package:mgl_editor_core/mongol_select.dart" :refer [MongolSelect MongolSelectItem]]
             ["package:flutter/material.dart" :as m]))
 
 ;; Default font family
@@ -518,51 +514,8 @@
                                           (table-row path row-idx row text-keys-atom col-widths row-heights))
                                         default-rows)))))))
 
-(defn block-menu-button [path block]
-  (f/widget
-   (MongolSelect
-    .value nil
-    .showArrow false
-    .valueBuilder (fn [_] 
-                    (m/Container
-                     .width 40.0 .height 40.0
-                     .alignment m/Alignment.center
-                     .child (m/Icon m/Icons.more_vert .size 20.0 .color m/Colors.grey)))
-    .onChanged (fn [value]
-                 (when value
-                   (state/focus-block! path)
-                   (let [block-delta (get-in block [:data :delta])
-                         text-len (count (delta-utils/delta->text (or block-delta {:operations []})))
-                         new-pos (sel/make-position path text-len)]
-                     (state/update-selection! (sel/make-selection new-pos new-pos)))
-                   (case value
-                     :move-up (text-cmd/move-block-up!)
-                     :move-down (text-cmd/move-block-down!)
-                     :delete (text-cmd/delete-current-block!)
-                     :copy (text-cmd/copy-block!)
-                     :to-paragraph (text-cmd/convert-block-to-paragraph!)
-                     :to-h1 (text-cmd/convert-block-to-heading!)
-                     :to-h2 (text-cmd/convert-block-to-heading2!)
-                     :to-h3 (text-cmd/convert-block-to-heading3!)
-                     :to-numbered (text-cmd/convert-to-numbered-list!)
-                     :to-bullet (text-cmd/convert-to-bulleted-list!)
-                     :to-todo (text-cmd/convert-list-to-todo!)
-                     nil)))
-    .items [(MongolSelectItem .value :move-up .label (mgl/MongolText "Move Up") .group (mgl/MongolText "Action"))
-            (MongolSelectItem .value :move-down .label (mgl/MongolText "Move Down") .group (mgl/MongolText "Action"))
-            (MongolSelectItem .value :copy .label (mgl/MongolText "Duplicate") .group (mgl/MongolText "Action"))
-            (MongolSelectItem .value :to-paragraph .label (mgl/MongolText "Paragraph") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :to-h1 .label (mgl/MongolText "Heading 1") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :to-h2 .label (mgl/MongolText "Heading 2") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :to-h3 .label (mgl/MongolText "Heading 3") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :to-numbered .label (mgl/MongolText "Numbered List") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :to-bullet .label (mgl/MongolText "Bullet List") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :to-todo .label (mgl/MongolText "To-do List") .group (mgl/MongolText "Type"))
-            (MongolSelectItem .value :delete .label (mgl/MongolText "Delete" .style (m/TextStyle .color m/Colors.red)) .group (mgl/MongolText "Danger"))])))
-
 (defn block-wrapper [path block child]
   (f/widget
-   :watch [is-focused? (f/$ (= (:focused-path (f/<! state/!editor-state)) path))]
    :let [level (get-in block [:data :level] 0)
          direction (get-in block [:attributes :direction] :ttb)
          indent-width (* level 32.0)]
@@ -570,38 +523,22 @@
     .behavior m/HitTestBehavior.opaque
     .onTap (fn []
              ;; Don't automatically move cursor to end - let handle-tap-down! handle cursor positioning
-             ;; Only focus the block if it's not already focused
-             (when-not is-focused?
-               (state/focus-block! path)))
+             (state/focus-block! path))
     .child
-    (m/AnimatedContainer
-     .duration (Duration .milliseconds 250)
-     .curve m/Curves.easeInOut
+    (m/Container
      .margin (m/EdgeInsets.only .right 0.0)
      .padding (m/EdgeInsets.only .left 8.0 .right 8.0 .top 4.0 .bottom 2.0)
-     .decoration (m/BoxDecoration
-                  .color (if is-focused? (-> m/Colors.blue (.withOpacity 0.02)) m/Colors.transparent)
-                  .borderRadius (m/BorderRadius.circular 4.0)
-                  .border (m/Border .top (m/BorderSide
-                                          .color (if is-focused? m/Colors.blue m/Colors.transparent)
-                                          .width 2.0)))
-     .child (m/Column
-             .mainAxisSize m/MainAxisSize.min
-             .crossAxisAlignment m/CrossAxisAlignment.center
-             .children
-             [(block-menu-button path block)
-              (m/Flexible
-               .child (if (pos? level)
-                       (if (= direction :ttb)
-                         (m/Column
-                          .mainAxisSize m/MainAxisSize.min
-                          .crossAxisAlignment m/CrossAxisAlignment.start
-                          .children [(m/SizedBox .height indent-width) child])
-                         (m/Row
-                          .mainAxisSize m/MainAxisSize.min
-                          .crossAxisAlignment m/CrossAxisAlignment.start
-                          .children [(m/SizedBox .width indent-width) child]))
-                       child))])))))
+     .child (if (pos? level)
+              (if (= direction :ttb)
+                (m/Column
+                 .mainAxisSize m/MainAxisSize.min
+                 .crossAxisAlignment m/CrossAxisAlignment.start
+                 .children [(m/SizedBox .height indent-width) child])
+                (m/Row
+                 .mainAxisSize m/MainAxisSize.min
+                 .crossAxisAlignment m/CrossAxisAlignment.start
+                 .children [(m/SizedBox .width indent-width) child]))
+              child)))))
 
 
 (defn block-entry [path block text-keys-atom]

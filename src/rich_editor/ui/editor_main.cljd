@@ -19,8 +19,9 @@
             ["package:flutter/material.dart" :as m]
             ["package:flutter/services.dart" :as srv]
             ["package:flutter/foundation.dart" :as foundation]
-            ["package:mgl_editor_core/mongol_editor_view.dart" :refer [MongolEditorView]]
-            ["package:mgl_editor_core/disposable.dart" :refer [Disposable]]))
+            ["package:mgl_editor_core/disposable.dart" :refer [Disposable]]
+            ["package:mgl_editor_core/post_frame_trigger.dart" :refer [PostFrameTrigger]]
+            [rich-editor.ui.editor-keyboard-listener :refer [editor-keyboard-listener]]))
 
 (defn- init-keyboard! []
   (let [platform foundation/defaultTargetPlatform
@@ -89,46 +90,54 @@
                                      ;; Offset menu relative to cursor
                                      (m/Offset. (.-dx global-pos) (+ (.-dy global-pos) 24.0))
                                      ;; Fallback if layout not ready
-                                     (m/Offset. 100.0 100.0)))]
-   (MongolEditorView
-    .hasSelection has-selection
-    .onKeyEvent (fn [event] (kb-service/handle-key-event! event))
-    .onPostFrame (fn []
-                   (when selection
-                     (scroll-service/check-cursor-auto-scroll selection scroll-controller)
-                     (when-not foundation/kIsWeb
-                       ;; Only call attach! if connection doesn't exist or path changed
-                       ;; update-editing-state! will handle the attach if needed
-                       (desktop-input/update-editing-state!))))
-    .content (virtual-keyboard-wrapper
-              {:show-keyboard? show-keyboard?
-               :child (selection-gesture-detector
-                       {:!editor-state !editor-state
-                        :scroll-controller scroll-controller
-                        :child (m/Container
-                                .child (m/SingleChildScrollView
-                                        .controller scroll-controller
-                                        .scrollDirection m/Axis.horizontal
-                                        .physics (m/AlwaysScrollableScrollPhysics.)
-                                        .child (m/Container
-                                                .color (m/Color 0xFFF5F5F5)
-                                                .child (m/Padding
-                                                        .padding (m/EdgeInsets.all 32.0)
-                                                        .child (m/Row
-                                                                .crossAxisAlignment m/CrossAxisAlignment.start
-                                                                .mainAxisSize m/MainAxisSize.min
-                                                                .children (vec (map-indexed
-                                                                           (fn [idx block]
-                                                                             (block-entry [idx] block text-keys-atom))
-                                                                           blocks)))))))})})
-    .findReplaceDialog (find-replace-dialog)
-    .selectionMenu (selection-menu)
-    .selectionHandles (if (and is-mobile? has-selection)
-                       (selection-handles-overlay !editor-state)
-                       nil)
-    .slashCommandMenu (if (and slash-command-active? computed-slash-position)
-                        (slash-command-menu
-                         {:position computed-slash-position
-                          :on-command-selected (fn [command-id]
-                                                 (slash-cmd/execute-command! command-id))})
-                        (m/SizedBox.shrink)))))
+                                     (m/Offset. 100.0 100.0)))
+         ;; Post-frame callback for selection handling
+         post-frame-callback (fn []
+                              (when selection
+                                (scroll-service/check-cursor-auto-scroll selection scroll-controller)
+                                (when-not foundation/kIsWeb
+                                  ;; Only call attach! if connection doesn't exist or path changed
+                                  ;; update-editing-state! will handle the attach if needed
+                                  (desktop-input/update-editing-state!))))
+         scaffold-widget (m/Scaffold
+                          .body (editor-keyboard-listener
+                                 {:on-key-event (fn [event] (kb-service/handle-key-event! event))
+                                  :child (m/Stack
+                                          .children (filter some?
+                                                    [(virtual-keyboard-wrapper
+                                                      {:show-keyboard? show-keyboard?
+                                                       :child (selection-gesture-detector
+                                                               {:!editor-state !editor-state
+                                                                :scroll-controller scroll-controller
+                                                                :child (m/Container
+                                                                        .child (m/SingleChildScrollView
+                                                                                .controller scroll-controller
+                                                                                .scrollDirection m/Axis.horizontal
+                                                                                .physics (m/AlwaysScrollableScrollPhysics.)
+                                                                                .child (m/Container
+                                                                                        .color (m/Color 0xFFF5F5F5)
+                                                                                        .child (m/Padding
+                                                                                                .padding (m/EdgeInsets.all 32.0)
+                                                                                                .child (m/Row
+                                                                                                        .crossAxisAlignment m/CrossAxisAlignment.start
+                                                                                                        .mainAxisSize m/MainAxisSize.min
+                                                                                                        .children (vec (map-indexed
+                                                                                                                   (fn [idx block]
+                                                                                                                     (block-entry [idx] block text-keys-atom))
+                                                                                                                   blocks)))))))})})
+                                                     (find-replace-dialog)
+                                                     (selection-menu)
+                                                     (if (and is-mobile? has-selection)
+                                                       (selection-handles-overlay !editor-state)
+                                                       nil)
+                                                     (if (and slash-command-active? computed-slash-position)
+                                                       (slash-command-menu
+                                                        {:position computed-slash-position
+                                                         :on-command-selected (fn [command-id]
+                                                                                (slash-cmd/execute-command! command-id))})
+                                                       (m/SizedBox.shrink))]))}))]
+   (if has-selection
+     (PostFrameTrigger
+      .onLayout post-frame-callback
+      .child scaffold-widget)
+     scaffold-widget)))

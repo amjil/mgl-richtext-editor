@@ -37,17 +37,51 @@
               _ (log/log-info (str "[Cursor Positioning] path: " path ", local-pos: " local-pos))
               ;; 3. For MongolRenderParagraph, ensure we're using the correct coordinate system
               ;; MongolTextPainter expects coordinates in its own rotated coordinate system
+              ;; Clamp local position to render box bounds to handle out-of-bounds coordinates
+              render-box-size (.-size render-box)
+              render-box-width (.-width render-box-size)
+              render-box-height (.-height render-box-size)
+              text (.toPlainText (.-text selectable))
+              text-len (count text)
+              ;; Clamp local-pos to valid bounds before calling getPositionForOffset
+              clamped-local-pos (m/Offset. (max 0.0 (min render-box-width (.-dx local-pos)))
+                                           (max 0.0 (min render-box-height (.-dy local-pos))))
+              _ (when (or (not= (.-dx local-pos) (.-dx clamped-local-pos))
+                         (not= (.-dy local-pos) (.-dy clamped-local-pos)))
+                  (log/log-warn (str "[Cursor Positioning] local-pos clamped from " local-pos " to " clamped-local-pos)))
               pos-in-block (try
-                            (.getPositionForOffset selectable local-pos)
+                            (let [result-pos (.getPositionForOffset selectable clamped-local-pos)
+                                  result-offset (.-offset result-pos)
+                                  ;; Check if getPositionForOffset returned an unexpected value (e.g., end offset for out-of-bounds)
+                                  ;; Use original local-pos (before clamping) to check if it was actually in bounds
+                                  original-dy (.-dy local-pos)
+                                  use-fallback-calculation? (and (or (= result-offset text-len)
+                                                                     (and (= result-offset 1)
+                                                                          (> text-len 1)))
+                                                                  (> text-len 0)
+                                                                  (< original-dy render-box-height)
+                                                                  (>= original-dy 0.0)
+                                                                  (>= (.-dx local-pos) (- render-box-width 50.0)) ;; Allow some margin for table cells
+                                                                  (<= (.-dx local-pos) (+ render-box-width 50.0)))]
+                              (if use-fallback-calculation?
+                                ;; Use fallback calculation based on y coordinate ratio for vertical text
+                                ;; This handles cases where getPositionForOffset returns incorrect results for edge coordinates
+                                (let [normalized-dy (max 0.0 (min render-box-height original-dy))
+                                      ratio (/ normalized-dy render-box-height)
+                                      calculated-offset (.round (* ratio text-len))
+                                      clamped-offset (max 0 (min text-len calculated-offset))]
+                                  (log/log-info (str "[Cursor Positioning] using fallback calculation - original-dy: " original-dy ", ratio: " ratio ", calculated-offset: " calculated-offset))
+                                  (m/TextPosition :offset clamped-offset))
+                                result-pos))
                             (catch Exception e
                               (log/log-warn (str "[Cursor Positioning] getPositionForOffset failed, using fallback: " e))
-                              ;; Fallback: try to get position using text length bounds
-                              (let [text (.toPlainText (.-text selectable))
-                                    text-len (count text)
-                                    ;; Clamp offset to valid range
-                                    clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
-                                                                         0
-                                                                         text-len)))]
+                              ;; Fallback: try to get position using text length bounds and y coordinate
+                              (let [original-dy (.-dy local-pos)
+                                    normalized-dy (max 0.0 (min render-box-height original-dy))
+                                    ratio (/ normalized-dy render-box-height)
+                                    calculated-offset (.round (* ratio text-len))
+                                    clamped-offset (max 0 (min text-len calculated-offset))]
+                                (log/log-info (str "[Cursor Positioning] exception fallback - original-dy: " original-dy ", ratio: " ratio ", calculated-offset: " calculated-offset))
                                 (m/TextPosition :offset clamped-offset))))
               offset-value (.-offset pos-in-block)
               ;; 4. Ensure offset is within valid range
