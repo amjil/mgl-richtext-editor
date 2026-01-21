@@ -109,6 +109,7 @@
                                               .fontSize (or (get attrs :font-size) 16.0)
                                               .fontFamily (or (get attrs :font-family) default-font-family))
                                   ;; Merge link style and base style using copyWith
+                                  ;; Note: Link color will be themed when build-spans is called from a themed widget
                                   final-style (if link-url
                                                 (.copyWith base-style
                                                           .color m/Colors.blue

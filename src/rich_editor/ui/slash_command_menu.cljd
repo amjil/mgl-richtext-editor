@@ -10,11 +10,14 @@
 
 (defn slash-command-menu [{:keys [position on-command-selected]}]
   (f/widget
+   :get {{{:flds [surface onSurface scrim]} .-colorScheme
+          {:flds [bodyMedium]} .-textTheme} m/Theme}
    :watch [active (f/$ (:slash-command-active (f/<! ui/!ui-state)))
            _query (f/$ (:slash-command-query (f/<! ui/!ui-state)))]
-   
+   :let [shadow-color (or scrim (-> m/Colors.black (.withOpacity 0.12)))]
    (if (and active (seq (slash-cmd/get-filtered-commands)))
-     (let [filtered-commands (slash-cmd/get-filtered-commands)]
+     (let [filtered-commands (slash-cmd/get-filtered-commands)
+           text-style (-> bodyMedium (.copyWith .fontSize 14.0 .color onSurface))]
        (m/Positioned
         .left (.-dx position)
         .top (.-dy position)
@@ -23,10 +26,10 @@
          :width 300.0
          :constraints (m/BoxConstraints :maxHeight 300.0)
          :decoration (m/BoxDecoration
-                     :color m/Colors.white
+                     :color surface
                      :borderRadius (m/BorderRadius.circular 8.0)
                      :boxShadow [(m/BoxShadow
-                                  :color (m/Colors.black12)
+                                  :color shadow-color
                                   :blurRadius 8.0
                                   :offset (m/Offset. 0 4))])
          :child
@@ -61,10 +64,10 @@
                      :table m/Icons.table_chart
                      m/Icons.text_fields)
                    :size 20.0
-                   :color m/Colors.grey)
+                   :color onSurface)
                   (m/SizedBox :width 12.0)
                   (m/Text (:label cmd)
-                          :style (m/TextStyle :fontSize 14.0))]))))
+                          :style text-style)]))))
             filtered-commands))))))
      (m/SizedBox.shrink))))
 

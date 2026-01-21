@@ -14,7 +14,8 @@
   []
   (f/widget
    :context ctx
-   :get [m/MediaQuery]
+   :get {{{:flds [surface scrim]} .-colorScheme} m/Theme
+         {{:flds [width]} .-size} m/MediaQuery}
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
    :let [show-dialog? (:show-dialog? search-state)
          replace-mode? (:replace-mode? search-state)
@@ -31,7 +32,7 @@
          replace-controller (m/TextEditingController. :text replace-term)
          ;; Detect platform and screen size
          is-mobile? (not foundation/kIsWeb)
-         screen-width (.-width (.-size media-query))
+         screen-width width
          is-small-screen? (< screen-width 600.0)
          ;; Mobile uses vertical layout, desktop uses horizontal layout
          use-vertical-layout? (or is-mobile? is-small-screen?)
@@ -39,7 +40,8 @@
          button-padding (if use-vertical-layout?
                           (m/EdgeInsets.symmetric :horizontal 24.0 :vertical 12.0)
                           (m/EdgeInsets.symmetric :horizontal 16.0 :vertical 8.0))
-         icon-button-size (if use-vertical-layout? 48.0 40.0)]
+         icon-button-size (if use-vertical-layout? 48.0 40.0)
+         shadow-color (or scrim (-> m/Colors.black (.withOpacity 0.12)))]
 
    (if show-dialog?
      (m/Positioned
@@ -52,9 +54,9 @@
                   (m/EdgeInsets.all 12.0)
                   (m/EdgeInsets.all 16.0))
        :decoration (m/BoxDecoration
-                    :color (.-surface (-> m/Theme (.of ctx) .-colorScheme))
+                    :color surface
                     :boxShadow [(m/BoxShadow
-                                 :color (m/Colors.black12)
+                                 :color shadow-color
                                  :blurRadius 8.0
                                  :offset (m/Offset. 0.0 2.0))])
        :child
@@ -157,14 +159,14 @@
               :icon (m/Icon m/Icons.arrow_upward)
               :tooltip "Previous"
               :onPressed (when (pos? match-count) (fn [] (search-cmd/find-previous!)))
-              :disabledColor m/Colors.grey)
+              :disabledColor (.-onSurfaceVariant (-> m/Theme (.of ctx) .-colorScheme)))
 
              ;; Next button
              (m/IconButton
               :icon (m/Icon m/Icons.arrow_downward)
               :tooltip "Next"
               :onPressed (when (pos? match-count) (fn [] (search-cmd/find-next!)))
-              :disabledColor m/Colors.grey)
+              :disabledColor (.-onSurfaceVariant (-> m/Theme (.of ctx) .-colorScheme)))
 
              ;; Close button
              (m/IconButton

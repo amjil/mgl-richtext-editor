@@ -69,6 +69,7 @@
 (defn selection-menu-content []
   (f/widget
    :context ctx
+   :get {{{:flds [surface scrim]} .-colorScheme} m/Theme}
    :watch [selection (f/$ (:selection (f/<! state/!editor-state)))
            focused-path (f/$ (:focused-path (f/<! state/!editor-state)))]
    :let [is-mobile? (or (not foundation/kIsWeb)
@@ -78,16 +79,17 @@
          screen-width (.-width (.-size (m/MediaQuery.of ctx)))
          is-small-screen? (< screen-width 600.0)
          use-horizontal-menu? (or is-mobile? is-small-screen?)
-         has-selection? (and selection (not (sel/collapsed? selection)))]
+         has-selection? (and selection (not (sel/collapsed? selection)))
+         shadow-color (or scrim (-> m/Colors.black (.withOpacity 0.26)))]
    
    (if (or has-selection? (some? focused-path))
      (m/Container
       :constraints (m/BoxConstraints :maxWidth (- screen-width 32.0))
       :decoration (m/BoxDecoration
-                   :color (.-surface (-> m/Theme (.of ctx) .-colorScheme))
+                   :color surface
                    :borderRadius (m/BorderRadius.circular 24.0)
                    :boxShadow [(m/BoxShadow
-                                :color (m/Colors.black26)
+                                :color shadow-color
                                 :blurRadius 8.0
                                 :offset (m/Offset. 0.0 2.0))])
       :clipBehavior m/Clip.hardEdge

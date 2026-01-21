@@ -25,11 +25,11 @@
    :bg-color-val - Raw background color value (or nil)
    :text-color-val - Raw text color value (or nil)
    :font-family-val - Raw font family value (or nil)"
-  [block & {:keys [default-text-color default-bg-color default-font] 
-            :or {default-text-color (m/Color 0xFF212121)
-                 default-bg-color m/Colors.transparent
-                 default-font default-font-family}}]
-  (let [bg-color-val (get-in block [:attributes :background-color])
+  [block theme-colors & {:keys [default-text-color default-bg-color default-font] 
+            :or {default-font default-font-family}}]
+  (let [default-text-color (or default-text-color (:onSurface theme-colors))
+        default-bg-color (or default-bg-color m/Colors.transparent)
+        bg-color-val (get-in block [:attributes :background-color])
         text-color-val (get-in block [:attributes :text-color])
         font-family-val (get-in block [:attributes :font-family])
         bg-color (if bg-color-val (m/Color bg-color-val) default-bg-color)
@@ -86,8 +86,11 @@
 
 (defn base-text-block [path block text-keys-atom text-style]
   (f/widget
+   :get {{{:flds [surface onSurface]} .-colorScheme
+          {:flds [bodyMedium]} .-textTheme} m/Theme}
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
    :let [matches (:matches search-state)
+         theme-colors {:surface surface :onSurface onSurface}
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -100,7 +103,7 @@
          alignment (get-in block [:attributes :align] :left)
          direction (get-in block [:attributes :direction] :ttb)
          ;; Get style attributes using helper function
-         style-attrs (get-block-style-attributes block)
+         style-attrs (get-block-style-attributes block theme-colors)
          bg-color (:bg-color style-attrs)
          ;; Merge text color and font family into text style
          final-text-style (create-block-text-style text-style style-attrs)]
@@ -138,16 +141,29 @@
                :text-keys-atom text-keys-atom})))))
 
 (defn paragraph-block [path block text-keys-atom]
-  (base-text-block path block text-keys-atom (m/TextStyle .color (m/Color 0xFF212121) .fontSize 16.0 .fontFamily default-font-family)))
+  (f/widget
+   :get {{{:flds [onSurface]} .-colorScheme
+          {:flds [bodyMedium]} .-textTheme} m/Theme}
+   (base-text-block path block text-keys-atom 
+                    (-> bodyMedium 
+                        (.copyWith .fontSize 16.0 .fontFamily default-font-family .color onSurface)))))
 
 (defn heading-block [path block text-keys-atom font-size]
-  (base-text-block path block text-keys-atom (m/TextStyle .color (m/Color 0xFF212121) .fontSize font-size .fontWeight m/FontWeight.bold .fontFamily default-font-family)))
+  (f/widget
+   :get {{{:flds [onSurface]} .-colorScheme
+          {:flds [headlineSmall]} .-textTheme} m/Theme}
+   (base-text-block path block text-keys-atom 
+                    (-> headlineSmall 
+                        (.copyWith .fontSize font-size .fontWeight m/FontWeight.bold .fontFamily default-font-family .color onSurface)))))
 
 (defn todo-block [path block text-keys-atom]
   (f/widget
+   :get {{{:flds [surface onSurface]} .-colorScheme
+          {:flds [bodyMedium]} .-textTheme} m/Theme}
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))
            checked? (f/$ (get-in (f/<! state/!editor-state) (conj [:doc :children (first path)] :data :checked)))]
    :let [matches (:matches search-state)
+         theme-colors {:surface surface :onSurface onSurface}
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -158,10 +174,11 @@
                                        (when (:is-current? m) idx))
                                      block-matches))
          ;; Get style attributes using helper function
-         style-attrs (get-block-style-attributes block)
+         style-attrs (get-block-style-attributes block theme-colors)
          bg-color (:bg-color style-attrs)
          text-color (:text-color style-attrs)
-         final-font-family (:font-family style-attrs)]
+         final-font-family (:font-family style-attrs)
+         text-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontFamily final-font-family .color text-color))]
    (m/Container
     .decoration (create-block-decoration bg-color)
     .padding (m/EdgeInsets.all 4.0)
@@ -174,7 +191,7 @@
              (selectable-mongol-text 
                {:path path 
                 :delta (get-in block [:data :delta])
-                :text-style (m/TextStyle .color text-color .fontSize 16.0 .fontFamily final-font-family)
+                :text-style text-style
                 :matches block-match-positions
                 :current-match-index (or block-current-index -1)
                 :text-keys-atom text-keys-atom})]))))
@@ -205,8 +222,11 @@
   "Render numbered list item"
   [path block text-keys-atom]
   (f/widget
+   :get {{{:flds [surface onSurface onSurfaceVariant]} .-colorScheme
+          {:flds [bodyMedium]} .-textTheme} m/Theme}
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
    :let [matches (:matches search-state)
+         theme-colors {:surface surface :onSurface onSurface :onSurfaceVariant onSurfaceVariant}
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -219,10 +239,12 @@
          index (get-in block [:data :index] 1)
          level (get-in block [:data :level] 0)
          ;; Get style attributes using helper function
-         style-attrs (get-block-style-attributes block)
+         style-attrs (get-block-style-attributes block theme-colors)
          bg-color (:bg-color style-attrs)
          text-color (:text-color style-attrs)
-         final-font-family (:font-family style-attrs)]
+         final-font-family (:font-family style-attrs)
+         label-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontWeight m/FontWeight.bold .color onSurfaceVariant .fontFamily default-font-family))
+         text-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontFamily final-font-family .color text-color))]
    (m/Column
     .crossAxisAlignment m/CrossAxisAlignment.start
     .children
@@ -231,10 +253,7 @@
       .alignment m/Alignment.topCenter
       .padding (m/EdgeInsets.only .top 2.0)
       .child (mgl/MongolText (get-numbered-label index level)
-                             .style (m/TextStyle .fontSize 16.0
-                                                 .fontWeight m/FontWeight.bold
-                                                 .color m/Colors.blueGrey
-                                                 .fontFamily default-font-family)))
+                             .style label-style))
      (m/Expanded
       .child
       (m/Container
@@ -253,8 +272,11 @@
   "Render bulleted list item"
   [path block text-keys-atom]
   (f/widget
+   :get {{{:flds [surface onSurface onSurfaceVariant]} .-colorScheme
+          {:flds [bodyMedium]} .-textTheme} m/Theme}
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
    :let [matches (:matches search-state)
+         theme-colors {:surface surface :onSurface onSurface :onSurfaceVariant onSurfaceVariant}
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -266,10 +288,12 @@
                                      block-matches))
          level (get-in block [:data :level] 0)
          ;; Get style attributes using helper function
-         style-attrs (get-block-style-attributes block)
+         style-attrs (get-block-style-attributes block theme-colors)
          bg-color (:bg-color style-attrs)
          text-color (:text-color style-attrs)
-         final-font-family (:font-family style-attrs)]
+         final-font-family (:font-family style-attrs)
+         bullet-color onSurfaceVariant
+         text-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontFamily final-font-family .color text-color))]
    (m/Column
     .crossAxisAlignment m/CrossAxisAlignment.start
     .children
@@ -284,21 +308,21 @@
                     .width 8.0
                     .height 8.0
                     .decoration (m/BoxDecoration
-                                 .color m/Colors.blueGrey
+                                 .color bullet-color
                                  .shape m/BoxShape.circle))
                  ;; Level 1: Hollow circle
                  1 (m/Container
                     .width 8.0
                     .height 8.0
                     .decoration (m/BoxDecoration
-                                 .border (m/Border.all .color m/Colors.blueGrey .width 1.5)
+                                 .border (m/Border.all .color bullet-color .width 1.5)
                                  .shape m/BoxShape.circle))
                  ;; Level 2: Solid square
                  2 (m/Container
                     .width 6.0
                     .height 6.0
                     .decoration (m/BoxDecoration
-                                 .color m/Colors.blueGrey)))))
+                                 .color bullet-color)))))
      (m/Expanded
       .child
       (m/Container
@@ -317,8 +341,11 @@
   "Render quote block"
   [path block text-keys-atom]
   (f/widget
+   :get {{{:flds [primaryContainer onPrimaryContainer primary]} .-colorScheme
+          {:flds [bodyMedium]} .-textTheme} m/Theme}
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
    :let [matches (:matches search-state)
+         theme-colors {:primaryContainer primaryContainer :onPrimaryContainer onPrimaryContainer :primary primary}
          current-match-index (:current-match-index search-state)
          block-matches (get-block-matches matches path current-match-index)
          block-match-positions (map (fn [m] {:start (:start (:match m))
@@ -329,17 +356,19 @@
                                        (when (:is-current? m) idx))
                                      block-matches))
          ;; Get style attributes using helper function, with quote-specific defaults
-         style-attrs (get-block-style-attributes block 
-                                                   :default-text-color (m/Color 0xFF444444)
-                                                   :default-bg-color (m/Color 0xFFF0F7FF))
+         style-attrs (get-block-style-attributes block theme-colors
+                                                   :default-text-color onPrimaryContainer
+                                                   :default-bg-color primaryContainer)
          bg-color (:bg-color style-attrs)
          text-color (:text-color style-attrs)
-         final-font-family (:font-family style-attrs)]
+         final-font-family (:font-family style-attrs)
+         text-style (-> bodyMedium (.copyWith .fontStyle m/FontStyle.italic .fontSize 16.0 .color text-color .fontFamily final-font-family))
+         border-color primary]
    (m/Container
     .padding (m/EdgeInsets.symmetric .vertical 20.0 .horizontal 12.0)
     .decoration (m/BoxDecoration
                  .border (m/Border .top (m/BorderSide
-                                         .color (m/Color 0xFF2196F3)
+                                         .color border-color
                                          .width 4.0))
                  .color bg-color
                  .borderRadius (m/BorderRadius.only 
@@ -348,10 +377,7 @@
     .child (selectable-mongol-text 
             {:path path 
              :delta (get-in block [:data :delta])
-             :text-style (m/TextStyle .fontStyle m/FontStyle.italic 
-                                     .fontSize 16.0 
-                                     .color text-color
-                                     .fontFamily final-font-family)
+             :text-style text-style
              :matches block-match-positions
              :current-match-index (or block-current-index -1)
              :text-keys-atom text-keys-atom}))))
@@ -359,24 +385,31 @@
 (defn divider-block
   "Render divider line"
   [_path _block]
-  (m/Container
-   .width 2.0
-   .margin (m/EdgeInsets.symmetric .horizontal 24.0)
-   .decoration (m/BoxDecoration
-                .color (-> m/Colors.blueGrey (.withOpacity 0.2))
-                .borderRadius (m/BorderRadius.circular 1.0))))
+  (f/widget
+   :get {{{:flds [outlineVariant]} .-colorScheme} m/Theme}
+   (m/Container
+    .width 2.0
+    .margin (m/EdgeInsets.symmetric .horizontal 24.0)
+    .decoration (m/BoxDecoration
+                 .color (-> outlineVariant (.withOpacity 0.5))
+                 .borderRadius (m/BorderRadius.circular 1.0)))))
 
 (defn code-block
   "Render code block"
   [_path block]
-  (let [;; Get style attributes using helper function, with code-block-specific defaults
-        style-attrs (get-block-style-attributes block 
-                                                :default-text-color (m/Color 0xFFABB2BF)
-                                                :default-bg-color (m/Color 0xFF282C34)
-                                                :default-font "monospace")
-        bg-color (:bg-color style-attrs)
-        text-color (:text-color style-attrs)
-        font-family (:font-family style-attrs)]
+  (f/widget
+   :get {{{:flds [surfaceVariant onSurfaceVariant]} .-colorScheme
+          {:flds [bodySmall]} .-textTheme} m/Theme}
+   :let [theme-colors {:surfaceVariant surfaceVariant :onSurfaceVariant onSurfaceVariant}
+         ;; Get style attributes using helper function, with code-block-specific defaults
+         style-attrs (get-block-style-attributes block theme-colors
+                                                 :default-text-color onSurfaceVariant
+                                                 :default-bg-color surfaceVariant
+                                                 :default-font "monospace")
+         bg-color (:bg-color style-attrs)
+         text-color (:text-color style-attrs)
+         font-family (:font-family style-attrs)
+         text-style (-> bodySmall (.copyWith .fontFamily font-family .fontSize 14.0 .color text-color))]
     (m/Container
      .padding (m/EdgeInsets.all 16.0)
      .decoration (m/BoxDecoration
@@ -388,10 +421,7 @@
                                .offset (m/Offset 0.0 2.0))])
      .child (m/SelectableText
              (get-in block [:data :code] "")
-             .style (m/TextStyle
-                     .fontFamily font-family
-                     .fontSize 14.0
-                     .color text-color)))))
+             .style text-style))))
 
 (defn table-cell
   "Render table cell"
@@ -410,20 +440,27 @@
                       (* rowspan 120.0))
         alignment (or (:align attributes) (get cell :align :left))
         ;; Get style attributes using helper function (treat cell as block-like structure)
-        cell-block {:attributes attributes}
-        style-attrs (get-block-style-attributes cell-block 
-                                                :default-text-color (m/Color 0xFF000000)
-                                                :default-bg-color m/Colors.white)
-        bg-color (:bg-color style-attrs)
-        border-color-val (get attributes :border-color)
-        border-color (if border-color-val (m/Color border-color-val) (m/Color 0xFFE0E0E0))
-        border-width (get attributes :border-width 1.0)
-        align-value (case alignment
-                      :center m/Alignment.topCenter
-                      :right m/Alignment.topRight
-                      :left m/Alignment.topLeft
-                      m/Alignment.topLeft)]
-    (m/Stack
+        cell-block {:attributes attributes}]
+    (f/widget
+     :get {{{:flds [surface onSurface outlineVariant]} .-colorScheme
+            {:flds [bodyMedium]} .-textTheme} m/Theme}
+     :let [theme-colors {:surface surface :onSurface onSurface}
+           style-attrs (get-block-style-attributes cell-block theme-colors
+                                                   :default-text-color onSurface
+                                                   :default-bg-color surface)
+           bg-color (:bg-color style-attrs)
+           border-color-val (get attributes :border-color)
+           border-color (if border-color-val (m/Color border-color-val) outlineVariant)
+           border-width (get attributes :border-width 1.0)
+           align-value (case alignment
+                         :center m/Alignment.topCenter
+                         :right m/Alignment.topRight
+                         :left m/Alignment.topLeft
+                         m/Alignment.topLeft)
+           text-style (create-block-text-style 
+                       (-> bodyMedium (.copyWith .fontSize 16.0)) 
+                       style-attrs)]
+     (m/Stack
      .children
      [(m/Container
        .width cell-width
@@ -442,9 +479,7 @@
                         {:path cell-path
                          :delta current-delta
                          :text-keys-atom text-keys-atom
-                         :text-style (create-block-text-style 
-                                      (m/TextStyle .fontSize 16.0) 
-                                      style-attrs)}))))
+                         :text-style text-style}))))
       ;; Column Resizer (Right edge)
       (m/Positioned
        .right 0.0 .top 0.0 .bottom 0.0
@@ -464,7 +499,7 @@
                                        (let [delta (.-dy (.-delta details))
                                              current-height (nth row-heights row-idx)]
                                          (table-cmd/update-row-height! block-idx row-idx (+ current-height delta))))
-               .child (m/Container .height 8.0 .color m/Colors.transparent)))])))
+               .child (m/Container .height 8.0 .color m/Colors.transparent)))]))))
 
 (defn table-row
   "Render table row"
@@ -481,21 +516,23 @@
 (defn table-block
   "Render table block"
   [path block text-keys-atom]
-  (let [rows (get-in block [:data :rows] [])
-        col-widths (get-in block [:data :column-widths])
-        row-heights (get-in block [:data :row-heights])
-        ;; If no rows, create a default 2x2 table
-        default-rows (if (empty? rows)
-                       [{:cells [{:delta {:operations []} :attributes {:rowspan 1 :colspan 1}} 
-                                 {:delta {:operations []} :attributes {:rowspan 1 :colspan 1}}]}
-                        {:cells [{:delta {:operations []} :attributes {:rowspan 1 :colspan 1}} 
-                                 {:delta {:operations []} :attributes {:rowspan 1 :colspan 1}}]}]
-                       rows)]
+  (f/widget
+   :get {{{:flds [surfaceContainerHighest outline]} .-colorScheme} m/Theme}
+   :let [rows (get-in block [:data :rows] [])
+         col-widths (get-in block [:data :column-widths])
+         row-heights (get-in block [:data :row-heights])
+         ;; If no rows, create a default 2x2 table
+         default-rows (if (empty? rows)
+                        [{:cells [{:delta {:operations []} :attributes {:rowspan 1 :colspan 1}} 
+                                  {:delta {:operations []} :attributes {:rowspan 1 :colspan 1}}]}
+                         {:cells [{:delta {:operations []} :attributes {:rowspan 1 :colspan 1}} 
+                                  {:delta {:operations []} :attributes {:rowspan 1 :colspan 1}}]}]
+                        rows)]
     (m/Container
      .margin (m/EdgeInsets.symmetric .vertical 8.0)
      .decoration (m/BoxDecoration
-                  .color (m/Color 0xFFF8F9FA)
-                  .border (m/Border.all .color (m/Color 0xFFCFD8DC) .width 1.0)
+                  .color surfaceContainerHighest
+                  .border (m/Border.all .color outline .width 1.0)
                   .borderRadius (m/BorderRadius.circular 8.0)
                   .boxShadow [(m/BoxShadow 
                                .color (-> m/Colors.black (.withOpacity 0.05))

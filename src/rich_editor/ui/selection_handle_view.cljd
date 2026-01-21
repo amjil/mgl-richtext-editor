@@ -1,11 +1,14 @@
 (ns rich-editor.ui.selection-handle-view
   (:require
+   [cljd.flutter :as f]
    ["package:flutter/material.dart" :as m]))
 
 (defn selection-handle-widget [{:keys [type global-offset direction on-drag]}]
-  (let [handle-size 44.0
-        circle-size 14.0
-        direction (or direction :ttb) ;; Default to vertical text
+  (f/widget
+   :get {{{:flds [primary]} .-colorScheme} m/Theme}
+   :let [handle-size 44.0
+         circle-size 14.0
+         direction (or direction :ttb) ;; Default to vertical text
         ;; Use global coordinates directly since Stack is fill
         ;; For vertical text (:ttb), handles are on the right side
         ;; For horizontal text (:ltr, :rtl), handles are on top/bottom
@@ -38,5 +41,5 @@
                .child (m/Container
                        .width circle-size .height circle-size
                        .decoration (m/BoxDecoration
-                                    .color m/Colors.blue
+                                    .color primary
                                     .shape m/BoxShape.circle))))))))

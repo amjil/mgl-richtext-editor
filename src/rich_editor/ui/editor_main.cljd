@@ -63,6 +63,7 @@
              ;; and .dispose() is called automatically when unmounted.
              _kb-handler (init-keyboard!)
              _on-change-handler (init-on-change-callback! onChange)]
+   :get {{{:flds [surface]} .-colorScheme} m/Theme}
    :watch [blocks (f/$ (:children (:doc (f/<! !editor-state))))
            selection (f/$ (:selection (f/<! !editor-state)))
            has-focus (f/$ (some? (:focused-path (f/<! !editor-state))))
@@ -115,7 +116,7 @@
                                                                                 .scrollDirection m/Axis.horizontal
                                                                                 .physics (m/AlwaysScrollableScrollPhysics.)
                                                                                 .child (m/Container
-                                                                                        .color (m/Color 0xFFF5F5F5)
+                                                                                        .color surface
                                                                                         .child (m/Padding
                                                                                                 .padding (m/EdgeInsets.all 32.0)
                                                                                                 .child (m/Row
