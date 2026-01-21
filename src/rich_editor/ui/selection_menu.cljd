@@ -5,7 +5,7 @@
             [rich-editor.model.selection :as sel]
             [rich-editor.model.node :as node]
             [rich-editor.services.node-service :as node-service]
-            [rich-editor.selection-utils :as sel-util]
+            [rich-editor.utils.selection-utils :as sel-util]
             [rich-editor.services.selection-geometry :as geom]
             [rich-editor.services.command-registry :as cmd-registry]
             [rich-editor.utils.platform :as platform]

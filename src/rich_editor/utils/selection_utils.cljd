@@ -1,4 +1,4 @@
-(ns rich-editor.selection-utils
+(ns rich-editor.utils.selection-utils
   (:require [rich-editor.model.selection :as sel]
             ["package:flutter/widgets.dart" :as w]))
 

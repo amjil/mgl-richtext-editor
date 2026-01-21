@@ -2,7 +2,7 @@
   (:require [cljd.flutter :as f]
             [rich-editor.state :as state :refer [!editor-state]]
             [rich-editor.ui.text-utils :as text-utils]
-            [rich-editor.selection-utils :as sel-util]
+            [rich-editor.utils.selection-utils :as sel-util]
             [rich-editor.utils.delta :as delta-utils]
             [rich-editor.services.node-service :as node-service]
             ["package:flutter/material.dart" :as m]
