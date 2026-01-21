@@ -9,7 +9,8 @@
             [rich-editor.services.selection-geometry :as geom]
             [rich-editor.services.command-registry :as cmd-registry]
             ["package:flutter/material.dart" :as m]
-            ["package:flutter/foundation.dart" :as foundation]))
+            ["package:flutter/foundation.dart" :as foundation]
+            ["package:mongol/mongol.dart" :as mgl]))
 
 ;; =============================================================
 ;; Selection menu commands
@@ -51,20 +52,20 @@
    :context ctx
    :let [color-scheme (.-colorScheme (m/Theme.of ctx))]
    (m/Material
-    :color m/Colors.transparent
-    :child
+    .color m/Colors.transparent
+    .child
     (m/InkWell
-     :onTap on-pressed
-     :child
+     .onTap on-pressed
+     .child
      (m/Padding
-      :padding (m/EdgeInsets.symmetric :horizontal 16.0 :vertical 12.0)
-      :child
-      (m/Row
-       :mainAxisSize m/MainAxisSize.min
-       :children
-       [(m/Icon icon :size 20.0 :color (.-onSurface color-scheme))
-        (m/SizedBox :width 8.0)
-        (m/Text label :style (m/TextStyle :fontSize 14.0 :color (.-onSurface color-scheme)))]))))))
+      .padding (m/EdgeInsets.symmetric .horizontal 16.0 .vertical 12.0)
+      .child
+      (m/Column
+       .mainAxisSize m/MainAxisSize.min
+       .children
+       [(m/Icon icon .size 20.0 .color (.-onSurface color-scheme))
+        (m/SizedBox .height 8.0)
+        (mgl/MongolText label .style (m/TextStyle .fontSize 14.0 .color (.-onSurface color-scheme)))]))))))
 
 (defn selection-menu-content []
   (f/widget
@@ -84,16 +85,16 @@
    
    (if (or has-selection? (some? focused-path))
      (m/Container
-      :constraints (m/BoxConstraints :maxWidth (- screen-width 32.0))
-      :decoration (m/BoxDecoration
-                   :color surface
-                   :borderRadius (m/BorderRadius.circular 24.0)
-                   :boxShadow [(m/BoxShadow
-                                :color shadow-color
-                                :blurRadius 8.0
-                                :offset (m/Offset. 0.0 2.0))])
-      :clipBehavior m/Clip.hardEdge
-      :child
+      .constraints (m/BoxConstraints :maxWidth (- screen-width 32.0))
+      .decoration (m/BoxDecoration
+                   .color surface
+                   .borderRadius (m/BorderRadius.circular 24.0)
+                   .boxShadow [(m/BoxShadow
+                                .color shadow-color
+                                .blurRadius 8.0
+                                .offset (m/Offset. 0.0 2.0))])
+      .clipBehavior m/Clip.hardEdge
+      .child
       (let [;; Get commands from registry to break circular dependency
             copy-fn (cmd-registry/get-command :copy-selection!)
             cut-fn (cmd-registry/get-command :cut-selection!)
@@ -112,14 +113,19 @@
                                           (fn [] (when select-all-fn (select-all-fn)) (hide-selection-menu!)))])]
         (if use-horizontal-menu?
           (m/SingleChildScrollView
-           :scrollDirection m/Axis.horizontal
-           :child (m/Row :mainAxisSize m/MainAxisSize.min :children items))
+           .scrollDirection m/Axis.horizontal
+           .child 
+           (m/IntrinsicHeight
+            .child (m/Row
+                    .mainAxisSize m/MainAxisSize.min
+                    .crossAxisAlignment m/CrossAxisAlignment.stretch
+                    .children items)))
           (m/IntrinsicWidth
-           :child
+           .child
            (m/Column
-            :mainAxisSize m/MainAxisSize.min
-            :crossAxisAlignment m/CrossAxisAlignment.stretch
-            :children items)))))
+            .mainAxisSize m/MainAxisSize.min
+            .crossAxisAlignment m/CrossAxisAlignment.stretch
+            .children items)))))
      (m/SizedBox.shrink))))
 
 (defn selection-menu
@@ -145,7 +151,7 @@
                    (- y menu-height 16.0)
                    (if (< y 16.0) 16.0 y)))]
        (m/Positioned
-        :left left
-        :top top
-        :child (selection-menu-content)))
+        .left left
+        .top top
+        .child (selection-menu-content)))
      (m/SizedBox.shrink))))
