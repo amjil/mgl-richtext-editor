@@ -246,6 +246,7 @@
          label-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontWeight m/FontWeight.bold .color onSurfaceVariant .fontFamily default-font-family))
          text-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontFamily final-font-family .color text-color))]
    (m/Column
+    .mainAxisSize m/MainAxisSize.min
     .crossAxisAlignment m/CrossAxisAlignment.start
     .children
     [(m/Container
@@ -254,7 +255,8 @@
       .padding (m/EdgeInsets.only .top 2.0)
       .child (mgl/MongolText (get-numbered-label index level)
                              .style label-style))
-     (m/Expanded
+     (m/Flexible
+      .fit m/FlexFit.loose
       .child
       (m/Container
        .constraints (m/BoxConstraints .minWidth 16.0)
@@ -295,6 +297,7 @@
          bullet-color onSurfaceVariant
          text-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontFamily final-font-family .color text-color))]
    (m/Column
+    .mainAxisSize m/MainAxisSize.min
     .crossAxisAlignment m/CrossAxisAlignment.start
     .children
     [(m/Container
@@ -323,7 +326,8 @@
                     .height 6.0
                     .decoration (m/BoxDecoration
                                  .color bullet-color)))))
-     (m/Expanded
+     (m/Flexible
+      .fit m/FlexFit.loose
       .child
       (m/Container
        .constraints (m/BoxConstraints .minWidth 16.0)
@@ -567,14 +571,12 @@
      .padding (m/EdgeInsets.only .left 8.0 .right 8.0 .top 4.0 .bottom 2.0)
      .child (if (pos? level)
               (if (= direction :ttb)
-                (m/Column
-                 .mainAxisSize m/MainAxisSize.min
-                 .crossAxisAlignment m/CrossAxisAlignment.start
-                 .children [(m/SizedBox .height indent-width) child])
-                (m/Row
-                 .mainAxisSize m/MainAxisSize.min
-                 .crossAxisAlignment m/CrossAxisAlignment.start
-                 .children [(m/SizedBox .width indent-width) child]))
+                (m/Padding
+                 .padding (m/EdgeInsets.only .top indent-width)
+                 .child child)
+                (m/Padding
+                 .padding (m/EdgeInsets.only .left indent-width)
+                 .child child))
               child)))))
 
 
