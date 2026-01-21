@@ -1,5 +1,5 @@
 (ns rich-editor.command.formatting
-  "Text formatting commands (bold, italic, underline, etc.)"
+  "Text formatting commands (bold, italic, overline, etc.)"
   (:require [rich-editor.model.selection :as sel]
             [rich-editor.model.node :as node]
             [rich-editor.model.delta :as delta]
@@ -49,7 +49,7 @@
 
 (defn format-selection!
   "Format the selected text with the given attributes.
-   Attributes can be: {:bold true}, {:italic true}, {:underline true}, {:strikethrough true}, etc.
+   Attributes can be: {:bold true}, {:italic true}, {:overline true}, {:strikethrough true}, etc.
    Uses precise Delta operations to preserve existing formatting."
   ([attributes] (format-selection! state/!editor-state attributes))
   ([state attributes]
@@ -81,7 +81,7 @@
 
 (defn format-underline!
   ([] (format-underline! state/!editor-state))
-  ([state] (toggle-format! state :underline)))
+  ([state] (toggle-format! state :overline)))
 
 (defn format-strikethrough!
   ([] (format-strikethrough! state/!editor-state))

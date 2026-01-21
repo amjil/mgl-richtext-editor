@@ -101,7 +101,7 @@
                                               .fontWeight (if (get attrs :bold) m/FontWeight.bold m/FontWeight.normal)
                                               .fontStyle (if (get attrs :italic) m/FontStyle.italic m/FontStyle.normal)
                                               .decoration (cond 
-                                                            (get attrs :underline) m/TextDecoration.underline
+                                                            (get attrs :overline) m/TextDecoration.overline
                                                             (get attrs :strikethrough) m/TextDecoration.lineThrough
                                                             :else m/TextDecoration.none)
                                               .color (if-let [c (get attrs :color)] (parse-color c) nil)
