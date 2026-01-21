@@ -9,394 +9,154 @@
             ["package:flutter/services.dart" :as srv]
             ["package:flutter/gestures.dart" :as g]))
 
-;; --- Core processing logic ---
+;; --- Private helper functions: extract common logic ---
+
+(defn- get-clamped-offset 
+  "Calculate text offset from local coordinates, includes fallback logic for vertical layout"
+  [selectable ^m/RenderBox rb ^m/Offset local-pos]
+  (let [size (.-size rb)
+        text (.toPlainText (.-text selectable))
+        text-len (count text)
+        ;; 1. Basic conversion
+        clamped-local (m/Offset. (max 0.0 (min (.-width size) (.-dx local-pos)))
+                                 (max 0.0 (min (.-height size) (.-dy local-pos))))]
+    (try
+      (let [pos (.getPositionForOffset selectable clamped-local)
+            offset (.-offset pos)]
+        ;; 2. Special correction for Mongolian vertical layout:
+        ;; If getPositionForOffset returns the end but the actual click is in the top area, or at the edge, use ratio calculation
+        (if (and (> text-len 0)
+                 (or (= offset text-len) (= offset 0))
+                 (< (.-dy local-pos) (.-height size))
+                 (>= (.-dy local-pos) 0))
+          (let [ratio (/ (.-dy clamped-local) (.-height size))]
+            (-> (* ratio text-len) .round (max 0) (min text-len)))
+          offset))
+      (catch Exception e
+        (log/log-warn (str "Offset calculation failed, using ratio fallback: " e))
+        (let [ratio (/ (max 0.0 (min (.-height size) (.-dy local-pos))) (.-height size))]
+          (-> (* ratio text-len) .round (max 0) (min text-len)))))))
+
+(defn- update-editor-selection!
+  "Update editor selection, force refresh even if value is the same to ensure UI update"
+  [!editor-state new-sel]
+  (let [current-sel (:selection @!editor-state)]
+    ;; Update even if value is the same to ensure didUpdateWidget is called, triggering cursor repaint
+    (swap! !editor-state assoc :selection new-sel)
+    (if (not= current-sel new-sel)
+      (log/log-info (str "Selection updated: " new-sel))
+      (log/log-info (str "Forced selection refresh (same value): " new-sel)))))
+
+;; --- Exported API ---
+
 (defn handle-tap-down!
-  "handle the tap down event: locate the cursor or start selection"
   [!editor-state ^g/TapDownDetails details]
   (let [global-pos (.-globalPosition details)
-        node (node-service/get-node-at-offset global-pos)
-        ui-state @ui/!ui-state
-        last-double-tap-time (:last-double-tap-time ui-state)
-        current-time-ms (.-millisecondsSinceEpoch (dart:core/DateTime.now))
-        ;; Skip if double tap happened recently (within 300ms)
-        is-recent-double-tap? (and last-double-tap-time
-                                   (< (- current-time-ms last-double-tap-time) 300))]
-    (when is-recent-double-tap?
-      (log/log-info "[Cursor Positioning] skipping handle-tap-down! due to recent double tap"))
-    (when-not is-recent-double-tap?
-      (log/log-info (str "[Cursor Positioning] handle-tap-down! global-pos: " global-pos))
-      ;; Hide selection menu when clicking
+        ui-st @ui/!ui-state
+        now (.millisecondsSinceEpoch (dart:core/DateTime.now))
+        ;; Debounce logic
+        is-double-tap? (some-> (:last-double-tap-time ui-st) (- now) (abs) (< 300))]
+    
+    (when-not is-double-tap?
       (sel-menu/hide-selection-menu!)
-      (if-let [{:keys [path selectable render-box]} node]
-        (let [;; 1. Render box should already be laid out if attached
-              _ (when (and render-box (.-attached render-box))
-                  ;; Layout is typically complete when attached, no need to check needsLayout
-                  nil)
-              ;; 2. get the logical offset of the click position in the Mongolian block
-              local-pos (.globalToLocal render-box global-pos)
-              _ (log/log-info (str "[Cursor Positioning] path: " path ", local-pos: " local-pos))
-              ;; 3. For MongolRenderParagraph, ensure we're using the correct coordinate system
-              ;; MongolTextPainter expects coordinates in its own rotated coordinate system
-              ;; Clamp local position to render box bounds to handle out-of-bounds coordinates
-              render-box-size (.-size render-box)
-              render-box-width (.-width render-box-size)
-              render-box-height (.-height render-box-size)
-              text (.toPlainText (.-text selectable))
-              text-len (count text)
-              ;; Clamp local-pos to valid bounds before calling getPositionForOffset
-              clamped-local-pos (m/Offset. (max 0.0 (min render-box-width (.-dx local-pos)))
-                                           (max 0.0 (min render-box-height (.-dy local-pos))))
-              _ (when (or (not= (.-dx local-pos) (.-dx clamped-local-pos))
-                         (not= (.-dy local-pos) (.-dy clamped-local-pos)))
-                  (log/log-warn (str "[Cursor Positioning] local-pos clamped from " local-pos " to " clamped-local-pos)))
-              pos-in-block (try
-                            (let [result-pos (.getPositionForOffset selectable clamped-local-pos)
-                                  result-offset (.-offset result-pos)
-                                  ;; Check if getPositionForOffset returned an unexpected value (e.g., end offset for out-of-bounds)
-                                  ;; Use original local-pos (before clamping) to check if it was actually in bounds
-                                  original-dy (.-dy local-pos)
-                                  use-fallback-calculation? (and (or (= result-offset text-len)
-                                                                     (and (= result-offset 1)
-                                                                          (> text-len 1)))
-                                                                  (> text-len 0)
-                                                                  (< original-dy render-box-height)
-                                                                  (>= original-dy 0.0)
-                                                                  (>= (.-dx local-pos) (- render-box-width 50.0)) ;; Allow some margin for table cells
-                                                                  (<= (.-dx local-pos) (+ render-box-width 50.0)))]
-                              (if use-fallback-calculation?
-                                ;; Use fallback calculation based on y coordinate ratio for vertical text
-                                ;; This handles cases where getPositionForOffset returns incorrect results for edge coordinates
-                                (let [normalized-dy (max 0.0 (min render-box-height original-dy))
-                                      ratio (/ normalized-dy render-box-height)
-                                      calculated-offset (.round (* ratio text-len))
-                                      clamped-offset (max 0 (min text-len calculated-offset))]
-                                  (log/log-info (str "[Cursor Positioning] using fallback calculation - original-dy: " original-dy ", ratio: " ratio ", calculated-offset: " calculated-offset))
-                                  (m/TextPosition :offset clamped-offset))
-                                result-pos))
-                            (catch Exception e
-                              (log/log-warn (str "[Cursor Positioning] getPositionForOffset failed, using fallback: " e))
-                              ;; Fallback: try to get position using text length bounds and y coordinate
-                              (let [original-dy (.-dy local-pos)
-                                    normalized-dy (max 0.0 (min render-box-height original-dy))
-                                    ratio (/ normalized-dy render-box-height)
-                                    calculated-offset (.round (* ratio text-len))
-                                    clamped-offset (max 0 (min text-len calculated-offset))]
-                                (log/log-info (str "[Cursor Positioning] exception fallback - original-dy: " original-dy ", ratio: " ratio ", calculated-offset: " calculated-offset))
-                                (m/TextPosition :offset clamped-offset))))
-              offset-value (.-offset pos-in-block)
-              ;; 4. Ensure offset is within valid range
-              text (.toPlainText (.-text selectable))
-              text-len (count text)
-              clamped-offset (max 0 (min offset-value text-len))
-              new-pos (sel/make-position path clamped-offset)
-              ;; 5. create a collapsed selection region (i.e. cursor)
-              new-selection (sel/make-selection new-pos new-pos)
-              current-selection (:selection @!editor-state)]
-          (log/log-info (str "[Cursor Positioning] calculation completed - offset: " offset-value ", text-len: " text-len ", clamped-offset: " clamped-offset ", new-pos: " new-pos))
-          ;; Always ensure focus is requested to make cursor visible
+      (if-let [node (node-service/get-node-at-offset global-pos)]
+        (let [{:keys [path selectable render-box]} node
+              local-pos (.globalToLocal ^m/RenderBox render-box global-pos)
+              offset (get-clamped-offset selectable render-box local-pos)
+              new-pos (sel/make-position path offset)
+              new-sel (sel/make-selection new-pos new-pos)]
           (node-service/focus-node! path)
-          ;; Always update selection to ensure UI refresh, even if value is the same
-          ;; This ensures didUpdateWidget is called and setState triggers cursor repaint
-          (swap! !editor-state assoc :selection new-selection)
-          (if (not= current-selection new-selection)
-            (log/log-info (str "[Cursor Positioning] selection updated: " new-selection))
-            (log/log-info (str "[Cursor Positioning] forced selection refresh (same value): " new-selection)))
-          (swap! ui/!ui-state assoc :pan-start-position new-pos)) ;; record the starting point for drag usage
-        ;; click on the blank area, clear the selection
-        (do (log/log-info "[Cursor Positioning] clicked on blank area, clearing selection")
-            (swap! !editor-state assoc :selection nil)
+          (update-editor-selection! !editor-state new-sel)
+          (swap! ui/!ui-state assoc :pan-start-position new-pos))
+        ;; Click on blank area
+        (do (update-editor-selection! !editor-state nil)
             (swap! ui/!ui-state assoc :pan-start-position nil))))))
 
 (defn handle-secondary-tap-down!
-  "handle the right-click event: show the context menu at the click position"
+  "Handle right-click event: show context menu at click position"
   [!editor-state ^m/TapDownDetails details]
   (let [global-pos (.-globalPosition details)
         node (node-service/get-node-at-offset global-pos)
         state @!editor-state
         selection (:selection state)]
-    ;; 1. if there's no selection or clicking on a different node, move the cursor first
+    ;; 1. If there's no selection or clicking on a different node, move cursor first
     (when (or (nil? selection)
               (and (sel/collapsed? selection)
                    (not= (get-in selection [:start :path]) (:path node))))
       (handle-tap-down! !editor-state details))
-    ;; 2. show the selection menu (context menu) at the click position
+    ;; 2. Show selection menu (context menu) at click position
     (sel-menu/show-selection-menu! global-pos)))
 
 (defn handle-pan-start!
-  "handle the drag start event: set the starting position for selection"
   [!editor-state ^g/DragStartDetails details]
-  (let [global-pos (.-globalPosition details)
-        node (node-service/get-node-at-offset global-pos)]
-    (when-let [{:keys [path selectable render-box]} node]
-      (let [;; Render box should already be laid out if attached
-            _ (when (and render-box (.-attached render-box))
-                ;; Layout is typically complete when attached
-                nil)
-            ;; Calculate the logical coordinate
-            local-pos (.globalToLocal render-box global-pos)
-            ;; Get position with error handling
-            pos-in-block (try
-                          (.getPositionForOffset selectable local-pos)
-                          (catch Exception _
-                            (let [text (.toPlainText (.-text selectable))
-                                  text-len (count text)
-                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
-                                                                       0
-                                                                       text-len)))]
-                              (m/TextPosition :offset clamped-offset))))
-            offset-value (.-offset pos-in-block)
-            ;; Clamp offset to valid range
-            text (.toPlainText (.-text selectable))
-            text-len (count text)
-            clamped-offset (max 0 (min offset-value text-len))
-            start-pos (sel/make-position path clamped-offset)]
-        ;; Set the starting position for drag selection
+  (let [global-pos (.-globalPosition details)]
+    (if-let [{:keys [path selectable render-box]} (node-service/get-node-at-offset global-pos)]
+      (let [local-pos (.globalToLocal ^m/RenderBox render-box global-pos)
+            offset (get-clamped-offset selectable render-box local-pos)
+            start-pos (sel/make-position path offset)]
         (swap! ui/!ui-state assoc :pan-start-position start-pos)
-        ;; Also update the selection to collapsed at start position
-        (swap! !editor-state assoc :selection (sel/make-selection start-pos start-pos))))))
+        (update-editor-selection! !editor-state (sel/make-selection start-pos start-pos)))
+      (swap! ui/!ui-state assoc :pan-start-position nil))))
 
 (defn handle-pan-update!
-  "handle the drag update event: implement cross-block selection"
   [!editor-state ^g/DragUpdateDetails details viewport-size scroll-controller]
   (let [global-pos (.-globalPosition details)
-        node (node-service/get-node-at-offset global-pos)
-        state @!editor-state
-        ui-state @ui/!ui-state
-        start-pos (:pan-start-position ui-state)]
-
-    (when (and start-pos node)
-      (let [{:keys [path selectable render-box]} node
-            ;; Render box should already be laid out if attached
-            _ (when (and render-box (.-attached render-box))
-                ;; Layout is typically complete when attached
-                nil)
-            ;; calculate the logical coordinate corresponding to the current finger/mouse position
-            local-pos (.globalToLocal render-box global-pos)
-            ;; Get position with error handling
-            pos-in-block (try
-                          (.getPositionForOffset selectable local-pos)
-                          (catch Exception e
-                            (log/log-warn (str "[Text Selection] getPositionForOffset failed, using fallback: " e))
-                            (let [text (.toPlainText (.-text selectable))
-                                  text-len (count text)
-                                  clamped-offset (max 0 (min text-len (if (< (.-dx local-pos) (/ (.-width (.-size render-box)) 2))
-                                                                       0
-                                                                       text-len)))]
-                              (m/TextPosition :offset clamped-offset))))
-            offset-value (.-offset pos-in-block)
-            ;; Clamp offset to valid range
-            text (.toPlainText (.-text selectable))
-            text-len (count text)
-            clamped-offset (max 0 (min offset-value text-len))
-            current-pos (sel/make-position path clamped-offset)
-            ;; create a range from the starting point to the current point
-            new-selection (sel/make-selection start-pos current-pos)]
-
-        ;; 1. update the selection range only if it actually changed
-        (when (not= (:selection state) new-selection)
-          (log/log-info (str "[Text Selection] updating selection - start-pos: " start-pos ", current-pos: " current-pos ", new-selection: " new-selection))
-          (swap! !editor-state assoc :selection new-selection))
-
-        ;; 2. trigger automatic scrolling with smooth animation (for Mongolian horizontal scrolling layout)
+        start-pos (:pan-start-position @ui/!ui-state)]
+    (when-let [{:keys [path selectable render-box]} (and (some? start-pos) (node-service/get-node-at-offset global-pos))]
+      (let [local-pos (.globalToLocal ^m/RenderBox render-box global-pos)
+            offset (get-clamped-offset selectable render-box local-pos)
+            current-pos (sel/make-position path offset)
+            new-sel (sel/make-selection start-pos current-pos)]
+        (update-editor-selection! !editor-state new-sel)
         (scroll-service/check-auto-scroll global-pos viewport-size scroll-controller true)))))
 
-
 (defn handle-pan-end!
-  "handle the drag end"
   [!editor-state _]
-  ;; when the drag ends, usually no need to modify the selection, but can clear the temporary state
-  (let [state @!editor-state
-        selection (:selection state)]
-    (swap! ui/!ui-state dissoc :pan-start-position)
-    ;; Show selection menu if there's a non-collapsed selection
-    (when (and selection (not (sel/collapsed? selection)))
-      (sel-menu/show-menu-at-selection! selection))))
-
-;; --- helper logic: double/triple click (template) ---
+  (swap! ui/!ui-state dissoc :pan-start-position)
+  (let [sel (:selection @!editor-state)]
+    (when (and sel (not (sel/collapsed? sel)))
+      (sel-menu/show-menu-at-selection! sel))))
 
 (defn handle-double-tap!
-  "double click to select a word"
   [!editor-state global-pos]
-  (log/log-info (str "[Double Tap] handle-double-tap! global-pos: " global-pos))
-  ;; Record the double tap time to prevent onTapDown from overriding
-  (swap! ui/!ui-state assoc :last-double-tap-time (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
-  ;; Hide selection menu when double tapping
+  (swap! ui/!ui-state assoc :last-double-tap-time (.millisecondsSinceEpoch (dart:core/DateTime.now)))
   (sel-menu/hide-selection-menu!)
-  (let [node (node-service/get-node-at-offset global-pos)]
-    (if-let [{:keys [selectable render-box path]} node]
-      (try
-        (let [local-pos (.globalToLocal render-box global-pos)
-              pos-in-block (.getPositionForOffset selectable local-pos)
-              boundary (.getWordBoundary selectable pos-in-block)
-              start-offset (.-start boundary)
-              end-offset (.-end boundary)
-              new-selection (sel/make-selection
-                            (sel/make-position path start-offset)
-                            (sel/make-position path end-offset))]
-          (log/log-info (str "[Double Tap] word boundary found - start: " start-offset ", end: " end-offset ", path: " path))
-          (swap! !editor-state assoc :selection new-selection)
-          (log/log-info (str "[Double Tap] selection updated: " new-selection))
-          ;; Show selection menu after double tap selection, similar to drag selection
-          (when (and new-selection (not (sel/collapsed? new-selection)))
-            (sel-menu/show-menu-at-selection! new-selection)))
-        (catch Exception e
-          (log/log-warn (str "[Double Tap] failed to get word boundary: " e))))
-      (log/log-warn "[Double Tap] no node found at position"))))
+  (when-let [{:keys [selectable render-box path]} (node-service/get-node-at-offset global-pos)]
+    (try
+      (let [local-pos (.globalToLocal ^m/RenderBox render-box global-pos)
+            pos-in-block (.getPositionForOffset selectable local-pos)
+            boundary (.getWordBoundary selectable pos-in-block)
+            new-sel (sel/make-selection
+                      (sel/make-position path (.-start boundary))
+                      (sel/make-position path (.-end boundary)))]
+        (update-editor-selection! !editor-state new-sel)
+        (sel-menu/show-menu-at-selection! new-sel))
+      (catch Exception e (log/log-warn (str "Word selection failed: " e))))))
 
 (defn handle-long-press!
-  "long press to select a word and show selection menu"
   [!editor-state ^m/LongPressStartDetails details]
   (let [global-pos (.-globalPosition details)]
     (.selectionClick srv/HapticFeedback)
-    (handle-double-tap! !editor-state global-pos)
-    ;; After selecting word, show menu
-    (let [state @!editor-state
-          selection (:selection state)]
-      (when (and selection (not (sel/collapsed? selection)))
-        (sel-menu/show-menu-at-selection! selection)))))
+    ;; handle-double-tap! already shows the menu, no need to show it again
+    (handle-double-tap! !editor-state global-pos)))
 
 (defn handle-handle-drag!
-  "handle the logic of moving the selection handle.
-   !editor-state: the editor state atom
-   global-pos: the current global coordinate of the finger (Offset)
-   handle-type: the type of the handle to be moved (:start or :end)"
+  "Handle selection handle drag movement"
   [!editor-state global-pos handle-type]
   (.selectionClick srv/HapticFeedback)
-  (let [;; 1. use the coordinate to find the node the finger is on
-        node (node-service/get-node-at-offset global-pos)
-        ;; Fallback: if node not found, use the current selection's node
-        current-sel (:selection @!editor-state)
-        fallback-node (when (and (nil? node) current-sel)
-                        (let [fallback-pos (if (= handle-type :start)
-                                             (:start current-sel)
-                                             (:end current-sel))
-                              fallback-path (:path fallback-pos)]
-                          (when-let [fallback-data (node-service/get-selectable-by-path fallback-path)]
-                            (assoc fallback-data :path fallback-path))))
-        ;; Use node if found, otherwise use fallback
-        target-node (or node fallback-node)]
-    (when-let [{:keys [path selectable render-box]} target-node]
-      (let [;; 2. Render box should already be laid out if attached
-            attached? (and render-box (.-attached render-box))
-            ;; 3. If node is not attached, try to use the current selection position as fallback
-            ;; This prevents issues when node temporarily becomes DETACHED during drag
-            should-use-fallback? (not (and attached? node))
-            current-pos (when current-sel
-                         (if (= handle-type :start)
-                           (:start current-sel)
-                           (:end current-sel)))
-            ;; 4. call the MongolRenderParagraph logic to get the offset in the text
-            pos-in-block (if (and attached? node (not should-use-fallback?))
-                          (try
-                            (let [local-pos (.globalToLocal render-box global-pos)
-                                  render-box-size (.-size render-box)
-                                  render-box-width (.-width render-box-size)
-                                  render-box-height (.-height render-box-size)
-                                  text (.toPlainText (.-text selectable))
-                                  text-len (count text)
-                                  ;; For vertical text (Mongol), we need to clamp the local position to the render box bounds
-                                  ;; before calling getPositionForOffset, as it may return the end offset for out-of-bounds coordinates
-                                  ;; However, we should use the actual text height, not the render box height
-                                  ;; For vertical text, the text may not fill the entire render box height
-                                  clamped-local-pos (m/Offset. (max 0.0 (min render-box-width (.-dx local-pos)))
-                                                               (max 0.0 (min render-box-height (.-dy local-pos))))
-                                  _ (when (or (not= (.-dx local-pos) (.-dx clamped-local-pos))
-                                             (not= (.-dy local-pos) (.-dy clamped-local-pos)))
-                                      (log/log-warn (str "[Handle Drag] local-pos clamped from " local-pos " to " clamped-local-pos)))
-                                  result-pos (.getPositionForOffset selectable clamped-local-pos)
-                                  result-offset (.-offset result-pos)
-                                  ;; Check if getPositionForOffset returned the maximum offset, which might indicate
-                                  ;; that it's not handling the vertical text correctly, especially when local-pos
-                                  ;; is within the text bounds but getPositionForOffset returns the end offset
-                                  ;; We check the original local-pos (before clamping) to see if it's within bounds
-                                  original-dy (.-dy local-pos)
-                                  use-fallback-calculation? (and (= result-offset text-len)
-                                                                 (> text-len 0)
-                                                                 (< original-dy render-box-height)
-                                                                 (>= original-dy 0.0))]
-                              (if use-fallback-calculation?
-                                ;; Use fallback calculation based on y coordinate ratio for vertical text
-                                ;; Use the original local-pos y coordinate (not clamped) for more accurate calculation
-                                (let [normalized-dy (max 0.0 (min render-box-height original-dy))
-                                      ratio (/ normalized-dy render-box-height)
-                                      calculated-offset (.round (* ratio text-len))
-                                      clamped-offset (max 0 (min text-len calculated-offset))]
-                                  (m/TextPosition :offset clamped-offset))
-                                result-pos))
-                            (catch Exception e
-                              (log/log-warn (str "[Handle Drag] getPositionForOffset failed, using fallback: " e))
-                              (let [text (.toPlainText (.-text selectable))
-                                    text-len (count text)
-                                    local-pos (.globalToLocal render-box global-pos)
-                                    render-box-size (.-size render-box)
-                                    render-box-height (.-height render-box-size)
-                                    ;; For vertical text, use dy (vertical position) to determine offset
-                                    ;; Top of text (dy=0) = offset 0, bottom of text (dy=height) = offset text-len
-                                    normalized-dy (max 0.0 (min render-box-height (.-dy local-pos)))
-                                    ratio (/ normalized-dy render-box-height)
-                                    calculated-offset (.round (* ratio text-len))
-                                    clamped-offset (max 0 (min text-len calculated-offset))]
-                                (m/TextPosition :offset clamped-offset))))
-                          ;; Fallback when node not found or not attached: use current position or calculate from global position
-                          (let [text (.toPlainText (.-text selectable))
-                                text-len (count text)
-                                ;; If current position is in the same node, try to preserve it or adjust slightly
-                                current-offset (when (and current-pos (= path (:path current-pos)))
-                                                 (:offset current-pos))
-                                ;; If we have a current offset in the same node, try to keep it
-                                ;; Otherwise, try to find the nearest node or use boundary
-                                clamped-offset (cond
-                                                 ;; If we have a valid current offset in the same node, keep it
-                                                 (and current-offset (>= current-offset 0) (<= current-offset text-len))
-                                                 current-offset
-                                                 ;; Otherwise, try to find nearest node or use boundary
-                                                 :else
-                                                 (let [nearest-node (node-service/get-node-at-offset global-pos)
-                                                       nearest-path (when nearest-node (:path nearest-node))]
-                                                   (if (and nearest-path (= nearest-path path))
-                                                     ;; If nearest node is the same, try to calculate offset
-                                                     (let [nearest-render-box (:render-box nearest-node)
-                                                           nearest-attached? (and nearest-render-box (.-attached nearest-render-box))]
-                                                       (if nearest-attached?
-                                                         (try
-                                                           (let [nearest-local-pos (.globalToLocal nearest-render-box global-pos)
-                                                                 nearest-pos (.getPositionForOffset (:selectable nearest-node) nearest-local-pos)]
-                                                             (.-offset nearest-pos))
-                                                           (catch Exception _
-                                                             (if current-offset
-                                                               (max 0 (min text-len current-offset))
-                                                               (if (< (.-dy global-pos) 0) 0 text-len))))
-                                                         (if current-offset
-                                                           (max 0 (min text-len current-offset))
-                                                           (if (< (.-dy global-pos) 0) 0 text-len))))
-                                                     ;; If nearest node is different, use boundary based on direction
-                                                     (if current-offset
-                                                       (max 0 (min text-len current-offset))
-                                                       (if (< (.-dy global-pos) 0) 0 text-len)))))]
-                            (m/TextPosition :offset clamped-offset)))
-            offset-value (.-offset pos-in-block)
-            ;; Clamp offset to valid range
-            text (.toPlainText (.-text selectable))
-            text-len (count text)
-            clamped-offset (max 0 (min offset-value text-len))
-            ;; 5. construct the new logical position (Position)
-            new-point (sel/make-position path clamped-offset)]
-
-        ;; 5. atomically update the global selection state
-        (swap! !editor-state update :selection
-               (fn [current-sel]
-                 (if (nil? current-sel)
-                   ;; if there was no selection before (theoretically not possible), create a collapsed selection
-                   (sel/make-selection new-point new-point)
-                   ;; update the corresponding endpoint based on the handle type
-                   (let [updated-sel (if (= handle-type :start)
-                                       (assoc current-sel :start new-point)
-                                       (assoc current-sel :end new-point))
-                         ;; Normalize selection to ensure start <= end for correct rendering
-                         normalized-sel (sel/normalize updated-sel)]
-                     normalized-sel)))))
-      (when (nil? node)
-        (log/log-warn (str "[Handle Drag] node not found at global-pos: " global-pos ", and no fallback available"))))))
+  (let [node (node-service/get-node-at-offset global-pos)
+        current-sel (:selection @!editor-state)]
+    (when (and current-sel node)
+      (let [{:keys [path selectable render-box]} node
+            local-pos (.globalToLocal ^m/RenderBox render-box global-pos)
+            offset (get-clamped-offset selectable render-box local-pos)
+            new-point (sel/make-position path offset)
+            
+            ;; Update selection based on handle type
+            updated-sel (if (= handle-type :start)
+                          (assoc current-sel :start new-point)
+                          (assoc current-sel :end new-point))]
+        (update-editor-selection! !editor-state (sel/normalize updated-sel))))))
 
 ;; --- coordinate conversion tool ---
 
