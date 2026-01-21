@@ -3,6 +3,71 @@
             ["package:flutter/material.dart" :as m]))
 
 ;; =============================================================
+;; Constants
+;; =============================================================
+
+(def ^:private default-scroll-margin 40.0)
+(def ^:private drag-edge-threshold 100.0)
+(def ^:private cursor-edge-threshold 50.0)
+(def ^:private cursor-scroll-margin 20.0)
+(def ^:private auto-scroll-speed 15.0)
+(def ^:private drag-scroll-duration 100)
+(def ^:private cursor-scroll-duration 200)
+(def ^:private jump-scroll-duration 300)
+(def ^:private page-scroll-duration 200)
+
+;; =============================================================
+;; Helper Functions
+;; =============================================================
+
+(defn- get-scroll-position
+  "Get scroll position from controller, returns nil if not available"
+  [^m/ScrollController scroll-controller]
+  (when scroll-controller
+    (.-position scroll-controller)))
+
+(defn- execute-scroll
+  "Execute scroll with optional smooth animation
+   target-offset: target scroll offset
+   scroll-controller: scroll controller
+   smooth?: whether to use smooth scrolling
+   duration-ms: animation duration in milliseconds (default: jump-scroll-duration)"
+  ([target-offset scroll-controller smooth?]
+   (execute-scroll target-offset scroll-controller smooth? jump-scroll-duration))
+  ([target-offset scroll-controller smooth? duration-ms]
+   (when scroll-controller
+     (if smooth?
+       (.animateTo scroll-controller
+                  target-offset
+                  .duration (dart:core/Duration .milliseconds duration-ms)
+                  .curve m/Curves.easeInOut)
+       (.jumpTo scroll-controller target-offset)))))
+
+(defn- calculate-target-offset
+  "Calculate target scroll offset for a given global X position
+   global-x: global X coordinate
+   current-offset: current scroll offset
+   max-extent: maximum scroll extent
+   margin: margin from edge (default: default-scroll-margin)"
+  ([global-x current-offset max-extent]
+   (calculate-target-offset global-x current-offset max-extent default-scroll-margin))
+  ([global-x current-offset max-extent margin]
+   (-> (+ global-x current-offset)
+       (- margin)
+       (max 0.0)
+       (min max-extent))))
+
+(defn- get-node-global-x
+  "Get global X coordinate from a node path
+   Returns nil if node is not available or not attached"
+  [path]
+  (when-let [node (node-service/get-selectable-by-path path)]
+    (when-let [{:keys [render-box]} node]
+      (when (.-attached render-box)
+        (let [global-pos (.localToGlobal render-box (m/Offset.zero))]
+          (.-dx global-pos))))))
+
+;; =============================================================
 ;; Auto-scroll optimization
 ;; =============================================================
 
@@ -16,136 +81,97 @@
    (check-auto-scroll global-pos viewport-size scroll-controller false))
   ([global-pos viewport-size ^m/ScrollController scroll-controller smooth?]
    (let [dx (.-dx global-pos)
-         edge-threshold 100.0
          viewport-width (.-width viewport-size)
-         position (.-position scroll-controller)]
-     (when position
+         position (get-scroll-position scroll-controller)]
+     (when (and position (not (.-outOfRange position)))
        (let [current-offset (.-pixels position)
-             max-extent (.-maxScrollExtent position)
-             scroll-speed 15.0]
+             max-extent (.-maxScrollExtent position)]
          (cond
            ;; When dragging to right edge, scroll right
-           (and (> dx (- viewport-width edge-threshold))
+           (and (> dx (- viewport-width drag-edge-threshold))
                 (< current-offset max-extent))
-           (if smooth?
-             (.animateTo scroll-controller
-                        (min (+ current-offset scroll-speed) max-extent)
-                        .duration (dart:core/Duration .milliseconds 100)
-                        .curve m/Curves.easeOut)
-             (.jumpTo scroll-controller (min (+ current-offset scroll-speed) max-extent)))
+           (execute-scroll (min (+ current-offset auto-scroll-speed) max-extent)
+                          scroll-controller smooth? drag-scroll-duration)
 
-          ;; When dragging to left edge, scroll left
-          (and (< dx edge-threshold)
-               (> current-offset 0.0))
-          (if smooth?
-            (.animateTo scroll-controller
-                       (max (- current-offset scroll-speed) 0.0)
-                       .duration (dart:core/Duration .milliseconds 100)
-                       .curve m/Curves.easeOut)
-            (.jumpTo scroll-controller (max (- current-offset scroll-speed) 0.0)))))))))
+           ;; When dragging to left edge, scroll left
+           (and (< dx drag-edge-threshold)
+                (> current-offset 0.0))
+           (execute-scroll (max (- current-offset auto-scroll-speed) 0.0)
+                          scroll-controller smooth? drag-scroll-duration)))))))
 
 (defn check-cursor-auto-scroll
   "Check and execute auto-scroll during cursor movement
    selection: current selection (contains cursor position)
-   scroll-controller: scroll controller"
+   scroll-controller: scroll controller
+   
+   Note: This function uses global coordinates. For proper viewport-relative
+   calculation, the render-box should be converted to viewport coordinates."
   [selection scroll-controller]
-   (when (and selection scroll-controller)
-     (let [position (.-position scroll-controller)]
-       (when position
-         (let [cursor-path (:path (:start selection))
-               node (node-service/get-selectable-by-path cursor-path)]
-           (when-let [{:keys [render-box]} node]
-             (when (.-attached render-box)
-               (let [global-pos (.localToGlobal render-box (m/Offset.zero))
-                     cursor-x (.-dx global-pos)
-                     viewport-width (.-viewportDimension position)
-                     current-offset (.-pixels position)
-                     max-extent (.-maxScrollExtent position)
-                     edge-threshold 50.0
-                     scroll-margin 20.0]
-                ;; If cursor is at left edge of viewport (on screen), scroll left
-                (when (and (< cursor-x edge-threshold)
-                           (> current-offset 0.0))
-                  (let [target-offset (max (- current-offset (- edge-threshold cursor-x) scroll-margin) 0.0)]
-                    (.animateTo scroll-controller
-                               target-offset
-                               .duration (dart:core/Duration .milliseconds 200)
-                               .curve m/Curves.easeInOut)))
-                ;; If cursor is at right edge of viewport (on screen), scroll right
-                (when (and (> cursor-x (- viewport-width edge-threshold))
-                           (< current-offset max-extent))
-                  (let [target-offset (min (+ current-offset (- cursor-x (- viewport-width edge-threshold)) scroll-margin) max-extent)]
-                    (.animateTo scroll-controller
-                               target-offset
-                               .duration (dart:core/Duration .milliseconds 200)
-                               .curve m/Curves.easeInOut)))))))))))
+  (when (and selection scroll-controller)
+    (let [position (get-scroll-position scroll-controller)]
+      (when (and position (not (.-outOfRange position)))
+        (let [cursor-path (:path (:start selection))
+              cursor-x (get-node-global-x cursor-path)]
+          (when cursor-x
+            (let [viewport-width (.-viewportDimension position)
+                  current-offset (.-pixels position)
+                  max-extent (.-maxScrollExtent position)]
+              ;; If cursor is at left edge of viewport, scroll left
+              (when (and (< cursor-x cursor-edge-threshold)
+                         (> current-offset 0.0))
+                (let [target-offset (max (- current-offset (- cursor-edge-threshold cursor-x) cursor-scroll-margin) 0.0)]
+                  (execute-scroll target-offset scroll-controller true cursor-scroll-duration)))
+              ;; If cursor is at right edge of viewport, scroll right
+              (when (and (> cursor-x (- viewport-width cursor-edge-threshold))
+                         (< current-offset max-extent))
+                (let [target-offset (min (+ current-offset (- cursor-x (- viewport-width cursor-edge-threshold)) cursor-scroll-margin) max-extent)]
+                  (execute-scroll target-offset scroll-controller true cursor-scroll-duration))))))))))
 
 ;; =============================================================
 ;; Scroll control
 ;; =============================================================
+
+(defn scroll-to-path
+  "Scroll to a node at the given path
+   path: node path
+   scroll-controller: scroll controller
+   smooth?: whether to use smooth scrolling (default true)
+   margin: margin from edge (default: default-scroll-margin)"
+  ([path scroll-controller]
+   (scroll-to-path path scroll-controller true))
+  ([path scroll-controller smooth?]
+   (scroll-to-path path scroll-controller smooth? default-scroll-margin))
+  ([path scroll-controller smooth? margin]
+   (when (and path scroll-controller)
+     (let [position (get-scroll-position scroll-controller)
+           global-x (get-node-global-x path)]
+       (when (and position global-x (not (.-outOfRange position)))
+         (let [current-offset (.-pixels position)
+               max-extent (.-maxScrollExtent position)
+               target-offset (calculate-target-offset global-x current-offset max-extent margin)]
+           (execute-scroll target-offset scroll-controller smooth? jump-scroll-duration)))))))
 
 (defn scroll-to-selection
   "Scroll to selection position
    selection: current selection
    scroll-controller: scroll controller
    smooth?: whether to use smooth scrolling (default true)"
-  ([selection ^m/ScrollController scroll-controller]
+  ([selection scroll-controller]
    (scroll-to-selection selection scroll-controller true))
-  ([selection ^m/ScrollController scroll-controller smooth?]
-   (when (and selection scroll-controller)
-     (let [position (.-position scroll-controller)]
-       (when position
-         (let [start-path (:path (:start selection))
-               node (node-service/get-selectable-by-path start-path)]
-           (when-let [{:keys [render-box]} node]
-             (when (.-attached render-box)
-               (let [global-pos (.localToGlobal render-box (m/Offset.zero))
-                     target-x (.-dx global-pos)
-                     current-offset (.-pixels position)
-                     max-extent (.-maxScrollExtent position)
-                     ;; Calculate target scroll position to align to left of viewport with 40px margin
-                     ;; doc-x = target-x (screen) + current-offset
-                     target-offset (-> (+ target-x current-offset)
-                                       (- 40.0)
-                                       (max 0.0)
-                                       (min max-extent))]
-                 (if smooth?
-                   (.animateTo scroll-controller
-                              target-offset
-                              .duration (dart:core/Duration .milliseconds 300)
-                              .curve m/Curves.easeInOut)
-                   (.jumpTo scroll-controller target-offset)))))))))))
+  ([selection scroll-controller smooth?]
+   (when selection
+     (let [start-path (:path (:start selection))]
+       (scroll-to-path start-path scroll-controller smooth?)))))
 
 (defn scroll-to-block
   "Scroll to specified block position
    block-path: block path
    scroll-controller: scroll controller
    smooth?: whether to use smooth scrolling (default true)"
-  ([block-path ^m/ScrollController scroll-controller]
+  ([block-path scroll-controller]
    (scroll-to-block block-path scroll-controller true))
-  ([block-path ^m/ScrollController scroll-controller smooth?]
-   (when (and block-path scroll-controller)
-     (let [position (.-position scroll-controller)]
-       (when position
-         (let [node (node-service/get-selectable-by-path block-path)]
-           (when-let [{:keys [render-box]} node]
-             (when (.-attached render-box)
-               (let [global-pos (.localToGlobal render-box (m/Offset.zero))
-                     target-x (.-dx global-pos)
-                     current-offset (.-pixels position)
-                     max-extent (.-maxScrollExtent position)
-                     ;; Calculate target scroll position to align block to left of viewport with 40px margin
-                     ;; doc-x = target-x (screen) + current-offset
-                     target-offset (-> (+ target-x current-offset)
-                                       (- 40.0)
-                                       (max 0.0)
-                                       (min max-extent))]
-                 (if smooth?
-                   (.animateTo scroll-controller
-                              target-offset
-                              .duration (dart:core/Duration .milliseconds 300)
-                              .curve m/Curves.easeInOut)
-                   (.jumpTo scroll-controller target-offset)))))))))))
+  ([block-path scroll-controller smooth?]
+   (scroll-to-path block-path scroll-controller smooth?)))
 
 ;; =============================================================
 ;; Page Navigation (Page Up/Down)
@@ -159,23 +185,30 @@
   [scroll-controller]
   (reset! !global-scroll-controller scroll-controller))
 
+(defn- scroll-page
+  "Internal function to scroll one page in the specified direction
+   direction: :up or :down
+   scroll-controller: scroll controller"
+  [direction scroll-controller]
+  (let [position (get-scroll-position scroll-controller)]
+    (when (and position (not (.-outOfRange position)))
+      (let [viewport-width (.-viewportDimension position)
+            current-offset (.-pixels position)
+            max-extent (.-maxScrollExtent position)
+            target-offset (case direction
+                           :up (max (- current-offset viewport-width) 0.0)
+                           :down (min (+ current-offset viewport-width) max-extent))]
+        (execute-scroll target-offset scroll-controller true page-scroll-duration)))))
+
 (defn scroll-page-up
   "Scroll up one page (Page Up)
    For horizontal scrolling editor, scrolls one page width
    scroll-controller: scroll controller (optional, if nil uses global reference)"
   ([]
    (scroll-page-up @!global-scroll-controller))
-  ([^m/ScrollController scroll-controller]
+  ([scroll-controller]
    (when scroll-controller
-     (let [position (.-position scroll-controller)]
-       (when position
-         (let [viewport-width (.-viewportDimension position)
-               current-offset (.-pixels position)
-               target-offset (max (- current-offset viewport-width) 0.0)]
-           (.animateTo scroll-controller
-                      target-offset
-                      .duration (dart:core/Duration .milliseconds 200)
-                      .curve m/Curves.easeInOut)))))))
+     (scroll-page :up scroll-controller))))
 
 (defn scroll-page-down
   "Scroll down one page (Page Down)
@@ -183,15 +216,6 @@
    scroll-controller: scroll controller (optional, if nil uses global reference)"
   ([]
    (scroll-page-down @!global-scroll-controller))
-  ([^m/ScrollController scroll-controller]
+  ([scroll-controller]
    (when scroll-controller
-     (let [position (.-position scroll-controller)]
-       (when position
-         (let [viewport-width (.-viewportDimension position)
-               current-offset (.-pixels position)
-               max-extent (.-maxScrollExtent position)
-               target-offset (min (+ current-offset viewport-width) max-extent)]
-           (.animateTo scroll-controller
-                       target-offset
-                       .duration (dart:core/Duration .milliseconds 200)
-                       .curve m/Curves.easeInOut)))))))
+     (scroll-page :down scroll-controller))))
