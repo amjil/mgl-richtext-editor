@@ -235,7 +235,10 @@
                             (sel/make-position path end-offset))]
           (log/log-info (str "[Double Tap] word boundary found - start: " start-offset ", end: " end-offset ", path: " path))
           (swap! !editor-state assoc :selection new-selection)
-          (log/log-info (str "[Double Tap] selection updated: " new-selection)))
+          (log/log-info (str "[Double Tap] selection updated: " new-selection))
+          ;; Show selection menu after double tap selection, similar to drag selection
+          (when (and new-selection (not (sel/collapsed? new-selection)))
+            (sel-menu/show-menu-at-selection! new-selection)))
         (catch Exception e
           (log/log-warn (str "[Double Tap] failed to get word boundary: " e))))
       (log/log-warn "[Double Tap] no node found at position"))))
