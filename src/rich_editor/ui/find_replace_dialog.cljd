@@ -2,9 +2,9 @@
   (:require [cljd.flutter :as f]
             [rich-editor.ui-state :as ui]
             [rich-editor.command.search-commands :as search-cmd]
+            [rich-editor.utils.platform :as platform]
             [components.text-field :refer [text-field]]
             ["package:flutter/material.dart" :as m]
-            ["package:flutter/foundation.dart" :as foundation]
             ["package:mongol/mongol.dart" :as mgl]))
 
 ;; =============================================================
@@ -15,7 +15,6 @@
   "Find and replace dialog component"
   []
   (f/widget
-   :context ctx
    :get {{{:flds [surface onSurfaceVariant scrim]} .-colorScheme} m/Theme
          {{:flds [width]} .-size} m/MediaQuery}
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
@@ -30,8 +29,7 @@
          match-info (if (pos? match-count)
                       (str (inc current-index) " / " match-count)
                       "No matches")
-         is-mobile? (or (= foundation/defaultTargetPlatform m/TargetPlatform.android)
-                        (= foundation/defaultTargetPlatform m/TargetPlatform.iOS))
+         is-mobile? (platform/is-mobile?)
          use-vertical-layout? (or is-mobile? (< width 600.0))
          button-padding (if use-vertical-layout?
                           (m/EdgeInsets.symmetric :horizontal 12.0 :vertical 24.0)

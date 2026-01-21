@@ -8,10 +8,10 @@
    [rich-editor.model.delta :as delta-model]
    [rich-editor.model.node :as node]
    [rich-editor.utils.delta :as delta-utils]
+   [rich-editor.utils.platform :as platform]
    [virtual-keyboard.keyboard :as keyboard]
             [virtual-keyboard.options :as keyboard-options]
-            ["package:flutter/material.dart" :as m]
-            ["package:flutter/foundation.dart" :as foundation]))
+            ["package:flutter/material.dart" :as m]))
 
 ;; =============================================================
 ;; Mongolian virtual keyboard component
@@ -301,9 +301,7 @@
    References mgl-notes-app's search-panel Column layout"
   [{:keys [child show-keyboard?]}]
   (f/widget
-   :let [platform foundation/defaultTargetPlatform
-         is-mobile? (or (= platform m/TargetPlatform.iOS)
-                       (= platform m/TargetPlatform.android))
+   :let [is-mobile? (platform/is-mobile?)
          show-toolbar? (or show-keyboard? (not is-mobile?))]
    (m/Column
     .mainAxisSize m/MainAxisSize.max

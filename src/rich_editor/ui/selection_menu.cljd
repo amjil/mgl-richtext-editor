@@ -8,8 +8,8 @@
             [rich-editor.selection-utils :as sel-util]
             [rich-editor.services.selection-geometry :as geom]
             [rich-editor.services.command-registry :as cmd-registry]
+            [rich-editor.utils.platform :as platform]
             ["package:flutter/material.dart" :as m]
-            ["package:flutter/foundation.dart" :as foundation]
             ["package:mongol/mongol.dart" :as mgl]))
 
 ;; =============================================================
@@ -77,10 +77,7 @@
    :get {{{:flds [surface scrim]} .-colorScheme} m/Theme}
    :watch [selection (f/$ (:selection (f/<! state/!editor-state)))
            focused-path (f/$ (:focused-path (f/<! state/!editor-state)))]
-   :let [is-mobile? (or (not foundation/kIsWeb)
-                        (let [platform foundation/defaultTargetPlatform]
-                          (or (= platform m/TargetPlatform.iOS)
-                              (= platform m/TargetPlatform.android))))
+   :let [is-mobile? (platform/is-mobile?)
          screen-width (.-width (.-size (m/MediaQuery.of ctx)))
          is-small-screen? (< screen-width 600.0)
          use-horizontal-menu? (or is-mobile? is-small-screen?)

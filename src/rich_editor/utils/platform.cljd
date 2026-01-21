@@ -1,0 +1,10 @@
+(ns rich-editor.utils.platform
+  (:require ["package:flutter/material.dart" :as m]
+            ["package:flutter/foundation.dart" :as foundation]))
+
+(defn is-mobile?
+  "检测当前平台是否为移动设备（iOS 或 Android）"
+  []
+  (let [platform foundation/defaultTargetPlatform]
+    (or (= platform m/TargetPlatform.iOS)
+        (= platform m/TargetPlatform.android))))

@@ -16,6 +16,7 @@
             [rich-editor.services.scroll-service :as scroll-service]
             [rich-editor.services.desktop-input-service :as desktop-input]
             [rich-editor.services.layout-service :as layout-service]
+            [rich-editor.utils.platform :as platform]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/services.dart" :as srv]
             ["package:flutter/foundation.dart" :as foundation]
@@ -70,9 +71,7 @@
            slash-command-active? (f/$ (:slash-command-active (f/<! ui/!ui-state)))]
    :let [text-keys-atom (atom {})
          has-selection (some? selection)
-         is-mobile? (let [platform foundation/defaultTargetPlatform]
-                      (or (= platform m/TargetPlatform.iOS)
-                          (= platform m/TargetPlatform.android)))
+         is-mobile? (platform/is-mobile?)
          show-keyboard? (and is-mobile? (or has-selection has-focus))
          
          _ (when (and (nil? selection) (seq blocks))
