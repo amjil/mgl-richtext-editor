@@ -22,30 +22,61 @@
                                  (max 0.0 (min (.-height size) (.-dy local-pos))))]
     (try
       (let [pos (.getPositionForOffset selectable clamped-local)
-            offset (.-offset pos)]
+            offset (.-offset pos)
+            dy-pos (.-dy local-pos)
+            height (.-height size)
+            ;; Check if click is very close to top (within 2% of height from top)
+            very-near-top? (< dy-pos (* height 0.02))]
         ;; 2. Special correction for Mongolian vertical layout:
-        ;; If getPositionForOffset returns the end but the actual click is in the top area, or at the edge, use ratio calculation
-        (if (and (> text-len 0)
-                 (or (= offset text-len) (= offset 0))
-                 (< (.-dy local-pos) (.-height size))
-                 (>= (.-dy local-pos) 0))
-          (let [ratio (/ (.-dy clamped-local) (.-height size))]
+        ;; - Generally trust getPositionForOffset result, especially for edge values
+        ;; - Only use ratio calculation when there's a clear and significant mismatch
+        (cond
+          ;; Case 1: getPositionForOffset returns text-len - trust it (it means click is at or past the end)
+          (= offset text-len)
+          text-len
+          
+          ;; Case 2: getPositionForOffset returns 0 and click is very near top - trust it
+          (and (= offset 0) very-near-top?)
+          0
+          
+          ;; Case 3: getPositionForOffset returns 0 but click is clearly not at top (more than 20% down)
+          ;; This is a significant mismatch - use ratio calculation
+          (and (= offset 0) (> dy-pos (* height 0.2)))
+          (let [ratio (/ (.-dy clamped-local) height)]
             (-> (* ratio text-len) .round (max 0) (min text-len)))
+          
+          :else
+          ;; Normal case: use the offset directly (trust getPositionForOffset)
           offset))
       (catch Exception e
         (log/log-warn (str "Offset calculation failed, using ratio fallback: " e))
         (let [ratio (/ (max 0.0 (min (.-height size) (.-dy local-pos))) (.-height size))]
           (-> (* ratio text-len) .round (max 0) (min text-len)))))))
 
+(defonce ^:private last-selection-log-time (atom 0))
+(defonce ^:private last-selection-value (atom nil))
+
 (defn- update-editor-selection!
   "Update editor selection, force refresh even if value is the same to ensure UI update"
   [!editor-state new-sel]
-  (let [current-sel (:selection @!editor-state)]
+  (let [current-sel (:selection @!editor-state)
+        now (.millisecondsSinceEpoch (dart:core/DateTime.now))
+        time-since-last-log (- now @last-selection-log-time)
+        selection-changed? (not= current-sel new-sel)]
     ;; Update even if value is the same to ensure didUpdateWidget is called, triggering cursor repaint
     (swap! !editor-state assoc :selection new-sel)
-    (if (not= current-sel new-sel)
-      (log/log-info (str "Selection updated: " new-sel))
-      (log/log-info (str "Forced selection refresh (same value): " new-sel)))))
+    ;; Only log if selection actually changed, or if same value but haven't logged in 500ms
+    (if selection-changed?
+      (do
+        (log/log-info (str "Selection updated: " new-sel))
+        (reset! last-selection-log-time now)
+        (reset! last-selection-value new-sel))
+      ;; For same value, only log occasionally to reduce noise
+      (when (or (>= time-since-last-log 500)
+                (not= @last-selection-value new-sel))
+        (log/log-info (str "Forced selection refresh (same value): " new-sel))
+        (reset! last-selection-log-time now)
+        (reset! last-selection-value new-sel)))))
 
 ;; --- Exported API ---
 
