@@ -5,8 +5,8 @@
    ["package:flutter/foundation.dart" :as foundation]
    ["package:mgl_editor_core/desktop_text_input_client.dart" :refer [DesktopTextInputClient]]
    [clojure.string]
-   [rich-editor.model.node :as node]
    [rich-editor.command.text-commands :as cmd]
+   [rich-editor.command.text-commands-helpers :as helpers]
    [rich-editor.state :as state]
    [rich-editor.model.selection :as sel]
    [rich-editor.utils.delta :as delta-utils]
@@ -22,6 +22,24 @@
 (defonce ^:private ^DesktopTextInputClient text-input-client-instance (atom nil))
 (defonce ^:private last-attached-path (atom nil))
 
+(defn- get-cross-block-text
+  "Get text from cross-block selection"
+  [doc start-idx end-idx start-offset end-offset]
+  (let [text-parts (loop [idx start-idx
+                          parts []]
+                     (if (> idx end-idx)
+                       parts
+                       (let [block (get-in doc [:children idx])
+                             current-delta (get-in block [:data :delta])
+                             copy-start (if (= idx start-idx) start-offset 0)
+                             copy-end (if (= idx end-idx) 
+                                        end-offset 
+                                        (helpers/get-delta-text-length current-delta))
+                             text (delta-utils/delta->text 
+                                   (delta/slice-delta current-delta copy-start copy-end))]
+                         (recur (inc idx) (conj parts text)))))]
+    (clojure.string/join "\n" text-parts)))
+
 (defn- get-current-text []
   (let [editor-state @state/!editor-state
         selection (:selection editor-state)]
@@ -30,106 +48,80 @@
             start-path (:path (:start normalized))
             end-path (:path (:end normalized))
             start-offset (:offset (:start normalized))
-            end-offset (:offset (:end normalized))]
+            end-offset (:offset (:end normalized))
+            doc (:doc editor-state)]
         (if (= start-path end-path)
           ;; Single block selection
-          (let [ks (node/path->ks start-path)
-                delta-ks (if (some #{:delta} start-path) ks (conj ks :data :delta))
-                delta (get-in (:doc editor-state) delta-ks)]
-            (if delta (delta-utils/delta->text delta) ""))
-          ;; Cross-block selection - concatenate text from multiple blocks
-          (let [start-idx (first start-path)
-                end-idx (first end-path)
-                text-parts (loop [idx start-idx
-                                  parts []]
-                             (if (> idx end-idx)
-                               parts
-                               (let [block (get-in (:doc editor-state) [:children idx])
-                                     current-delta (get-in block [:data :delta])
-                                     copy-start (if (= idx start-idx) start-offset 0)
-                                     copy-end (if (= idx end-idx) 
-                                                end-offset 
-                                                (count (delta-utils/delta->text current-delta)))
-                                     text (delta-utils/delta->text 
-                                           (delta/slice-delta current-delta copy-start copy-end))]
-                                 (recur (inc idx) (conj parts text)))))
-                full-text (clojure.string/join "\n" text-parts)]
-            full-text)))
+          (let [delta (helpers/get-delta-at-path doc start-path)]
+            (delta-utils/delta->text delta))
+          ;; Cross-block selection
+          (get-cross-block-text doc (first start-path) (first end-path) start-offset end-offset)))
       "")))
+
+(defn- clamp-offset
+  "Clamp offset to valid range and log warning"
+  [offset text-len offset-name]
+  (let [clamped (max 0 (min offset text-len))
+        diff (max (- offset clamped) (- clamped offset))]
+    (when (and (not= offset clamped) (> diff 1))
+      (log/log-warn (str "[Desktop Input] get-current-selection corrected " offset-name " - original: " offset ", corrected: " clamped ", text-len: " text-len)))
+    clamped))
+
+(defn- calculate-cross-block-selection-offsets
+  "Calculate offsets for cross-block selection"
+  [doc start-idx end-idx start-offset end-offset]
+  (let [start-block (get-in doc [:children start-idx])
+        start-delta (get-in start-block [:data :delta])
+        start-block-text (delta-utils/delta->text start-delta)
+        start-block-len (count start-block-text)
+        start-block-selected-len (- start-block-len start-offset)
+        ;; Calculate cumulative length of intermediate blocks (with newlines)
+        intermediate-len (if (= start-idx end-idx)
+                           0
+                           (loop [idx (inc start-idx)
+                                  total 0]
+                             (if (>= idx end-idx)
+                               total
+                               (let [block (get-in doc [:children idx])
+                                     current-delta (get-in block [:data :delta])
+                                     block-len (helpers/get-delta-text-length current-delta)]
+                                 (recur (inc idx) (+ total block-len 1)))))) ; +1 for newline
+        newline-len (if (= start-idx end-idx) 0 1)
+        final-end-offset (+ start-block-selected-len newline-len intermediate-len end-offset)]
+    {:start-offset start-offset
+     :end-offset final-end-offset}))
 
 (defn- get-current-selection []
   (let [editor-state @state/!editor-state
         selection (:selection editor-state)]
-    ;; Reduce log noise, only output during debugging
-    ;; (log/log-info (str "[Desktop Input] get-current-selection - selection: " selection))
     (if selection
       (let [normalized (sel/normalize selection)
             start-path (:path (:start normalized))
             end-path (:path (:end normalized))
             start-offset (:offset (:start normalized))
-            end-offset (:offset (:end normalized))]
+            end-offset (:offset (:end normalized))
+            doc (:doc editor-state)]
         (if (= start-path end-path)
           ;; Single block selection
-          (let [ks (node/path->ks start-path)
-                delta-ks (if (some #{:delta} start-path) ks (conj ks :data :delta))
-                delta (get-in (:doc editor-state) delta-ks)
-                text (if delta (delta-utils/delta->text delta) "")
+          (let [delta (helpers/get-delta-at-path doc start-path)
+                text (delta-utils/delta->text delta)
                 text-len (count text)
-                clamped-start (max 0 (min start-offset text-len))
-                clamped-end (max 0 (min end-offset text-len))
-                result (w/TextSelection
-                        :baseOffset clamped-start
-                        :extentOffset clamped-end)
-                ;; Only warn when offset is out of range and difference is significant (avoid noise from normal corrections on empty text)
-                ;; It's normal for offset to be corrected from 1 to 0 when text is empty, no warning needed
-                start-diff (max (- start-offset clamped-start) (- clamped-start start-offset))
-                end-diff (max (- end-offset clamped-end) (- clamped-end end-offset))]
-            (when (and (not= start-offset clamped-start) (> start-diff 1))
-              (log/log-warn (str "[Desktop Input] get-current-selection corrected start-offset - original: " start-offset ", corrected: " clamped-start ", text-len: " text-len)))
-            (when (and (not= end-offset clamped-end) (> end-diff 1))
-              (log/log-warn (str "[Desktop Input] get-current-selection corrected end-offset - original: " end-offset ", corrected: " clamped-end ", text-len: " text-len)))
-            result)
-          ;; Cross-block selection - calculate offsets in concatenated text
-          (let [start-idx (first start-path)
-                end-idx (first end-path)
-                ;; Calculate the length of text from start block (from start-offset to end)
-                start-block (get-in (:doc editor-state) [:children start-idx])
-                start-delta (get-in start-block [:data :delta])
-                start-block-text (if start-delta (delta-utils/delta->text start-delta) "")
-                start-block-len (count start-block-text)
-                start-block-selected-len (- start-block-len start-offset)
-                ;; Calculate cumulative length of intermediate blocks (with newlines)
-                intermediate-len (if (= start-idx end-idx)
-                                   0
-                                   (loop [idx (inc start-idx)
-                                          total 0]
-                                     (if (>= idx end-idx)
-                                       total
-                                       (let [block (get-in (:doc editor-state) [:children idx])
-                                             current-delta (get-in block [:data :delta])
-                                             block-text (if current-delta (delta-utils/delta->text current-delta) "")
-                                             block-len (count block-text)]
-                                         (recur (inc idx) (+ total block-len 1)))))) ; +1 for newline
-                ;; Start offset is just the offset in the first block
-                final-start-offset start-offset
-                ;; End offset = start block selected length + newline (if cross-block) + intermediate blocks length + end block offset
-                newline-len (if (= start-idx end-idx) 0 1)
-                final-end-offset (+ start-block-selected-len newline-len intermediate-len end-offset)
+                clamped-start (clamp-offset start-offset text-len "start-offset")
+                clamped-end (clamp-offset end-offset text-len "end-offset")]
+            (w/TextSelection
+             :baseOffset clamped-start
+             :extentOffset clamped-end))
+          ;; Cross-block selection
+          (let [{:keys [start-offset end-offset]} (calculate-cross-block-selection-offsets 
+                                                    doc (first start-path) (first end-path) 
+                                                    start-offset end-offset)
                 text (get-current-text)
                 text-len (count text)
-                clamped-start (max 0 (min final-start-offset text-len))
-                clamped-end (max 0 (min final-end-offset text-len))
-                result (w/TextSelection
-                        :baseOffset clamped-start
-                        :extentOffset clamped-end)
-                ;; Only warn when offset is out of range and difference is significant
-                start-diff (max (- final-start-offset clamped-start) (- clamped-start final-start-offset))
-                end-diff (max (- final-end-offset clamped-end) (- clamped-end final-end-offset))]
-            (when (and (not= final-start-offset clamped-start) (> start-diff 1))
-              (log/log-warn (str "[Desktop Input] get-current-selection corrected start-offset - original: " final-start-offset ", corrected: " clamped-start ", text-len: " text-len)))
-            (when (and (not= final-end-offset clamped-end) (> end-diff 1))
-              (log/log-warn (str "[Desktop Input] get-current-selection corrected end-offset - original: " final-end-offset ", corrected: " clamped-end ", text-len: " text-len)))
-            result)))
+                clamped-start (clamp-offset start-offset text-len "start-offset")
+                clamped-end (clamp-offset end-offset text-len "end-offset")]
+            (w/TextSelection
+             :baseOffset clamped-start
+             :extentOffset clamped-end))))
       (w/TextSelection.collapsed :offset 0))))
 
 (defn- init-client! []
