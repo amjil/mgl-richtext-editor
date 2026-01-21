@@ -101,44 +101,20 @@
            (m/Padding
             :padding (m/EdgeInsets.only :top 8.0)
             :child
-            (if use-vertical-layout?
-              ;; Mobile Replace
-              (m/Column
-               :mainAxisSize m/MainAxisSize.min
-               :children
-               [(text-field
-                 {:controller replace-controller
-                  :hint "Enter replacement text"
-                  :max-lines 1 ;; 限制为单行
-                  :decoration (m/InputDecoration :labelText "Replace With" :border (m/OutlineInputBorder))
-                  :on-changed (fn [value] (search-cmd/update-replace-term! value))})
-                (m/Padding
-                 :padding (m/EdgeInsets.only :top 8.0)
-                 :child
-                 (m/Row
-                  :mainAxisAlignment m/MainAxisAlignment.spaceEvenly
-                  :children
-                  [(mgl/MongolElevatedButton :onPressed (when (pos? match-count) (fn [] (search-cmd/replace-current! replace-term)))
-                                     :child (mgl/MongolText "Replace")
-                                     :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))
-                   (mgl/MongolElevatedButton :onPressed (when (pos? match-count) (fn [] (search-cmd/replace-all! replace-term)))
-                                     :child (mgl/MongolText "Replace All")
-                                     :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))]))])
-              ;; Desktop Replace
-              (m/Row
-               :children
-               [(m/Expanded
-                 :child (text-field
-                         {:controller replace-controller
-                          :hint "Enter replacement text"
-                          :max-lines 1 ;; 限制为单行
-                          :decoration (m/InputDecoration :labelText "Replace With" :border (m/OutlineInputBorder))
-                          :on-changed (fn [value] (search-cmd/update-replace-term! value))}))
-                (mgl/MongolElevatedButton :onPressed (when (pos? match-count) (fn [] (search-cmd/replace-current! replace-term)))
-                                  :child (mgl/MongolText "Replace")
-                                  :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))
-                (mgl/MongolElevatedButton :onPressed (when (pos? match-count) (fn [] (search-cmd/replace-all! replace-term)))
-                                  :child (mgl/MongolText "Replace All")
-                                  :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))])))
+            (m/Column
+             :children
+             [(m/Expanded
+               :child (text-field
+                       {:controller replace-controller
+                        :hint "Enter replacement text"
+                        :max-lines 1
+                        :decoration (m/InputDecoration :labelText "Replace With" :border (m/OutlineInputBorder))
+                        :on-changed (fn [value] (search-cmd/update-replace-term! value))}))
+              (mgl/MongolElevatedButton :onPressed (when (pos? match-count) (fn [] (search-cmd/replace-current! replace-term)))
+                                        :child (mgl/MongolText "Replace")
+                                        :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))
+              (mgl/MongolElevatedButton :onPressed (when (pos? match-count) (fn [] (search-cmd/replace-all! replace-term)))
+                                        :child (mgl/MongolText "Replace All")
+                                        :style (m/ButtonStyle :padding (m/MaterialStateProperty.all button-padding)))]))
            (m/SizedBox.shrink))])))
      (m/SizedBox.shrink))))
