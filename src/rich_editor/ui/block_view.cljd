@@ -298,12 +298,12 @@
          text-style (-> bodyMedium (.copyWith .fontSize 16.0 .fontFamily final-font-family .color text-color))]
    (m/Column
     .mainAxisSize m/MainAxisSize.min
-    .crossAxisAlignment m/CrossAxisAlignment.start
+    .crossAxisAlignment m/CrossAxisAlignment.center
     .children
     [(m/Container
       .height 36.0
       .alignment m/Alignment.topCenter
-      .padding (m/EdgeInsets.only .top 4.0)
+      .padding (m/EdgeInsets.only .top 2.0)
       .child (let [bullet-type (mod level 3)]
                (case bullet-type
                  ;; Level 0: Solid circle

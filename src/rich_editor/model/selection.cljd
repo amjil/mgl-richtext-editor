@@ -50,7 +50,10 @@
     (if (not= path-cmp 0)
       path-cmp
       ;; if the paths are the same, compare the offsets
-      (- (:offset pos1) (:offset pos2)))))
+      ;; handle nil offsets by treating them as 0
+      (let [offset1 (or (:offset pos1) 0)
+            offset2 (or (:offset pos2) 0)]
+        (- offset1 offset2)))))
 
 (defn position-before? [pos1 pos2] (< (position-compare pos1 pos2) 0))
 (defn position-after? [pos1 pos2] (> (position-compare pos1 pos2) 0))
@@ -62,7 +65,7 @@
 (defn collapsed?
   "check if the selection is collapsed (i.e. just a cursor, no selected text)"
   [{:keys [start end]}]
-  (and (= (:offset start) (:offset end))
+  (and (= (or (:offset start) 0) (or (:offset end) 0))
        (path-equals? (:path start) (:path end))))
 
 (defn normalize
