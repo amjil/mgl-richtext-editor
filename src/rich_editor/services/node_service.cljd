@@ -3,145 +3,88 @@
             ["package:flutter/widgets.dart" :as widgets]
             [rich-editor.utils.logger :as log]))
 
-;; --- global node registry ---
-;; storage structure: {path-vector {:render-box RenderBox :selectable SelectableMixin :focus-node FocusNode}}
+;; --- State Storage ---
+
+;; Original registry: {path-vector {:render-box RenderBox :selectable SelectableMixin :focus-node FocusNode}}
 (defonce !node-registry (atom {}))
+
+;; Cache index: automatically maintained by watch
 (defonce !nodes-by-top-level (atom {}))
 (defonce !sorted-top-levels (atom []))
 
+;; Focus throttling
+(defonce ^:private !last-focus-time (atom {}))
+
+;; --- Geometry Helper Functions ---
+
+(defn- get-node-rect ^r/Rect [node]
+  (let [^r/RenderBox rb (:render-box node)]
+    (when (and rb (.-attached rb))
+      (let [origin (.localToGlobal rb r/Offset.zero)]
+        (r/Rect.fromLTWH (.-dx origin) (.-dy origin) 
+                         (.-width (.-size rb)) (.-height (.-size rb)))))))
+
+(defn- squared-distance-to-point ^double [^r/Rect rect ^r/Offset point]
+  (let [dx (max 0.0 (- (.-left rect) (.-dx point)) (- (.-dx point) (.-right rect)))
+        dy (max 0.0 (- (.-top rect) (.-dy point)) (- (.-dy point) (.-bottom rect)))]
+    (+ (* dx dx) (* dy dy))))
+
+;; --- Cache Maintenance ---
+
 (defn- rebuild-cache! [new-registry]
-  (let [registry-size (count new-registry)
-        registry-keys (keys new-registry)
-        ;; group-by expects a collection, so we need to convert map to seq of entries first
-        ;; Each entry is [path value], we group by (first path) which is the top-level index
-        grouped (group-by (fn [[path _]] (first path)) (seq new-registry))
+  (let [grouped (group-by (fn [[path _]] (first path)) (seq new-registry))
         sorted-keys (vec (sort (keys grouped)))]
-    (log/log-info (str "[Cache Rebuild] rebuild-cache! - registry size: " registry-size ", registry keys: " registry-keys))
-    (log/log-info (str "[Cache Rebuild] grouped keys: " (keys grouped) ", grouped size: " (count grouped)))
-    (log/log-info (str "[Cache Rebuild] sorted-keys: " sorted-keys))
     (reset! !nodes-by-top-level grouped)
-    (reset! !sorted-top-levels sorted-keys)))
+    (reset! !sorted-top-levels sorted-keys)
+    (log/log-info (str "[Cache] Rebuilt. Top-level blocks: " (count sorted-keys)))))
 
-;; Keep cache in sync
+;; Core mechanism: ensure data consistency through watch, eliminating the risk of manual maintenance
+(remove-watch !node-registry :node-cache)
 (add-watch !node-registry :node-cache
-  (fn [_ _ old-registry new-registry]
-    (log/log-info (str "[Cache Rebuild] ⚠️ watch triggered - old registry size: " (count old-registry) ", new registry size: " (count new-registry)))
-    (rebuild-cache! new-registry)))
+  (fn [_ _ _ new-reg] (rebuild-cache! new-reg)))
 
-;; Initial sync for hot-reloads
-(log/log-info (str "[Cache Rebuild] initial sync - registry size: " (count @!node-registry)))
+;; Initial sync (for hot reload)
 (rebuild-cache! @!node-registry)
 
-;; --- register and unregister ---
+;; --- Exported API ---
 
-(defn register-node!
-  "when the MongolRichText component is mounted or rendered, cache its render object"
-  [path render-box selectable focus-node]
-  (let [was-registered? (contains? @!node-registry path)
-        old-size (count @!node-registry)]
-    ;; swap! will trigger the add-watch, which will automatically rebuild cache
-    (swap! !node-registry assoc path {:render-box render-box
-                                      :selectable selectable
-                                      :focus-node focus-node})
-    ;; Manually rebuild cache as fallback (watch might not trigger after hot reload)
-    (let [new-registry @!node-registry
-          cache-size (count @!sorted-top-levels)
-          registry-size (count new-registry)]
-      ;; Only log when registering a new node (not re-registering existing one)
-      (when-not was-registered?
-        (log/log-info (str "[Node Registration] register-node! - path: " path ", size before: " old-size ", size after: " registry-size)))
-      ;; Rebuild cache if it's empty or if registry size changed (new node added)
-      (when (or (zero? cache-size) (not= cache-size registry-size))
-        (log/log-info (str "[Node Registration] cache needs rebuild - registry size: " registry-size ", cache size: " cache-size))
-        (rebuild-cache! new-registry)))))
+(defn register-node! [path render-box selectable focus-node]
+  (swap! !node-registry assoc path 
+         {:render-box render-box
+          :selectable selectable
+          :focus-node focus-node}))
 
-(defn unregister-node!
-  "when the component is destroyed, prevent memory leaks"
-  [path]
-  ;; swap! will trigger the add-watch, which will automatically rebuild cache
+(defn unregister-node! [path]
   (swap! !node-registry dissoc path))
-
-(defonce ^:private last-focus-request-time (atom {})) ;; {path timestamp-ms}
 
 (defn focus-node! [path]
   (when-let [node (get @!node-registry path)]
-    (when-let [focus-node (:focus-node node)]
-      ;; Only re-request focus if not already focused, or if last request was > 100ms ago
-      ;; This prevents excessive focus requests while still ensuring cursor visibility
-      (let [now-ms (.-millisecondsSinceEpoch (dart:core/DateTime.now))
-            last-time (get @last-focus-request-time path 0)
-            time-since-last-request (- now-ms last-time)
-            should-request? (or (not (.-hasFocus focus-node))
-                               (> time-since-last-request 100))] ;; Throttle to max once per 100ms
-        (when should-request?
-          (swap! last-focus-request-time assoc path now-ms)
-          (if (.-hasFocus focus-node)
-            ;; If already has focus, only re-request if throttling allows
-            ;; This reduces excessive focus requests while maintaining cursor visibility
-            (do
-              (log/log-info (str "[Focus] focus-node! called, path: " path ", already has focus, re-requesting to trigger update (throttled)"))
-              (try
-                (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
-                  (.addPostFrameCallback widgets-binding-instance
-                    (fn [_]
-                      ;; Request focus again to trigger focus change event
-                      (.requestFocus focus-node))))
-                (catch Exception _e
-                  ;; Fallback: try immediate request
-                  (.requestFocus focus-node))))
-            ;; Request focus if not already focused
-            (do
-              (log/log-info (str "[Focus] focus-node! called, path: " path ", focus-node exists?: " (some? focus-node)))
-              ;; Use addPostFrameCallback to ensure the widget is fully built before requesting focus
-              ;; This is necessary because requestFocus might fail if called before the widget is fully rendered
-              (try
-                ;; Use WidgetsBinding.instance (same as SchedulerBinding.instance)
-                (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
-                  (.addPostFrameCallback widgets-binding-instance
-                    (fn [_]
-                      (log/log-info (str "[Focus] deferred focus request, path: " path))
-                      (.requestFocus focus-node)
-                      ;; Focus change is asynchronous, check after a short delay
-                      (.addPostFrameCallback widgets-binding-instance
-                        (fn [_]
-                          (log/log-info (str "[Focus] focus request completed, hasFocus: " (.-hasFocus focus-node))))))))
-                (catch Exception e
-                  ;; Fallback: try immediate request if SchedulerBinding is not available
-                  (log/log-warn (str "[Focus] SchedulerBinding unavailable, using immediate request: " e))
-                  (.requestFocus focus-node)
-                  ;; Check focus status after a short delay
-                  (try
-                    (let [widgets-binding-instance (.-instance widgets/WidgetsBinding)]
-                      (.addPostFrameCallback widgets-binding-instance
-                        (fn [_]
-                          (log/log-info (str "[Focus] immediate request completed, hasFocus: " (.-hasFocus focus-node))))))
-                    (catch Exception _e
-                      ;; Ignore errors in fallback focus check
-                      nil)))))))))
-    (when-not (get @!node-registry path)
-      (log/log-warn (str "[Focus] ⚠️ node not registered, path: " path)))))
-
-;; --- core query functions ---
+    (let [^widgets/FocusNode fn-obj (:focus-node node)
+          now (.millisecondsSinceEpoch (dart:core/DateTime.now))
+          last-time (get @!last-focus-time path 0)
+          ;; Allow request when throttled by 100ms or currently not focused
+          should-request? (or (not (.-hasFocus fn-obj))
+                              (> (- now last-time) 100))]
+      (when (and fn-obj should-request?)
+        (swap! !last-focus-time assoc path now)
+        (try
+          (let [binding (widgets/WidgetsBinding.instance)]
+            (.addPostFrameCallback binding
+              (fn [_] (when (.-canRequestFocus fn-obj) (.requestFocus fn-obj)))))
+          (catch Exception _ (.requestFocus fn-obj)))))))
 
 (defn get-node-at-offset
-  "find the node data corresponding to the global coordinate (Offset) using binary search for efficiency"
-  [global-offset]
+  "Use binary search to locate top-level block, then find nearest node within block through geometric determination"
+  [^r/Offset global-offset]
   (let [top-indices @!sorted-top-levels
         nodes-map @!nodes-by-top-level
         target-x (.-dx global-offset)
         target-y (.-dy global-offset)
-        n (count top-indices)
-        registry-size (count @!node-registry)
-        registry-keys (keys @!node-registry)]
-    ;; Log cache state when cache is empty or when binary search might fail
-    (when (or (zero? n) (and (pos? registry-size) (zero? n)))
-      (log/log-info (str "[Node Lookup] get-node-at-offset - global-offset: " global-offset ", top-indices count: " n ", registry size: " registry-size ", registry keys: " registry-keys ", nodes-map keys: " (keys nodes-map))))
+        n (count top-indices)]
     (if (zero? n)
-      (do
-        (log/log-warn (str "[Node Lookup] cache is empty, using direct registry traversal - top-indices: " top-indices ", nodes-map keys: " (keys nodes-map)))
-        ;; Fallback: directly search all nodes in registry
-        (if (zero? registry-size)
-          nil
+      ;; Fallback when cache is empty: directly iterate registry
+      (let [registry @!node-registry]
+        (when (pos? (count registry))
           (let [best-result
                 (reduce (fn [best [path {:keys [render-box selectable]}]]
                           (if (and render-box (.-attached render-box))
@@ -165,133 +108,52 @@
                                                (if (> target-y bottom)
                                                  (- target-y bottom)
                                                  0.0))
-                                      ;; Use squared distance to avoid sqrt (just for comparison)
                                       dist-sq (+ (* dist-x dist-x) (* dist-y dist-y))]
-                                  (if (or (nil? best) (< dist-sq (get best :dist-sq 1.7976931348623157e+308)))
+                                  (if (or (nil? best) (< dist-sq (get best :dist-sq 1.797e308)))
                                     {:path path :selectable selectable :render-box render-box :dist-sq dist-sq}
                                     best))))
                             best))
                         nil
-                        @!node-registry)]
-            (when (and best-result (or (nil? (:dist-sq best-result)) (< (:dist-sq best-result) (* 200.0 200.0))))
-              (log/log-info (str "[Node Lookup] ✅ found node via direct traversal: " (:path best-result)))
+                        registry)]
+            (when (and best-result (or (nil? (:dist-sq best-result)) (< (:dist-sq best-result) 40000.0)))
               (dissoc best-result :dist-sq)))))
       (loop [low 0
              high (dec n)
              best-node nil
-             min-dist 1.7976931348623157e+308]
+             min-dist-sq 40000.0] ;; 200.0^2 initial threshold
         (if (<= low high)
           (let [mid (quot (+ low high) 2)
                 top-idx (nth top-indices mid)
-                block-nodes (get nodes-map top-idx)
-                _ (when (nil? block-nodes)
-                    (log/log-warn (str "[Node Lookup] ⚠️ block-nodes is nil for top-idx: " top-idx ", nodes-map keys: " (keys nodes-map))))
-                
-                ;; 1. Check all nodes in this top-level block
-                block-result
-                (if block-nodes
-                  (loop [entries (seq block-nodes)
-                         b-best nil
-                         b-min 1.7976931348623157e+308]
-                    (if-let [entry (first entries)]
-                      (let [[path {:keys [render-box selectable]}] entry]
-                        (if (and render-box (.-attached render-box))
-                          (let [size (.-size render-box)
-                                global-origin (.localToGlobal render-box r/Offset.zero)
-                                left (.-dx global-origin)
-                                right (+ left (.-width size))
-                                top (.-dy global-origin)
-                                bottom (+ top (.-height size))
-                                inside? (and (>= target-x left) (<= target-x right)
-                                             (>= target-y top) (<= target-y bottom))]
-                            ;; Only log when inside to reduce noise during dragging
-                            (if inside?
-                              (do
-                                (log/log-info (str "[Node Lookup] ✅ found node: " path))
-                                {:found {:path path :selectable selectable :render-box render-box}})
-                              (let [dist-x (cond
-                                             (< target-x left) (- left target-x)
-                                             (> target-x right) (- target-x right)
-                                             :else 0.0)
-                                    dist-y (cond
-                                             (< target-y top) (- top target-y)
-                                             (> target-y bottom) (- target-y bottom)
-                                             :else 0.0)
-                                    ;; Use squared distance to avoid sqrt (just for comparison)
-                                    dist-sq (+ (* dist-x dist-x) (* dist-y dist-y))]
-                                (if (< dist-sq b-min)
-                                  (recur (rest entries) {:path path :selectable selectable :render-box render-box} dist-sq)
-                                  (recur (rest entries) b-best b-min)))))
-                          (recur (rest entries) b-best b-min)))
-                      {:best b-best :min-dist b-min}))
-                  ;; block-nodes is nil, skip this block
-                  {:best nil :min-dist 1.7976931348623157e+308})]
+                block-entries (get nodes-map top-idx)
+                ;; Check all nodes within block
+                [block-best block-min-sq last-rect]
+                (reduce 
+                  (fn [[b-node b-dist ^r/Rect _] [path node]]
+                    (if-let [rect (get-node-rect node)]
+                      (let [d-sq (squared-distance-to-point rect global-offset)]
+                        (if (< d-sq b-dist)
+                          [{:path path 
+                            :selectable (:selectable node)
+                            :render-box (:render-box node)} d-sq rect]
+                          [b-node b-dist rect]))
+                      [b-node b-dist nil]))
+                  [nil 1.797e308 nil]
+                  block-entries)]
             
-            (if-let [found (:found block-result)]
-              found
-              (let [b-best (:best block-result)
-                    b-min (:min-dist block-result)
-                    ;; Decide direction based on the first node of the block
-                    representative (when block-nodes (second (first block-nodes)))
-                    rb (when representative (:render-box representative))
-                    go (when (and rb (.-attached rb)) (.localToGlobal rb r/Offset.zero))
-                    left (if go (.-dx go) 0.0)]
-                (if (< target-x left)
-                  (recur low (dec mid) (if (< b-min min-dist) b-best best-node) (min b-min min-dist))
-                  (recur (inc mid) high (if (< b-min min-dist) b-best best-node) (min b-min min-dist))))))
-          
-          ;; Final result
-          ;; Note: min-dist is squared distance, so compare with squared threshold
-          (let [result (when (and best-node (< min-dist (* 200.0 200.0)))
-                         best-node)
-                fallback-result (when-not result
-                                  (log/log-warn (str "[Node Lookup] ❌ node not found via binary search - best-node: " best-node ", min-dist: " min-dist ", registry size: " registry-size))
-                                  ;; Fallback to direct traversal if binary search failed
-                                  (if (zero? registry-size)
-                                    nil
-                                    (let [best-result
-                                          (reduce (fn [best [path {:keys [render-box selectable]}]]
-                                                    (if (and render-box (.-attached render-box))
-                                                      (let [size (.-size render-box)
-                                                            global-origin (.localToGlobal render-box r/Offset.zero)
-                                                            left (.-dx global-origin)
-                                                            right (+ left (.-width size))
-                                                            top (.-dy global-origin)
-                                                            bottom (+ top (.-height size))
-                                                            inside? (and (>= target-x left) (<= target-x right)
-                                                                         (>= target-y top) (<= target-y bottom))]
-                                                        (if inside?
-                                                          (reduced {:path path :selectable selectable :render-box render-box})
-                                                          (let [dist-x (if (< target-x left)
-                                                                         (- left target-x)
-                                                                         (if (> target-x right)
-                                                                           (- target-x right)
-                                                                           0.0))
-                                                                dist-y (if (< target-y top)
-                                                                         (- top target-y)
-                                                                         (if (> target-y bottom)
-                                                                           (- target-y bottom)
-                                                                           0.0))
-                                                                ;; Use squared distance to avoid sqrt (just for comparison)
-                                                                dist-sq (+ (* dist-x dist-x) (* dist-y dist-y))]
-                                                            (if (or (nil? best) (< dist-sq (get best :dist-sq 1.7976931348623157e+308)))
-                                                              {:path path :selectable selectable :render-box render-box :dist-sq dist-sq}
-                                                              best))))
-                                                      best))
-                                                  nil
-                                                  @!node-registry)]
-                                      (when (and best-result (or (nil? (:dist-sq best-result)) (< (:dist-sq best-result) (* 200.0 200.0))))
-                                        (log/log-info (str "[Node Lookup] ✅ found node via fallback traversal: " (:path best-result)))
-                                        (dissoc best-result :dist-sq)))))]
-            (if result
-              (log/log-info (str "[Node Lookup] ✅ found nearest node: " (:path result) ", distance: " min-dist))
-              (when fallback-result
-                (log/log-info (str "[Node Lookup] ✅ using fallback result: " (:path fallback-result)))))
-            (or result fallback-result)))))))
+            ;; If point is inside a node (d-sq == 0), return directly
+            (if (and block-best (zero? block-min-sq))
+              block-best
+              ;; Otherwise determine binary search direction based on block's X coordinate
+              (let [rect-left (if last-rect (.-left last-rect) 0.0)
+                    [new-best new-dist] (if (< block-min-sq min-dist-sq)
+                                          [block-best block-min-sq]
+                                          [best-node min-dist-sq])]
+                (if (< target-x rect-left)
+                  (recur low (dec mid) new-best new-dist)
+                  (recur (inc mid) high new-best new-dist)))))
+          best-node)))))
 
 (defn get-selectable-by-path
-  "get the render interface of the node directly by path"
+  "Get node information directly by path"
   [path]
   (get @!node-registry path))
-
-;; --- helper tools ---
