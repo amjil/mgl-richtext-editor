@@ -30,6 +30,8 @@
 (defn init-default-shortcuts!
   "Initialize default shortcut bindings"
   []
+  ;; Register menu commands first
+  (cmd/register-menu-commands!)
   ;; Formatting shortcuts
   (register-shortcut! :cmd-b #(cmd/format-bold!))
   (register-shortcut! :cmd-i #(cmd/format-italic!))

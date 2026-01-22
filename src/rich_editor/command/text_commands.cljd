@@ -114,8 +114,14 @@
 ;; Register commands in registry to break circular dependencies
 ;; =============================================================
 
-(cmd-registry/register-commands!
- {:copy-selection! copy-selection!
-  :cut-selection! cut-selection!
-  :paste-selection! paste-selection!
-  :select-all! select-all!})
+(defn register-menu-commands!
+  "Explicitly register commands for menu use"
+  []
+  (cmd-registry/register-commands!
+   {:copy-selection! copy-selection!
+    :cut-selection! cut-selection!
+    :paste-selection! paste-selection!
+    :select-all! select-all!}))
+
+;; Also register at namespace load time (may not execute in ClojureDart)
+(register-menu-commands!)

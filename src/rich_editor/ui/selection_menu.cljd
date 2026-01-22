@@ -97,6 +97,8 @@
       .clipBehavior m/Clip.hardEdge
       .child
       (let [;; Get commands from registry to break circular dependency
+            ;; Commands are registered by text-commands namespace when keyboard-service is loaded
+            ;; (editor-main -> keyboard-service -> text-commands -> register-commands!)
             copy-fn (cmd-registry/get-command :copy-selection!)
             cut-fn (cmd-registry/get-command :cut-selection!)
             paste-fn (cmd-registry/get-command :paste-selection!)
@@ -111,7 +113,9 @@
                            (format-button m/Icons.paste "Paste"
                                           (fn [] (when paste-fn (paste-fn)) (hide-selection-menu!)))
                            (format-button m/Icons.select_all "Select All"
-                                          (fn [] (when select-all-fn (select-all-fn)) (hide-selection-menu!)))])]
+                                          (fn [] (when select-all-fn
+                                                   (hide-selection-menu!)
+                                                   (select-all-fn))))])]
         (if use-horizontal-menu?
           (m/SingleChildScrollView
            .scrollDirection m/Axis.horizontal

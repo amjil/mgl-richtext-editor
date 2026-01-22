@@ -12,6 +12,7 @@
             [rich-editor.services.keyboard-service :as kb-service]
             [rich-editor.services.virtual-keyboard-service :as vk-service]
             [rich-editor.services.slash-command-service :as slash-cmd]
+            [rich-editor.command.text-commands]  ;; Ensure commands are registered before selection-menu uses them
             [rich-editor.model.selection :as sel]
             [rich-editor.services.scroll-service :as scroll-service]
             [rich-editor.services.desktop-input-service :as desktop-input]
