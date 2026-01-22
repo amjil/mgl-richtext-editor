@@ -86,10 +86,12 @@
    matches: match list [{:start 0 :end 5} ...] (relative to current block's text position)
    current-match-index: current match index (for highlighting current match)
    on-link-click: link click callback function (optional)
+   base-text-style: base TextStyle from theme (optional, preserves height/line-height from theme)
    Returns a map with :spans and :recognizers"
-  ([delta] (build-spans delta [] -1 nil))
-  ([delta matches current-match-index] (build-spans delta matches current-match-index nil))
-  ([delta matches current-match-index on-link-click]
+  ([delta] (build-spans delta [] -1 nil nil))
+  ([delta matches current-match-index] (build-spans delta matches current-match-index nil nil))
+  ([delta matches current-match-index on-link-click] (build-spans delta matches current-match-index on-link-click nil))
+  ([delta matches current-match-index on-link-click base-text-style]
    (let [recognizers (atom [])
          current-offset (atom 0)]
      {:spans (->> (:operations delta)
@@ -97,17 +99,33 @@
                             (let [text (:insert op)
                                   attrs (:attributes op)
                                   link-url (get attrs :link)
-                                  base-style (m/TextStyle
-                                              .fontWeight (if (get attrs :bold) m/FontWeight.bold m/FontWeight.normal)
-                                              .fontStyle (if (get attrs :italic) m/FontStyle.italic m/FontStyle.normal)
-                                              .decoration (cond 
-                                                            (get attrs :overline) m/TextDecoration.overline
-                                                            (get attrs :strikethrough) m/TextDecoration.lineThrough
-                                                            :else m/TextDecoration.none)
-                                              .color (if-let [c (get attrs :color)] (parse-color c) nil)
-                                              .backgroundColor (if-let [bg (get attrs :background)] (parse-color bg) nil)
-                                              .fontSize (or (get attrs :font-size) 16.0)
-                                              .fontFamily (or (get attrs :font-family) default-font-family))
+                                  ;; Start with base-text-style if provided (preserves height/line-height from theme)
+                                  ;; Otherwise create new TextStyle
+                                  base-style (if base-text-style
+                                               ;; Build on base style from theme, preserving height and other theme properties
+                                               (.copyWith base-text-style
+                                                          .fontWeight (if (get attrs :bold) m/FontWeight.bold nil)
+                                                          .fontStyle (if (get attrs :italic) m/FontStyle.italic nil)
+                                                          .decoration (cond 
+                                                                        (get attrs :overline) m/TextDecoration.overline
+                                                                        (get attrs :strikethrough) m/TextDecoration.lineThrough
+                                                                        :else nil)
+                                                          .color (if-let [c (get attrs :color)] (parse-color c) nil)
+                                                          .backgroundColor (if-let [bg (get attrs :background)] (parse-color bg) nil)
+                                                          .fontSize (if-let [fs (get attrs :font-size)] fs nil)
+                                                          .fontFamily (if-let [ff (get attrs :font-family)] ff nil))
+                                               ;; No base style, create from scratch
+                                               (m/TextStyle
+                                                .fontWeight (if (get attrs :bold) m/FontWeight.bold m/FontWeight.normal)
+                                                .fontStyle (if (get attrs :italic) m/FontStyle.italic m/FontStyle.normal)
+                                                .decoration (cond 
+                                                              (get attrs :overline) m/TextDecoration.overline
+                                                              (get attrs :strikethrough) m/TextDecoration.lineThrough
+                                                              :else m/TextDecoration.none)
+                                                .color (if-let [c (get attrs :color)] (parse-color c) nil)
+                                                .backgroundColor (if-let [bg (get attrs :background)] (parse-color bg) nil)
+                                                .fontSize (or (get attrs :font-size) 16.0)
+                                                .fontFamily (or (get attrs :font-family) default-font-family)))
                                   ;; Merge link style and base style using copyWith
                                   ;; Note: Link color will be themed when build-spans is called from a themed widget
                                   final-style (if link-url

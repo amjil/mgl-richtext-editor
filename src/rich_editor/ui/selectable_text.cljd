@@ -14,7 +14,8 @@
    :managed [focus-node (m/FocusNode.)]
    :let [plain-text (delta-utils/delta->text delta)
          node-len (count plain-text)
-         {:keys [spans recognizers]} (text-utils/build-spans delta matches current-match-index (fn [_] nil))]
+         ;; Pass text-style to build-spans so it can preserve height/line-height from theme
+         {:keys [spans recognizers]} (text-utils/build-spans delta matches current-match-index (fn [_] nil) text-style)]
    :watch [selection (f/$ (sel-util/to-text-selection path (:selection (f/<! !editor-state)) node-len))]
 
    (MglSelectableText
