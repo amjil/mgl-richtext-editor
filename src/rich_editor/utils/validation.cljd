@@ -138,8 +138,11 @@
     (result/ok selection)
     (let [start-result (validate-position (:start selection))
           end-result (validate-position (:end selection))]
-      (result/flat-map-result start-result
-                              (fn [_] end-result)))))
+      (if (and (result/is-ok? start-result) (result/is-ok? end-result))
+        (result/ok selection)
+        (or (when (result/is-err? start-result) start-result)
+            (when (result/is-err? end-result) end-result)
+            (result/err {:type :validation-failed :value selection}))))))
 
 ;; =============================================================
 ;; Safe Constructors

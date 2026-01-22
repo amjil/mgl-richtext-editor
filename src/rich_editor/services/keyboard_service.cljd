@@ -1,5 +1,6 @@
 (ns rich-editor.services.keyboard-service
   (:require [rich-editor.command.text-commands :as cmd]
+            [rich-editor.command.navigation :as navigation]
             [rich-editor.command.table-commands :as table-cmd]
             [rich-editor.command.search-commands :as search-cmd]
             [rich-editor.state :as state]
@@ -41,7 +42,7 @@
   (register-shortcut! :cmd-x #(cmd/cut-selection!))
   (register-shortcut! :cmd-c #(cmd/copy-selection!))
   (register-shortcut! :cmd-v #(cmd/paste-selection!))
-  (register-shortcut! :cmd-a #(cmd/select-all!))
+  (register-shortcut! :cmd-a #(navigation/select-all!))
   (register-shortcut! :backspace #(cmd/delete-backward!))
   (register-shortcut! :delete #(cmd/delete-forward!))
   
@@ -213,7 +214,7 @@
     :cut (cmd/cut-selection!)
     :copy (cmd/copy-selection!)
     :paste (cmd/paste-selection!)
-    :select-all (cmd/select-all!)
+    :select-all (navigation/select-all!)
     :backspace (cmd/delete-backward!)
     :delete (cmd/delete-forward!)
     ;; Block types

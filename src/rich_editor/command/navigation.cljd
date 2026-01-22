@@ -6,7 +6,8 @@
             [rich-editor.ui-state :as ui]
             [rich-editor.ui.selection-menu :as sel-menu]
             [rich-editor.command.text-commands-helpers :as helpers]
-            [rich-editor.services.scroll-service :as scroll-service]))
+            [rich-editor.services.scroll-service :as scroll-service]
+            [rich-editor.utils.logger :as log]))
 
 ;; =============================================================
 ;; Internal Helper Functions
@@ -337,18 +338,24 @@
    (let [current-state @state
          blocks (:children (:doc current-state))]
      (when (seq blocks)
-       (let [first-path [0]
+       (let [block-count (count blocks)
+             first-path [0]
+             last-block-index (dec block-count)
              last-block (last blocks)
-             last-path [(dec (count blocks))]
+             last-path [last-block-index]
              last-delta (get-in last-block [:data :delta])
              last-length (helpers/get-delta-text-length last-delta)
              start-pos (sel/make-position first-path 0)
              end-pos (sel/make-position last-path last-length)
              new-selection (sel/make-selection start-pos end-pos)]
-         (state/update-selection! state new-selection)
-         ;; Set pan-start-position to enable drag selection after select-all
-         (swap! ui/!ui-state assoc :pan-start-position start-pos)
-         ;; Show selection menu only if selection is not collapsed
-         (when (and new-selection (not (sel/collapsed? new-selection)))
-           (sel-menu/show-menu-at-selection! new-selection))
-         true)))))
+         (log/log-info (str "[Select-All] block-count: " block-count ", first-path: " first-path ", last-path: " last-path ", last-length: " last-length))
+         (log/log-info (str "[Select-All] start-pos: " start-pos ", end-pos: " end-pos ", new-selection: " new-selection))
+         (when new-selection
+           (let [validation-result (state/update-selection! state new-selection)]
+             (log/log-info (str "[Select-All] validation-result: " validation-result))
+             ;; Set pan-start-position to enable drag selection after select-all
+             (swap! ui/!ui-state assoc :pan-start-position start-pos)
+             ;; Show selection menu only if selection is not collapsed
+             (when (and new-selection (not (sel/collapsed? new-selection)))
+               (sel-menu/show-menu-at-selection! new-selection))
+             true)))))))
