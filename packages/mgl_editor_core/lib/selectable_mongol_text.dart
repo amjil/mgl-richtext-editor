@@ -3,9 +3,10 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/gestures.dart';
 import 'm_rich_text.dart';
 import 'm_render_paragraph.dart';
+import 'line_divider_painter.dart';
 
-typedef SelectableRegistrationCallback = void Function(
-    RenderBox renderBox, dynamic selectable);
+typedef SelectableRegistrationCallback =
+    void Function(RenderBox renderBox, dynamic selectable);
 
 class MglSelectableText extends StatefulWidget {
   final TextSpan textSpan;
@@ -16,6 +17,7 @@ class MglSelectableText extends StatefulWidget {
   final SelectableRegistrationCallback? onMounted;
   final VoidCallback? onUnmounted;
   final ValueChanged<TextSelection>? onSelectionChanged;
+  final bool showLineDivider;
 
   const MglSelectableText({
     super.key,
@@ -27,6 +29,7 @@ class MglSelectableText extends StatefulWidget {
     this.focusNode,
     this.onMounted,
     this.onUnmounted,
+    this.showLineDivider = false,
   });
 
   @override
@@ -114,12 +117,11 @@ class MglSelectableTextState extends State<MglSelectableText>
     if (widget.selection != oldWidget.selection) {
       setState(() {});
     }
-    
+
     // Always ensure caret is visible when focused and selection is collapsed
     // This handles the case where user clicks the same position again
     // Also ensures focus is maintained after text input (e.g., space character on mobile)
-    if (widget.selection != null &&
-        widget.selection!.isCollapsed) {
+    if (widget.selection != null && widget.selection!.isCollapsed) {
       // If we have a collapsed selection but lost focus, request it again
       // This is critical for mobile devices where focus can be lost after text input
       if (!_focusNode.hasFocus) {
@@ -170,47 +172,55 @@ class MglSelectableTextState extends State<MglSelectableText>
   Widget build(BuildContext context) {
     return Focus(
       focusNode: _focusNode,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(
-                bottom: 20.0), // Added padding for cursor visibility
-            child: MongolRichText(
-              key: _textKey,
-              text: widget.textSpan,
+      child: IntrinsicWidth(
+        child: Stack(
+          clipBehavior: Clip.none,
+          fit: StackFit.expand,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(
+                bottom: 20.0,
+              ), // Added padding for cursor visibility
+              child: MongolRichText(key: _textKey, text: widget.textSpan),
             ),
-          ),
-          if (widget.selection != null &&
-              widget.selection!.isCollapsed &&
-              _focusNode.hasFocus)
-            AnimatedBuilder(
-              animation: _caretController,
-              builder: (context, child) {
-                final opacity = _caretController.value > 0.5 ? 1.0 : 0.0;
-                return Opacity(
-                  opacity: opacity,
-                  child: CustomPaint(
-                    painter: _MongolCaretPainter(
+            if (widget.showLineDivider)
+              CustomPaint(
+                painter: LineDividerPainter(
+                  textKey: _textKey,
+                  extendToLineEnd: false,
+                ),
+              ),
+            if (widget.selection != null &&
+                widget.selection!.isCollapsed &&
+                _focusNode.hasFocus)
+              AnimatedBuilder(
+                animation: _caretController,
+                builder: (context, child) {
+                  final opacity = _caretController.value > 0.5 ? 1.0 : 0.0;
+                  return Opacity(
+                    opacity: opacity,
+                    child: CustomPaint(
+                      painter: _MongolCaretPainter(
+                        textKey: _textKey,
+                        selection: widget.selection!,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            if (widget.selection != null && !widget.selection!.isCollapsed)
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  return CustomPaint(
+                    painter: _MongolSelectionPainter(
                       textKey: _textKey,
                       selection: widget.selection!,
                     ),
-                  ),
-                );
-              },
-            ),
-          if (widget.selection != null && !widget.selection!.isCollapsed)
-            LayoutBuilder(
-              builder: (context, constraints) {
-                return CustomPaint(
-                  painter: _MongolSelectionPainter(
-                    textKey: _textKey,
-                    selection: widget.selection!,
-                  ),
-                );
-              },
-            ),
-        ],
+                  );
+                },
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -265,19 +275,22 @@ class _MongolSelectionPainter extends CustomPainter {
       try {
         // Ensure the selection is valid and not collapsed
         if (selection.isCollapsed) return;
-        
+
         // Get text length from textPainter
-        final textLength = renderBox.textPainter.text?.toPlainText().length ?? 0;
-        
+        final textLength =
+            renderBox.textPainter.text?.toPlainText().length ?? 0;
+
         // Ensure selection offsets are within valid range
-        if (selection.baseOffset < 0 || selection.extentOffset < 0 ||
-            selection.baseOffset > textLength || selection.extentOffset > textLength) {
+        if (selection.baseOffset < 0 ||
+            selection.extentOffset < 0 ||
+            selection.baseOffset > textLength ||
+            selection.extentOffset > textLength) {
           return;
         }
-        
+
         final boxes = renderBox.getBoxesForSelection(selection);
         if (boxes.isEmpty) return;
-        
+
         final paint = Paint()..color = Colors.blue.withOpacity(0.3);
 
         for (final box in boxes) {
@@ -294,6 +307,6 @@ class _MongolSelectionPainter extends CustomPainter {
   bool shouldRepaint(covariant _MongolSelectionPainter oldDelegate) {
     // Compare selection by baseOffset and extentOffset, not by reference
     return oldDelegate.selection.baseOffset != selection.baseOffset ||
-           oldDelegate.selection.extentOffset != selection.extentOffset;
+        oldDelegate.selection.extentOffset != selection.extentOffset;
   }
 }

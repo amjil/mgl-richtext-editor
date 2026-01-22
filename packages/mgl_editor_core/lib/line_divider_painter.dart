@@ -170,25 +170,15 @@ class LineDividerPainter extends CustomPainter {
           continue;
         }
         
-        // Draw the line between lines
-        // For vertical Mongol text, lines are arranged horizontally (left to right)
-        // The line should be drawn between this line's right edge and next line's left edge
+        // Draw the line at the right edge of each column
+        // For vertical Mongol text, each "line" is actually a vertical column
+        // The line should be drawn at the right edge (100%) of the current column
+        // This creates a divider line between columns
         double lineX;
-        if (nextLineLeft != double.infinity) {
-          // If there's space between lines, draw in the middle
-          if (nextLineLeft > maxRight) {
-            lineX = (maxRight + nextLineLeft) / 2.0;
-          } else {
-            // If lines are adjacent (no gap), draw at 75% of the line width (closer to right)
-            // This avoids overlapping with text while still being visible
-            double lineWidth = maxRight - minLeft;
-            lineX = minLeft + lineWidth * 0.75;
-          }
-        } else {
-          // Last line: draw at 75% of the line width
-          double lineWidth = maxRight - minLeft;
-          lineX = minLeft + lineWidth * 0.75;
-        }
+        // Calculate the right edge of the current column
+        double lineWidth = maxRight - minLeft;
+        // Draw at the right edge (100%) of the column
+        lineX = minLeft + lineWidth * 1.0; // Draw at right edge (100%)
         
         // Skip drawing if lineX is completely outside canvas bounds
         if (lineX < 0 || lineX > size.width) {

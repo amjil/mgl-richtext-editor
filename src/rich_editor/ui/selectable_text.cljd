@@ -9,7 +9,7 @@
             ["package:mgl_editor_core/selectable_mongol_text.dart" :refer [MglSelectableText]]))
 
 (defn selectable-mongol-text 
-  [{:keys [path delta text-style matches current-match-index]}]
+  [{:keys [path delta text-style matches current-match-index show-line-divider?]}]
   (f/widget
    :managed [focus-node (m/FocusNode.)]
    :let [plain-text (delta-utils/delta->text delta)
@@ -30,4 +30,5 @@
                             spans)
                 .style text-style)
     .gestureRecognizers recognizers
-    .selection selection)))
+    .selection selection
+    .showLineDivider (or show-line-divider? false))))
