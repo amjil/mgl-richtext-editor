@@ -110,7 +110,22 @@ class MglSelectableTextState extends State<MglSelectableText>
         widget.selection!.isCollapsed &&
         (oldWidget.selection == null || !oldWidget.selection!.isCollapsed) &&
         !_focusNode.hasFocus) {
-      _focusNode.requestFocus();
+      // Check if there's another widget currently focused (e.g., dialog input field)
+      bool hasOtherFocus = false;
+      try {
+        final focusScope = FocusScope.of(context);
+        hasOtherFocus = focusScope.focusedChild != null && 
+                       focusScope.focusedChild != _focusNode;
+      } catch (e) {
+        // If we can't get focus scope, assume no other focus to be safe
+        hasOtherFocus = false;
+      }
+      
+      // Only request focus if no other widget is focused
+      // This prevents stealing focus from dialogs or other input fields
+      if (!hasOtherFocus) {
+        _focusNode.requestFocus();
+      }
     }
 
     // Force repaint if selection changed
@@ -124,8 +139,24 @@ class MglSelectableTextState extends State<MglSelectableText>
     if (widget.selection != null && widget.selection!.isCollapsed) {
       // If we have a collapsed selection but lost focus, request it again
       // This is critical for mobile devices where focus can be lost after text input
+      // However, don't steal focus if another widget (like a dialog) is currently focused
       if (!_focusNode.hasFocus) {
-        _focusNode.requestFocus();
+        // Check if there's another widget currently focused (e.g., dialog input field)
+        bool hasOtherFocus = false;
+        try {
+          final focusScope = FocusScope.of(context);
+          hasOtherFocus = focusScope.focusedChild != null && 
+                         focusScope.focusedChild != _focusNode;
+        } catch (e) {
+          // If we can't get focus scope, assume no other focus to be safe
+          hasOtherFocus = false;
+        }
+        
+        // Only request focus if no other widget is focused
+        // This prevents stealing focus from dialogs or other input fields
+        if (!hasOtherFocus) {
+          _focusNode.requestFocus();
+        }
       }
       // Ensure caret animation is running
       if (_focusNode.hasFocus && !_caretController.isAnimating) {
@@ -209,15 +240,11 @@ class MglSelectableTextState extends State<MglSelectableText>
                 },
               ),
             if (widget.selection != null && !widget.selection!.isCollapsed)
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  return CustomPaint(
-                    painter: _MongolSelectionPainter(
-                      textKey: _textKey,
-                      selection: widget.selection!,
-                    ),
-                  );
-                },
+              CustomPaint(
+                painter: _MongolSelectionPainter(
+                  textKey: _textKey,
+                  selection: widget.selection!,
+                ),
               ),
           ],
         ),

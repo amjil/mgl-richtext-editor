@@ -23,6 +23,7 @@
             ["package:flutter/foundation.dart" :as foundation]
             ["package:mgl_editor_core/disposable.dart" :refer [Disposable]]
             ["package:mgl_editor_core/post_frame_trigger.dart" :refer [PostFrameTrigger]]
+            ["package:mongol/mongol.dart" :as mgl]
             [rich-editor.ui.editor-keyboard-listener :refer [editor-keyboard-listener]]))
 
 (defn- init-keyboard! []
@@ -30,15 +31,23 @@
         ;; Only use HardwareKeyboard on desktop platforms (macOS, Windows, Linux)
         ;; Mobile platforms (iOS, Android) should not use HardwareKeyboard
         is-desktop? (and (not foundation/kIsWeb)
-                        (not= platform m/TargetPlatform.iOS)
-                        (not= platform m/TargetPlatform.android))
+                         (not= platform m/TargetPlatform.iOS)
+                         (not= platform m/TargetPlatform.android))
         handler (when is-desktop?
                   (fn [event]
                     (let [logical-key (.-logicalKey event)
-                          key-id (.-keyId logical-key)]
-                      (if (and (not (instance? srv/KeyUpEvent event))
-                               (or (= (.-keyLabel logical-key) "Backspace")
-                                   (= key-id 4294967304)))
+                          key-id (.-keyId logical-key)
+                          ;; Check if find-replace dialog is showing
+                          search-state (get @ui/!ui-state :search)
+                          dialog-showing? (get search-state :show-dialog? false)
+                          key-label (.-keyLabel logical-key)
+                          is-backspace? (or (= key-label "Backspace")
+                                            (= key-id 4294967304))
+                          ;; Don't intercept if dialog is showing or if a text input has focus
+                          should-intercept? (and (not (instance? srv/KeyUpEvent event))
+                                                 is-backspace?
+                                                 (not dialog-showing?))]
+                      (if should-intercept?
                         (do (kb-service/handle-key-event! event)
                             true) ;; Intercepted
                         false))))]

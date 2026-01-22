@@ -352,7 +352,7 @@
          (log/log-info (str "[Select-All] start-pos: " start-pos ", end-pos: " end-pos ", new-selection: " new-selection))
          (when new-selection
            (let [validation-result (state/update-selection! state new-selection)]
-             (log/log-info (str "[Select-All] validation-result: " validation-result))
+             ;; (log/log-info (str "[Select-All] validation-result: " validation-result))
              ;; Set pan-start-position to enable drag selection after select-all
              (swap! ui/!ui-state assoc :pan-start-position start-pos)
              ;; Show selection menu only if selection is not collapsed

@@ -17,9 +17,9 @@
   (f/widget
    :get {{{:flds [surface onSurfaceVariant scrim]} .-colorScheme} m/Theme
          {{:flds [width]} .-size} m/MediaQuery}
+   :managed [search-controller (m/TextEditingController.)
+             replace-controller (m/TextEditingController.)]
    :watch [search-state (f/$ (:search (f/<! ui/!ui-state)))]
-   :managed [search-controller (m/TextEditingController. :text (or (:search-term search-state) ""))
-             replace-controller (m/TextEditingController. :text (or (:replace-term search-state) ""))]
    :let [show-dialog? (:show-dialog? search-state)
          replace-mode? (:replace-mode? search-state)
          replace-term (:replace-term search-state)
