@@ -22,7 +22,6 @@
             ["package:flutter/foundation.dart" :as foundation]
             ["package:mgl_editor_core/disposable.dart" :refer [Disposable]]
             ["package:mgl_editor_core/post_frame_trigger.dart" :refer [PostFrameTrigger]]
-            ["package:mongol/mongol.dart" :as mgl]
             [rich-editor.ui.editor-keyboard-listener :refer [editor-keyboard-listener]]))
 
 (defn- init-keyboard! []
@@ -83,24 +82,22 @@
          is-mobile? (platform/is-mobile?)
          show-keyboard? (and is-mobile? (or has-selection has-focus))
          
-         _ (when (and (nil? selection) (seq blocks))
-             (let [first-block-path [0]
-                   initial-selection (sel/make-selection
-                                     (sel/make-position first-block-path 0)
-                                     (sel/make-position first-block-path 0))]
-               (swap! !editor-state assoc :selection initial-selection)))
-         
-         _ (when show-keyboard?
-             (platform-input/on-editor-focus-or-keyboard-show!))
-         
          computed-slash-position (when (and slash-command-active? selection)
                                    (if-let [global-pos (layout-service/get-selection-global-position selection :start)]
                                      ;; Offset menu relative to cursor
                                      (m/Offset. (.-dx global-pos) (+ (.-dy global-pos) 24.0))
                                      ;; Fallback if layout not ready
                                      (m/Offset. 100.0 100.0)))
-         ;; Post-frame callback for selection handling
+         ;; Post-frame callback: avoid modifying state / triggering platform input during build
          post-frame-callback (fn []
+                              (when (and (nil? selection) (seq blocks))
+                                (let [first-block-path [0]
+                                      initial-selection (sel/make-selection
+                                                        (sel/make-position first-block-path 0)
+                                                        (sel/make-position first-block-path 0))]
+                                  (swap! !editor-state assoc :selection initial-selection)))
+                              (when show-keyboard?
+                                (platform-input/on-editor-focus-or-keyboard-show!))
                               (when selection
                                 (scroll-service/check-cursor-auto-scroll selection scroll-controller)
                                 (platform-input/update-editing-state!)))
@@ -141,8 +138,7 @@
                                                          :on-command-selected (fn [command-id]
                                                                                 (slash-cmd/execute-command! command-id))})
                                                        (m/SizedBox.shrink))]))}))]
-   (if has-selection
-     (PostFrameTrigger
-      .onLayout post-frame-callback
-      .child scaffold-widget)
-     scaffold-widget)))
+  ;; Always use PostFrameTrigger so callback runs even when no selection (e.g. to set initial selection / show keyboard)
+  (PostFrameTrigger
+    .onLayout post-frame-callback
+    .child scaffold-widget)))
