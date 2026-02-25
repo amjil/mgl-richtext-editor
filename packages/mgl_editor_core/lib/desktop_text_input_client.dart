@@ -1,24 +1,23 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
-typedef TextCommandCallback = void Function(String text);
-typedef VoidCommandCallback = void Function();
+typedef OnDeltasCallback = void Function(List<Map<String, dynamic>> serialized);
 
+/// Desktop IME bridge: forwards TextInput deltas to Clojure as serialized maps.
+/// On mobile, virtual keyboard + sync is used instead; this client is not used there.
+///
+/// Serialized delta contract (each map has "type" + type-specific keys):
+/// - insertion: insertionOffset, textInserted
+/// - deletion: deletedRange {start, end}, selectionBaseOffset, selectionExtentOffset
+/// - replacement: replacedRange {start, end}, replacementText, selectionBaseOffset, selectionExtentOffset
+/// - selector: name ("deleteBackward:" | "deleteForward:")
 class DesktopTextInputClient implements DeltaTextInputClient {
   TextEditingValue _currentValue = TextEditingValue.empty;
   bool updatingFromEditor = false;
 
-  final TextCommandCallback onInsertText;
-  final VoidCommandCallback onDeleteSelection;
-  final VoidCommandCallback onDeleteBackward;
-  final VoidCommandCallback onDeleteForward;
+  final OnDeltasCallback onDeltas;
 
-  DesktopTextInputClient({
-    required this.onInsertText,
-    required this.onDeleteSelection,
-    required this.onDeleteBackward,
-    required this.onDeleteForward,
-  });
+  DesktopTextInputClient({required this.onDeltas});
 
   void updateState(TextEditingValue value) {
     _currentValue = value;
@@ -38,16 +37,14 @@ class DesktopTextInputClient implements DeltaTextInputClient {
     if (updatingFromEditor) {
       return;
     }
-    
-    // Apply deltas to _currentValue to keep it in sync
+
+    final serialized = <Map<String, dynamic>>[];
     TextEditingValue updatedValue = _currentValue;
+
     for (var delta in deltas) {
-      // Handle selection-only changes - check if this is a non-text update that only changes selection
-      // These should be ignored when they come from system (not from user input)
       if (delta is TextEditingDeltaNonTextUpdate) {
         continue;
       } else if (delta is TextEditingDeltaInsertion) {
-        // Update _currentValue to reflect the insertion
         final newText = updatedValue.text.substring(0, delta.insertionOffset) +
             delta.textInserted +
             updatedValue.text.substring(delta.insertionOffset);
@@ -58,12 +55,14 @@ class DesktopTextInputClient implements DeltaTextInputClient {
           text: newText,
           selection: newSelection,
         );
-        
         if (delta.textInserted.isNotEmpty) {
-          onInsertText(delta.textInserted);
+          serialized.add({
+            'type': 'insertion',
+            'insertionOffset': delta.insertionOffset,
+            'textInserted': delta.textInserted,
+          });
         }
       } else if (delta is TextEditingDeltaDeletion) {
-        // Update _currentValue to reflect the deletion
         final newText = updatedValue.text.substring(0, delta.deletedRange.start) +
             updatedValue.text.substring(delta.deletedRange.end);
         final newSelection = TextSelection.collapsed(
@@ -73,24 +72,19 @@ class DesktopTextInputClient implements DeltaTextInputClient {
           text: newText,
           selection: newSelection,
         );
-        
         final deletedLen = delta.deletedRange.end - delta.deletedRange.start;
         if (deletedLen > 0) {
-          // Robust check: if IME asks to delete, and we have no selection, it MUST be a backspace/delete.
-          // We prefer onDeleteBackward for single character deletions to trigger block merging.
-          if (!_currentValue.selection.isCollapsed) {
-            onDeleteSelection();
-          } else {
-            // macOS backspace behavior: deleted range is usually the character just before baseOffset.
-            if (delta.deletedRange.end <= _currentValue.selection.baseOffset) {
-              onDeleteBackward();
-            } else {
-              onDeleteForward();
-            }
-          }
+          serialized.add({
+            'type': 'deletion',
+            'deletedRange': {
+              'start': delta.deletedRange.start,
+              'end': delta.deletedRange.end,
+            },
+            'selectionBaseOffset': _currentValue.selection.baseOffset,
+            'selectionExtentOffset': _currentValue.selection.extentOffset,
+          });
         }
       } else if (delta is TextEditingDeltaReplacement) {
-        // Update _currentValue to reflect the replacement
         final newText = updatedValue.text.substring(0, delta.replacedRange.start) +
             delta.replacementText +
             updatedValue.text.substring(delta.replacedRange.end);
@@ -101,36 +95,41 @@ class DesktopTextInputClient implements DeltaTextInputClient {
           text: newText,
           selection: newSelection,
         );
-        
         if (delta.replacedRange.end - delta.replacedRange.start > 0) {
-          if (!_currentValue.selection.isCollapsed) {
-            onDeleteSelection();
-          } else {
-            onDeleteBackward();
-          }
-        }
-        if (delta.replacementText.isNotEmpty) {
-          onInsertText(delta.replacementText);
+          serialized.add({
+            'type': 'replacement',
+            'replacedRange': {
+              'start': delta.replacedRange.start,
+              'end': delta.replacedRange.end,
+            },
+            'replacementText': delta.replacementText,
+            'selectionBaseOffset': _currentValue.selection.baseOffset,
+            'selectionExtentOffset': _currentValue.selection.extentOffset,
+          });
+        } else if (delta.replacementText.isNotEmpty) {
+          serialized.add({
+            'type': 'insertion',
+            'insertionOffset': delta.replacedRange.start,
+            'textInserted': delta.replacementText,
+          });
         }
       }
     }
-    
-    // Update _currentValue after processing all deltas
+
     _currentValue = updatedValue;
+    if (serialized.isNotEmpty) {
+      onDeltas(serialized);
+    }
   }
 
   @override
-  void performAction(TextInputAction action) {
-    // Handled via deltas
-  }
+  void performAction(TextInputAction action) {}
 
   @override
   void performSelector(String selectorName) {
-    if (selectorName == 'deleteBackward:') {
-      onDeleteBackward();
-    } else if (selectorName == 'deleteForward:') {
-      onDeleteForward();
-    }
+    onDeltas([
+      {'type': 'selector', 'name': selectorName}
+    ]);
   }
 
   @override void connectionClosed() {}
