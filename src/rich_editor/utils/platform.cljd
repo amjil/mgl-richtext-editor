@@ -3,8 +3,20 @@
             ["package:flutter/foundation.dart" :as foundation]))
 
 (defn is-mobile?
-  "检测当前平台是否为移动设备（iOS 或 Android）"
+  "True if the current platform is mobile (iOS or Android)."
   []
   (let [platform foundation/defaultTargetPlatform]
     (or (= platform m/TargetPlatform.iOS)
         (= platform m/TargetPlatform.android))))
+
+(defn is-desktop?
+  "True if the current platform is desktop (macOS, Windows, Linux), excluding Web."
+  []
+  (and (not foundation/kIsWeb)
+       (not= foundation/defaultTargetPlatform m/TargetPlatform.iOS)
+       (not= foundation/defaultTargetPlatform m/TargetPlatform.android)))
+
+(defn is-web?
+  "True if running on Web."
+  []
+  (boolean foundation/kIsWeb))

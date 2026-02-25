@@ -127,14 +127,77 @@
              :extentOffset clamped-end))))
       (w/TextSelection.collapsed :offset 0))))
 
+;; IME delta contract (from Dart): :type one of
+;; :insertion {:insertionOffset, :textInserted}
+;; :deletion  {:deletedRange {:start, :end}, :selectionBaseOffset, :selectionExtentOffset}
+;; :replacement {:replacedRange {:start, :end}, :replacementText, :selectionBaseOffset, :selectionExtentOffset}
+;; :selector  {:name "deleteBackward:" | "deleteForward:"}
+(defn- dart-delta->clj [m]
+  (when m
+    (let [type (keyword (get m "type"))]
+      (case type
+        :insertion {:type type
+                    :insertionOffset (get m "insertionOffset")
+                    :textInserted (get m "textInserted")}
+        :deletion (let [dr (get m "deletedRange")]
+                    {:type type
+                     :deletedRange (when dr {:start (get dr "start") :end (get dr "end")})
+                     :selectionBaseOffset (get m "selectionBaseOffset")
+                     :selectionExtentOffset (get m "selectionExtentOffset")})
+        :replacement (let [rr (get m "replacedRange")]
+                       {:type type
+                        :replacedRange (when rr {:start (get rr "start") :end (get rr "end")})
+                        :replacementText (get m "replacementText" "")
+                        :selectionBaseOffset (get m "selectionBaseOffset")
+                        :selectionExtentOffset (get m "selectionExtentOffset")})
+        :selector {:type type :name (get m "name")}
+        nil))))
+
+(defn- dart-list->clj-deltas [dart-list]
+  (map (fn [i]
+         (dart-delta->clj (nth dart-list i)))
+       (range (.-length dart-list))))
+
+(defn- apply-delete-direction! [range* base extent]
+  (when range*
+    (if (not= base extent)
+      (cmd/delete-selection!)
+      (if (<= (get range* :end) base)
+        (cmd/delete-backward!)
+        (cmd/delete-forward!)))))
+
+(defn- apply-ime-deltas! [deltas]
+  (doseq [delta deltas]
+    (when delta
+      (let [type (:type delta)]
+        (case type
+          :insertion (when-let [text (not-empty (str (get delta :textInserted)))]
+                       (cmd/insert-text! text))
+          :deletion (let [dr (get delta :deletedRange)
+                         base (get delta :selectionBaseOffset 0)
+                         extent (get delta :selectionExtentOffset 0)]
+                     (apply-delete-direction! dr base extent))
+          :replacement (let [rr (get delta :replacedRange)
+                             base (get delta :selectionBaseOffset 0)
+                             extent (get delta :selectionExtentOffset 0)
+                             repl-text (str (get delta :replacementText ""))]
+                         (when rr
+                           (when (> (get rr :end) (get rr :start))
+                             (apply-delete-direction! rr base extent))
+                           (when (not= repl-text "")
+                             (cmd/insert-text! repl-text))))
+          :selector (case (get delta :name "")
+                      "deleteBackward:" (cmd/delete-backward!)
+                      "deleteForward:" (cmd/delete-forward!)
+                      nil)
+          nil)))))
+
 (defn- init-client! []
   (when (nil? @text-input-client-instance)
     (reset! text-input-client-instance
             (DesktopTextInputClient
-             .onInsertText (fn [text] (cmd/insert-text! text))
-             .onDeleteSelection (fn [] (cmd/delete-selection!))
-             .onDeleteBackward (fn [] (cmd/delete-backward!))
-             .onDeleteForward (fn [] (cmd/delete-forward!))))))
+             .onDeltas (fn [dart-list]
+                         (apply-ime-deltas! (dart-list->clj-deltas dart-list)))))))
 
 (defn detach! []
   (when-let [conn @text-input-connection]

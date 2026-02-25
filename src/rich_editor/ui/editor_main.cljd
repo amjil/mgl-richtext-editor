@@ -10,12 +10,11 @@
             [rich-editor.ui.selection-gesture-detector :refer [selection-gesture-detector]]
             [rich-editor.ui.selection-handles-layer :refer [selection-handles-overlay]]
             [rich-editor.services.keyboard-service :as kb-service]
-            [rich-editor.services.virtual-keyboard-service :as vk-service]
             [rich-editor.services.slash-command-service :as slash-cmd]
             [rich-editor.command.text-commands]  ;; Ensure commands are registered before selection-menu uses them
             [rich-editor.model.selection :as sel]
             [rich-editor.services.scroll-service :as scroll-service]
-            [rich-editor.services.desktop-input-service :as desktop-input]
+            [rich-editor.services.platform-input-service :as platform-input]
             [rich-editor.services.layout-service :as layout-service]
             [rich-editor.utils.platform :as platform]
             ["package:flutter/material.dart" :as m]
@@ -92,8 +91,7 @@
                (swap! !editor-state assoc :selection initial-selection)))
          
          _ (when show-keyboard?
-             ;; Initialize virtual keyboard editing state when keyboard should be shown
-             (vk-service/initialize-editing-state!))
+             (platform-input/on-editor-focus-or-keyboard-show!))
          
          computed-slash-position (when (and slash-command-active? selection)
                                    (if-let [global-pos (layout-service/get-selection-global-position selection :start)]
@@ -105,10 +103,7 @@
          post-frame-callback (fn []
                               (when selection
                                 (scroll-service/check-cursor-auto-scroll selection scroll-controller)
-                                (when-not foundation/kIsWeb
-                                  ;; Only call attach! if connection doesn't exist or path changed
-                                  ;; update-editing-state! will handle the attach if needed
-                                  (desktop-input/update-editing-state!))))
+                                (platform-input/update-editing-state!)))
          scaffold-widget (m/Scaffold
                           .body (editor-keyboard-listener
                                  {:on-key-event (fn [event] (kb-service/handle-key-event! event))

@@ -58,7 +58,7 @@
             [(text-field
               {:controller search-controller
                :hint "Enter text to find"
-               :max-lines 1 ;; 限制为单行
+               :max-lines 1 ;; single line
                :suffix-icon (m/IconButton
                              :icon (m/Icon m/Icons.close)
                              :tooltip "Clear"

@@ -4,7 +4,7 @@
 ;; =============================================================
 ;; Result Type
 ;; =============================================================
-;; Result 类型：{:ok true :value ...} 或 {:ok false :error ...}
+;; Result type: {:ok true :value ...} or {:ok false :error ...}
 
 (defn ok
   "Create a successful result"
