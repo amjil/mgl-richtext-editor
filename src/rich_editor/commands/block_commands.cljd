@@ -198,3 +198,38 @@
       (tx/make-transaction
         :ops [(tx/insert-op :root idx [image-block])]
         :after-selection nil))))
+
+(defn indent-selection!
+  "Increase or decrease indent level of all blocks in selection (Tab / Shift+Tab).
+   delta-val is typically 1 (indent) or -1 (outdent)."
+  [!state delta-val]
+  (let [state @!state
+        g-sel (:global-selection state)
+        ;; 1. determine target block IDs
+        target-ids
+        (if g-sel
+          (let [n-sel (sel/normalize state g-sel)
+                start-id (get-in n-sel [:start :id])
+                end-id (get-in n-sel [:end :id])
+                root (:root state)
+                start-idx (.indexOf root start-id)
+                end-idx (.indexOf root end-id)]
+            (subvec root start-idx (inc end-idx)))
+          (if-let [active-id (:active-block-id state)]
+            [active-id]
+            []))]
+    
+    (when (seq target-ids)
+      ;; 2. update state: adjust :indent for all target blocks
+      (swap! !state
+             (fn [s]
+               (reduce
+                (fn [acc id]
+                  (let [curr-indent (get-in acc [:blocks id :attributes :indent] 0)
+                        ;; clamp indent level between 0 and 8
+                        new-indent (max 0 (min 8 (+ curr-indent delta-val)))]
+                    (assoc-in acc [:blocks id :attributes :indent] new-indent)))
+                s
+                target-ids))))
+    ;; return nil to avoid affecting UI build
+    nil))

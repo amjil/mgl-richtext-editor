@@ -58,7 +58,10 @@
                       (let [sel (get-in state [:blocks active-id :selection])]
                         (when (and sel (< (.-start sel) (.-end sel)))
                           (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline true)))))))
-   :link (fn [_state] nil)})
+   :link (fn [_state] nil)
+
+   :indent (fn [!state] (block-cmd/indent-selection! !state 1))
+   :outdent (fn [!state] (block-cmd/indent-selection! !state -1))})
 
 (def full-default-config
   (assoc config/default-config :commands (default-command-handlers)))

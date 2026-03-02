@@ -144,7 +144,10 @@
                                  (:cursor-visible state)
                                  (nil? (:global-selection state))))
 
-            style (config/get-block-style cfg block-type)]
+            style (config/get-block-style cfg block-type)
+            
+            indent-level (get-in block [:attributes :indent] 0)
+            indent-padding (* indent-level 32.0)]
 
         ;; mount global gestures
         (m/GestureDetector
@@ -186,7 +189,10 @@
 
          .child
          (m/Padding
-          .padding (m.EdgeInsets/only .top 4.0 .left 4.0 .right 4.0 .bottom 4.0)
+          .padding (m.EdgeInsets/only .top (+ 4.0 indent-padding)
+                                      .left 4.0
+                                      .right 4.0
+                                      .bottom 4.0)
           .child
           (if-let [custom-render (get-in cfg [:custom-block-renderers block-type])]
             (custom-render id !state root-index block style cfg)

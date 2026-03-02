@@ -34,7 +34,7 @@
                                    (editor-cmd/focus-block !state new-id 0)))
   (ime/set-after-update-callback! (fn [] (swap! root/!refresh-tick inc)))
 
-  ;; 【新增】：向 ime-service 注入获取光标坐标的逻辑，彻底打破循环依赖！
+  ;; inject caret-offset callback into ime-service to break cyclic dependency
   (ime/set-get-caret-offset-callback!
    (fn [block-id]
      (when-let [text-key (get @node-view/!block-text-keys block-id)]

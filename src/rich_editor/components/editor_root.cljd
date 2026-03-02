@@ -1,5 +1,6 @@
 (ns rich-editor.components.editor-root
   (:require ["package:flutter/material.dart" :as m]
+            ["package:flutter/services.dart" :as s]
             [cljd.flutter :as f]
             [rich-editor.components.node-view :as node-view]
             [rich-editor.config :as config]
@@ -25,8 +26,24 @@
          (m/Focus
           .autofocus true
           ;; delegate key events to FST engine
-          .onKeyEvent (fn [node event] 
-                        (ime-ctrl/handle-key-event event))
+          .onKeyEvent  (fn [node event]
+                         ;; 1. let FST input engine handle first
+                         (let [ime-res (ime-ctrl/handle-key-event event)]
+                           (if (= ime-res m.KeyEventResult/handled)
+                             ime-res
+                             ;; 2. if IME didn't handle, we intercept Tab
+                             (if (= (.-logicalKey event) s.LogicalKeyboardKey/tab)
+                               ;; must handle both KeyDown and KeyUp or focus will still escape
+                               (if (dart/is? event s/KeyDownEvent)
+                                 (do
+                                   ;; check if Shift is pressed
+                                   (if (.-isShiftPressed (.-instance s/HardwareKeyboard))
+                                     (config/run-command cfg* !state :outdent)
+                                     (config/run-command cfg* !state :indent))
+                                   m.KeyEventResult/handled)
+                                 m.KeyEventResult/handled)
+                               ;; other keys: pass through to CallbackShortcuts
+                               m.KeyEventResult/ignored))))
           .child
           (m/CallbackShortcuts
            .bindings (config/shortcut-bindings cfg* !state)

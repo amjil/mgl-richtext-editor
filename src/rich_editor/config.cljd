@@ -59,7 +59,9 @@
    [(m/SingleActivator. (.-keyU s/LogicalKeyboardKey) :control true) :underline]
    [(m/SingleActivator. (.-keyU s/LogicalKeyboardKey) :meta true) :underline]
    [(m/SingleActivator. (.-keyK s/LogicalKeyboardKey) :control true) :link]
-   [(m/SingleActivator. (.-keyK s/LogicalKeyboardKey) :meta true) :link]])
+   [(m/SingleActivator. (.-keyK s/LogicalKeyboardKey) :meta true) :link]
+   [(m/SingleActivator. (.-tab s/LogicalKeyboardKey)) :indent]
+   [(m/SingleActivator. (.-tab s/LogicalKeyboardKey) :shift true) :outdent]])
 
 ;; =============================================================
 ;; 5. Config merge and access
