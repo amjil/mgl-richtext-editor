@@ -66,7 +66,7 @@
       :merge? true)))
 
 ;; =============================================================
-;; 基础单块格式化
+;; Single-block formatting
 ;; =============================================================
 
 (defn apply-style
@@ -86,12 +86,12 @@
                            .extentOffset selection-end)))))
 
 ;; =============================================================
-;; [新增] 跨块格式化操作 (Cross-Block Formatting)
+;; Cross-block formatting
 ;; =============================================================
 
 (defn apply-style-cross-block!
-  "跨块应用行内格式（头块截尾，中间全包，尾块截头）。
-   参数 global-selection 必须是包含 :start 和 :end 的 Map。"
+  "Apply inline format across blocks (head: from start to end of content; middle: full; tail: from 0 to end-off).
+   global-selection must be a map with :start and :end."
   [!state global-selection attr-key attr-val]
   (let [state @!state
         n-sel (sel/normalize state global-selection)
@@ -104,23 +104,23 @@
         root (:root state)]
 
     (if (= start-id end-id)
-      ;; 未跨块，安全降级
+      ;; not cross-block, fallback to single-block
       (apply-style !state start-id start-off end-off attr-key attr-val)
       
       (let [start-idx (.indexOf root start-id)
             end-idx (.indexOf root end-id)
             
-            ;; 1. 头部：从 start-off 开始到内容末尾，应用格式
+            ;; 1. head: from start-off to end of content
             start-len (max 0 (- (count (:content (get-in state [:blocks start-id]) "")) start-off))
             op-start (tx/update-content-op start-id 
                        (delta/make-delta [(delta/retain start-off) 
                                           (delta/retain start-len {attr-key attr-val})]))
             
-            ;; 2. 尾部：从 0 开始直到 end-off，应用格式
+            ;; 2. tail: from 0 to end-off
             op-end (tx/update-content-op end-id 
                      (delta/make-delta [(delta/retain end-off {attr-key attr-val})]))
             
-            ;; 3. 身体：处于中间的所有完整块，全范围应用格式
+            ;; 3. body: full range for all middle blocks
             middle-ids (subvec root (inc start-idx) end-idx)
             middle-ops (map (fn [id]
                               (let [len (count (:content (get-in state [:blocks id]) ""))]
@@ -128,7 +128,7 @@
                                   (delta/make-delta [(delta/retain len {attr-key attr-val})]))))
                             middle-ids)
             
-            ;; 4. 组合并执行
+            ;; 4. combine and execute
             ops (concat [op-start op-end] middle-ops)]
             
         (tx/commit-transaction! !state

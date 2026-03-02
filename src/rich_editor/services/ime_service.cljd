@@ -23,7 +23,7 @@
 (defonce !merge-focus-callback (atom nil))
 (defonce !split-focus-callback (atom nil))
 (defonce !after-update-callback (atom nil))
-;; 【新增】：用于向外请求光标的全局坐标，打破循环依赖
+;; callback to request caret global offset from outside, breaks cyclic dependency
 (defonce !get-caret-offset-callback (atom nil))
 
 (defonce !handled-newline-in-delta (atom false))
@@ -36,7 +36,7 @@
 (defn- bump-after-update! []
   (when-let [f @!after-update-callback]
     (f))
-  ;; 通知 shared-ime 更新候选词面板位置
+  ;; notify shared-ime to update candidate panel position
   (when-let [client @ime-ctrl/!active-client]
     (when-let [update-caret (:update-caret! client)]
       (update-caret)))

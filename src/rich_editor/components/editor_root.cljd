@@ -4,7 +4,7 @@
             [rich-editor.components.node-view :as node-view]
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
-            ;; 引入 shared-ime 的控制器和视图层
+            ;; shared-ime controller and overlay view
             [shared-ime.controller :as ime-ctrl]
             [shared-ime.overlay-view :as overlay]))
 
@@ -20,11 +20,11 @@
       :watch [state !state _ !refresh-tick]
       (let [cfg* (get state :editor-config cfg)]
         
-        ;; 【核心修改】：在根部加上 shared-ime 的候选词包裹器
+        ;; wrap root with shared-ime candidate panel
         (overlay/ime-global-wrapper
          (m/Focus
           .autofocus true
-          ;; 【核心修改】：将键盘事件交给 FST 引擎拦截
+          ;; delegate key events to FST engine
           .onKeyEvent (fn [node event] 
                         (ime-ctrl/handle-key-event event))
           .child

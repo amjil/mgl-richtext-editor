@@ -29,7 +29,7 @@
                          (when focus-info
                            (editor-cmd/focus-block !state (:focus-block focus-info) (:offset focus-info)))))))
                            
-   ;; 🌟 支持跨块加粗
+   ;; cross-block bold support
    :bold (fn [!state]
            (let [state @!state]
              (if-let [g-sel (:global-selection state)]
@@ -39,7 +39,7 @@
                    (when (and sel (< (.-start sel) (.-end sel)))
                      (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold true)))))))
                      
-   ;; 🌟 支持跨块斜体
+   ;; cross-block italic support
    :italic (fn [!state]
              (let [state @!state]
                (if-let [g-sel (:global-selection state)]
@@ -49,7 +49,7 @@
                      (when (and sel (< (.-start sel) (.-end sel)))
                        (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic true)))))))
                        
-   ;; 🌟 支持跨块下划线
+   ;; cross-block underline support
    :underline (fn [!state]
                 (let [state @!state]
                   (if-let [g-sel (:global-selection state)]

@@ -39,8 +39,8 @@
 ;; =============================================================
 
 (defn clear-document
-  "Clear document and reset to single empty block. 块类型来自 state 的 :editor-config 的 :default-block-type。
-   会设置 active-block-id、cursor-visible 和首块 selection，使光标可见；调用方需在首帧挂载后调用 ime/attach!。"
+  "Clear document and reset to single empty block. Block type from state's :editor-config :default-block-type.
+   Sets active-block-id, cursor-visible and first block selection so cursor is visible; caller must call ime/attach! after first frame."
   [!state]
   (let [block-type (or (some-> (get @!state :editor-config) config/default-block-type) :paragraph)
         new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
@@ -50,7 +50,7 @@
         :ops [(tx/delete-op :root 0 (count (:root @!state)))
               (tx/insert-op :root 0 [empty-block])]
         :after-selection (s/TextSelection. .baseOffset 0 .extentOffset 0)))
-    ;; 使首块获得焦点与光标，否则光标不显示且无法输入
+    ;; focus first block so cursor is visible and input works
     (swap! !state (fn [s]
                     (-> s
                         (assoc :active-block-id new-id)
