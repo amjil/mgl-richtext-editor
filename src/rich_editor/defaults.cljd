@@ -1,15 +1,13 @@
 (ns rich-editor.defaults
-  "完整默认配置（含命令实现），避免 config 依赖 clipboard/block-commands 造成循环加载。"
   (:require ["package:flutter/services.dart" :as s]
             [rich-editor.config :as config]
             [rich-editor.services.history-service :as history]
             [rich-editor.services.clipboard-service :as clipboard]
             [rich-editor.commands.editor-commands :as editor-cmd]
-            [rich-editor.commands.text-commands :as text-cmd]))
+            [rich-editor.commands.text-commands :as text-cmd]
+            [rich-editor.commands.block-commands :as block-cmd]))
 
-(defn default-command-handlers
-  "默认 intent -> (fn [!state] ...)，依赖 clipboard/history/editor-cmd/text-cmd。"
-  []
+(defn default-command-handlers []
   {:select-all (fn [!state]
                  (let [active-id (:active-block-id @!state)]
                    (when active-id
@@ -19,37 +17,51 @@
    :undo (fn [!state] (history/undo! !state))
    :redo (fn [!state] (history/redo! !state))
    :copy (fn [!state] (clipboard/copy! @!state))
-   :cut (fn [!state] (clipboard/cut! @!state))
+   :cut (fn [!state] 
+          (let [state @!state]
+            (if-let [g-sel (:global-selection state)]
+              (do (block-cmd/delete-cross-block-selection! !state g-sel)
+                  (swap! !state dissoc :global-selection))
+              (clipboard/cut! @!state))))
    :paste (fn [!state]
             (-> (clipboard/paste! !state)
                 (.then (fn [focus-info]
                          (when focus-info
                            (editor-cmd/focus-block !state (:focus-block focus-info) (:offset focus-info)))))))
+                           
+   ;; 🌟 支持跨块加粗
    :bold (fn [!state]
-           (when-let [active-id (:active-block-id @!state)]
-             (let [block (get-in @!state [:blocks active-id])
-                   sel (:selection block)]
-               (when (and sel (< (.-start sel) (.-end sel)))
-                 (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold true)))))
+           (let [state @!state]
+             (if-let [g-sel (:global-selection state)]
+               (text-cmd/apply-style-cross-block! !state g-sel :bold true)
+               (when-let [active-id (:active-block-id state)]
+                 (let [sel (get-in state [:blocks active-id :selection])]
+                   (when (and sel (< (.-start sel) (.-end sel)))
+                     (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold true)))))))
+                     
+   ;; 🌟 支持跨块斜体
    :italic (fn [!state]
-             (when-let [active-id (:active-block-id @!state)]
-               (let [block (get-in @!state [:blocks active-id])
-                     sel (:selection block)]
-                 (when (and sel (< (.-start sel) (.-end sel)))
-                   (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic true)))))
+             (let [state @!state]
+               (if-let [g-sel (:global-selection state)]
+                 (text-cmd/apply-style-cross-block! !state g-sel :italic true)
+                 (when-let [active-id (:active-block-id state)]
+                   (let [sel (get-in state [:blocks active-id :selection])]
+                     (when (and sel (< (.-start sel) (.-end sel)))
+                       (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic true)))))))
+                       
+   ;; 🌟 支持跨块下划线
    :underline (fn [!state]
-                (when-let [active-id (:active-block-id @!state)]
-                  (let [block (get-in @!state [:blocks active-id])
-                        sel (:selection block)]
-                    (when (and sel (< (.-start sel) (.-end sel)))
-                      (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline true)))))
+                (let [state @!state]
+                  (if-let [g-sel (:global-selection state)]
+                    (text-cmd/apply-style-cross-block! !state g-sel :underline true)
+                    (when-let [active-id (:active-block-id state)]
+                      (let [sel (get-in state [:blocks active-id :selection])]
+                        (when (and sel (< (.-start sel) (.-end sel)))
+                          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline true)))))))
    :link (fn [_state] nil)})
 
 (def full-default-config
-  "带默认命令的完整配置，供 editor-container 等使用。"
   (assoc config/default-config :commands (default-command-handlers)))
 
-(defn merge-config
-  "以 full-default-config 为底合并用户配置。单参数入口，避免循环依赖。"
-  [user-config]
+(defn merge-config [user-config]
   (config/merge-config full-default-config user-config))

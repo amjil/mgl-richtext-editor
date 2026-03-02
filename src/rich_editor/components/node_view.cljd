@@ -4,13 +4,18 @@
             ["package:mgl_editor_core/mgl_selectable_text.dart" :as native]
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.model.delta :as delta]
+            [rich-editor.model.selection :as sel]
             [rich-editor.config :as config]))
 
-;; Stable GlobalKey per block so caret lookup does not fail on rebuild
 (defonce !block-text-keys (atom {}))
 
+(defn- get-safe-offset [state id text-key global-pos]
+  (let [pos (native/MglSelectableText.getPositionAtOffset text-key global-pos)
+        raw-offset (.-offset pos)
+        content-len (count (get-in state [:blocks id :content] ""))]
+    (max 0 (min raw-offset content-len))))
+
 (defn- ordered-list-number
-  "1-based number of this list-item in a contiguous ordered list; nil if not ordered"
   [state id root-index]
   (when (= (get-in state [:blocks id :attributes :list-type]) :ordered)
     (let [root (:root state)
@@ -26,26 +31,71 @@
               (fn [m] (if (contains? m id) m (assoc m id (m/GlobalKey.)))))
        id))
 
-;; content + content-spans -> single TextSpan (tree of TextSpan children for Mongol)
 (defn- content->text-span [content content-spans base-style cfg]
   (let [apply-inline (fn [base attrs] (config/apply-inline-formats cfg base attrs))
         segments (delta/content+spans->segments content content-spans)]
     (cond
-      (empty? segments)
-      (m/TextSpan. .text "" .style base-style)
+      (empty? segments) (m/TextSpan. .text "" .style base-style)
       (and (= (count segments) 1) (empty? (:attrs (first segments))))
       (m/TextSpan. .text (:text (first segments)) .style base-style)
-      :else
-      (m/TextSpan.
-       .style base-style
-       .children (mapv (fn [seg]
-                         (m/TextSpan. .text (:text seg)
-                                     .style (apply-inline base-style (:attrs seg))))
-                       segments)))))
+      :else (m/TextSpan.
+             .style base-style
+             .children (mapv (fn [seg]
+                               (m/TextSpan. .text (:text seg)
+                                            .style (apply-inline base-style (:attrs seg))))
+                             segments)))))
+
+(defn- find-block-at-offset [state global-offset]
+  (let [root (:root state)]
+    (reduce
+     (fn [acc id]
+       (if-let [text-key (get @!block-text-keys id)]
+         (if-let [ctx (.-currentContext text-key)]
+           (try
+             (let [^m/RenderBox rb (.findRenderObject ctx)
+                   local-pos (.globalToLocal rb global-offset)
+                   size (.-size rb)]
+               (if (and (>= (.-dx local-pos) -30.0)
+                        (<= (.-dx local-pos) (+ (.-width size) 30.0)))
+                 (let [pos (native/MglSelectableText.getPositionAtOffset text-key global-offset)
+                       content-len (count (get-in state [:blocks id :content] ""))
+                       ;; 【关键修复】：限制偏移量不越界
+                       safe-off (max 0 (min (.-offset pos) content-len))]
+                   (reduced {:id id :offset safe-off}))
+                 acc))
+             (catch Exception _ acc))
+           acc)
+         acc))
+     nil
+     root)))
+         
+
+(defn- compute-selection [state id]
+  (let [g-sel (:global-selection state)
+        local-sel (get-in state [:blocks id :selection])]
+    (if (and g-sel (:start g-sel) (:end g-sel))
+      (let [n-sel (sel/normalize state g-sel)
+            start-id (get-in n-sel [:start :id])
+            end-id (get-in n-sel [:end :id])
+            start-off (get-in n-sel [:start :offset])
+            end-off (get-in n-sel [:end :offset])
+            cmp-start (sel/compare-block-order state id start-id)
+            cmp-end (sel/compare-block-order state id end-id)
+            content-len (count (get-in state [:blocks id :content] ""))]
+        (cond
+          ;; 完全在选区外
+          (or (< cmp-start 0) (> cmp-end 0)) nil
+          ;; 头尾在同一个块
+          (and (= cmp-start 0) (= cmp-end 0)) (m/TextSelection. .baseOffset start-off .extentOffset end-off)
+          ;; 当前是头块
+          (= cmp-start 0) (m/TextSelection. .baseOffset start-off .extentOffset content-len)
+          ;; 当前是尾块
+          (= cmp-end 0) (m/TextSelection. .baseOffset 0 .extentOffset end-off)
+          ;; 完全被包裹在中间
+          :else (m/TextSelection. .baseOffset 0 .extentOffset content-len)))
+      local-sel)))
 
 (defn block-node
-  "Render a single block. root-index optional; config 可选，缺省用 config/default-config。
-   支持高度定制：块样式与行内格式来自 config。"
   ([id !state] (block-node id !state nil nil))
   ([id !state root-index] (block-node id !state root-index nil))
   ([id !state root-index editor-config]
@@ -55,21 +105,39 @@
       :watch [state !state]
       (let [block (get-in state [:blocks id])
             block-type (:type block)
-            is-active (= (:active-block-id state) id)
-            cursor-visible (:cursor-visible state)
-            selection (:selection block)
+
+            selection (compute-selection state id)
+
+            is-active (boolean 
+                        (or (= (:active-block-id state) id)
+                            (and (:global-selection state) selection (not (.-isCollapsed selection)))))
+
+            cursor-visible (boolean 
+                             (and (= (:active-block-id state) id) 
+                                  (:cursor-visible state) 
+                                  (nil? (:global-selection state))))
+
             style (config/get-block-style cfg block-type)]
+        
+        ;; 🌟 挂载全局手势
         (m/GestureDetector
          .onTapDown
          (fn [^m/TapDownDetails details]
-           (dart:core/print (str "[input] block onTapDown id=" id))
-           (let [position (native/MglSelectableText.getPositionAtOffset
-                           text-key
-                           (.globalPosition details))
-                 offset (.-offset position)]
-             (dart:core/print (str "[input] block tapped id=" id " offset=" offset))
-             (editor-cmd/focus-block !state id offset)
-             (dart:core/print (str "[input] focus-block returned id=" id))))
+           (swap! !state dissoc :global-selection) ;; 清除跨块选区
+           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
+             (editor-cmd/focus-block !state id offset)))
+         
+         .onPanStart
+         (fn [^m/DragStartDetails details]
+           (swap! !state dissoc :global-selection)
+           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
+             (swap! !state assoc :global-selection {:start {:id id :offset offset}
+                                                    :end   {:id id :offset offset}})))
+         .onPanUpdate
+         (fn [^m/DragUpdateDetails details]
+           (when-let [target (find-block-at-offset @!state (.globalPosition details))]
+             (swap! !state assoc-in [:global-selection :end] target)))
+         
          .child
           (m/Padding
            .padding (m.EdgeInsets/only .top 4.0 .left 4.0 .right 4.0 .bottom 4.0)
@@ -93,14 +161,14 @@
                   .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
                   .selection selection
                   .isFocused is-active
-                  .showCursor (and is-active cursor-visible)
+                  .showCursor cursor-visible
                   .showLineDivider true)])
                (let [text-widget (native/MglSelectableText.
                                   .textKey text-key
                                   .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
                                   .selection selection
                                   .isFocused is-active
-                                  .showCursor (and is-active cursor-visible)
+                                  .showCursor cursor-visible
                                   .showLineDivider true)]
                  (if (= block-type :blockquote)
                    (m/Container

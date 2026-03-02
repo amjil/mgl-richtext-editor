@@ -4,6 +4,7 @@
             [rich-editor.model.transaction :as tx]
             [rich-editor.model.selection :as sel]
             [rich-editor.config :as config]
+            [rich-editor.commands.text-commands :as text-cmd]
             ["package:flutter/services.dart" :as s]))
 
 (defn- default-block-type-from-state [!state]
@@ -18,26 +19,20 @@
         selection (:selection block)
         offset (if selection (.-extentOffset selection) 0)
         
-        ;; 1. Text before/after split
         text-before (subs content 0 offset)
         text-after (subs content offset)
         
-        ;; 2. New block id and node（类型可配置）
         new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
         new-block (node/make-node new-id (default-block-type-from-state !state) text-after)
         
-        ;; 3. Index of current block in parent (:root); single-level for now
         parent-id :root
         current-index (.indexOf (get state parent-id) block-id)]
     
     (tx/commit-transaction! !state
       (tx/make-transaction
-        :ops [;; Update old block to text-before
-              (tx/update-content-op block-id 
+        :ops [(tx/update-content-op block-id 
                 (delta/make-delta [(delta/retain 0) (delta/delete (count content)) (delta/insert text-before)]))
-              ;; Insert new block after current
               (tx/insert-op parent-id (inc current-index) [new-block])]
-        ;; Do not set :after-selection here: transaction would write to "current active block" and caret would jump back. Focus/IME by ime-service callback.
         :after-selection nil)
       :merge? false)
     new-id))
@@ -48,7 +43,6 @@
   (let [state @!state
         root (:root state)
         current-idx (.indexOf root block-id)]
-    ;; Only merge when not first block
     (when (> current-idx 0)
       (let [prev-id (nth root (dec current-idx))
             prev-block (get-in state [:blocks prev-id])
@@ -60,16 +54,77 @@
         
         (tx/commit-transaction! !state
           (tx/make-transaction
-            :ops [;; Append current block to previous
-                  (tx/update-content-op prev-id 
+            :ops [(tx/update-content-op prev-id 
                     (delta/make-delta [(delta/retain new-offset) (delta/insert curr-content)]))
-                  ;; Remove current block
                   (tx/delete-op :root current-idx 1)]
-            ;; Caret at merge point
             :after-selection (s/TextSelection. .baseOffset new-offset .extentOffset new-offset))
           :merge? false)
-        ;; Return prev block id and offset; caller (e.g. ime-service) does focus-block
         {:prev-id prev-id :new-offset new-offset}))))
+
+;; =============================================================
+;; [新增] 跨块删除操作 (Cross-Block Deletion)
+;; =============================================================
+
+(defn delete-cross-block-selection!
+  "处理跨块选区删除：截断首块，删除中间所有块，将尾块剩余内容合并到首块，并删除尾块。"
+  [!state global-selection]
+  (let [state @!state
+        ;; 1. 规范化选区（确保 start 在 end 之前，哪怕用户是从下往上反向拖拽的）
+        n-sel (sel/normalize state global-selection)
+        start-pos (:start n-sel)
+        end-pos (:end n-sel)
+        start-id (:id start-pos)
+        end-id (:id end-pos)
+        start-off (or (:offset start-pos) 0)
+        end-off (or (:offset end-pos) 0)]
+
+    (if (= start-id end-id)
+      ;; 如果发现头尾 ID 一样，说明没跨块，安全降级回单块删除
+      (text-cmd/delete-range !state start-id start-off (- end-off start-off))
+
+      ;; 真正的跨块删除
+      (let [root (:root state)
+            start-idx (.indexOf root start-id)
+            end-idx (.indexOf root end-id)
+
+            start-content (:content (get-in state [:blocks start-id]) "")
+            end-content (:content (get-in state [:blocks end-id]) "")
+
+            ;; 提取尾块未被选中、需要保留的剩余内容（即光标后的文字）
+            remaining-end-text (if (<= end-off (count end-content))
+                                 (subs end-content end-off)
+                                 "")
+
+            ;; 2. 构造身体 (Body) 操作：删除中间所有的块
+            ;; 注意：必须从后往前删 (reverse range)，否则数组索引塌陷会报错！
+            middle-ops (for [i (range (dec end-idx) start-idx -1)]
+                         (tx/delete-op :root i 1))
+
+            ;; 3. 构造头部 (Head) 操作：保留前面未选中部分，删除选中部分，拼上尾块残余
+            del-len (- (count start-content) start-off)
+            start-delta (delta/make-delta
+                          (cond-> [(delta/retain start-off)]
+                            (> del-len 0) (conj (delta/delete del-len))
+                            (> (count remaining-end-text) 0) (conj (delta/insert remaining-end-text))))
+            update-start-op (tx/update-content-op start-id start-delta)
+
+            ;; 4. 构造尾部 (Tail) 操作：删除整个尾块
+            delete-end-op (tx/delete-op :root end-idx 1)
+
+            ;; 5. 组合 Transaction
+            ops (concat [update-start-op delete-end-op] middle-ops)
+
+            ;; 6. 操作完成后，光标落在合并处的截断点
+            after-sel (s/TextSelection. .baseOffset start-off .extentOffset start-off)]
+
+        (tx/commit-transaction! !state
+          (tx/make-transaction :ops (vec ops) :after-selection after-sel)
+          :merge? false)
+        
+        ;; 返回首块的 ID 和新偏移量，方便上层组件请求重获焦点
+        {:focus-block start-id :offset start-off}))))
+
+;; =============================================================
 
 (defn move-block-up
   "Move block up (reorder)"
@@ -104,7 +159,6 @@
   (let [state @!state
         root (:root state)
         n (count root)
-        ;; Flutter newIndex is post-drag; derive insert index from old/new
         old-index (int old-index)
         new-index (int new-index)
         insert-index (if (> new-index old-index) (dec new-index) new-index)
@@ -128,7 +182,6 @@
       (tx/make-transaction
         :ops [(tx/insert-op :root idx [new-block])]
         :after-selection nil))
-    ;; Activate new block and IME at block start (image blocks skip IME). Caller focus-block when needed.
     nil))
 
 (defn insert-image-block

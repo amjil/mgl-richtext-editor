@@ -118,16 +118,24 @@
             end (max base ext)]
         (cond
           (= selectorName "deleteBackward:")
-          (if (< start end)
-            (do (text-cmd/delete-range !state block-id start (- end start))
-                (update-state! (get-in @!state [:blocks block-id :content]) (get-in @!state [:blocks block-id :selection]))
-                (request-frame!))
-            (if (<= ext 0)
-              (when-let [{:keys [prev-id new-offset]} (block-cmd/merge-with-previous !state block-id)]
-                (if-let [f @!merge-focus-callback] (f !state prev-id new-offset) (focus-block-internal! !state prev-id new-offset)))
-              (do (text-cmd/delete-range !state block-id (dec ext) 1)
+          (if-let [g-sel (:global-selection @!state)]
+            (do
+              (let [focus-info (block-cmd/delete-cross-block-selection! !state g-sel)]
+                (swap! !state dissoc :global-selection)
+                (if-let [f @!merge-focus-callback]
+                  (f !state (:focus-block focus-info) (:offset focus-info))
+                  (focus-block-internal! !state (:focus-block focus-info) (:offset focus-info))))
+              (request-frame!))
+            (if (< start end)
+              (do (text-cmd/delete-range !state block-id start (- end start))
                   (update-state! (get-in @!state [:blocks block-id :content]) (get-in @!state [:blocks block-id :selection]))
-                  (request-frame!))))
+                  (request-frame!))
+              (if (<= ext 0)
+                (when-let [{:keys [prev-id new-offset]} (block-cmd/merge-with-previous !state block-id)]
+                  (if-let [f @!merge-focus-callback] (f !state prev-id new-offset) (focus-block-internal! !state prev-id new-offset)))
+                (do (text-cmd/delete-range !state block-id (dec ext) 1)
+                    (update-state! (get-in @!state [:blocks block-id :content]) (get-in @!state [:blocks block-id :selection]))
+                    (request-frame!)))))
 
           (= selectorName "deleteForward:")
           (if (< start end)
@@ -182,7 +190,6 @@
 
     :update-caret!
     (fn []
-      ;; 【关键修改】：不再直接引用 node-view，而是通过外部注入的回调拿坐标
       (when-let [f @!get-caret-offset-callback]
         (when-let [global-offset (f block-id)]
           (swap! ime-ctrl/!ime-state assoc :caret-offset global-offset))))
@@ -196,6 +203,8 @@
         (subs content 0 offset)))})
 
   (let [block (get-in @!state [:blocks block-id])
+        content (:content block "")
+        content-len (count content)
         config (s/TextInputConfiguration.
                  .inputType s.TextInputType/multiline
                  .inputAction s.TextInputAction/newline
@@ -203,14 +212,23 @@
                  .autocorrect false)
         conn (s/TextInput.attach (create-input-client !state block-id) config)]
     (reset! !connection conn)
-    (.setEditingState conn 
-      (s/TextEditingValue. 
-        .text (:content block "")
-        .selection (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))))
+    
+    (let [raw-sel (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))
+          safe-base (max 0 (min (.-baseOffset raw-sel) content-len))
+          safe-ext  (max 0 (min (.-extentOffset raw-sel) content-len))
+          safe-sel  (s/TextSelection. .baseOffset safe-base .extentOffset safe-ext)]
+      (.setEditingState conn 
+        (s/TextEditingValue. 
+          .text content
+          .selection safe-sel)))
     (.show conn)))
 
 (defn update-state! [content selection]
-  (when-let [conn @!connection]
-    (.setEditingState conn 
-      (s/TextEditingValue. .text content .selection selection)))
-  (bump-after-update!))
+  (let [content-len (count (or content ""))
+        safe-base (if selection (max 0 (min (.-baseOffset selection) content-len)) 0)
+        safe-ext  (if selection (max 0 (min (.-extentOffset selection) content-len)) 0)
+        safe-sel  (s/TextSelection. .baseOffset safe-base .extentOffset safe-ext)]
+    (when-let [conn @!connection]
+      (.setEditingState conn 
+        (s/TextEditingValue. .text (or content "") .selection safe-sel)))
+    (bump-after-update!)))

@@ -5,8 +5,6 @@
             [rich-editor.model.transaction :as tx]
             [rich-editor.model.selection :as sel]))
 
-;; --- Helpers: active block data ---
-
 (defn- get-active-info [state]
   (let [block-id (:active-block-id state)
         block (get-in state [:blocks block-id])
@@ -15,19 +13,15 @@
      :block block
      :selection selection}))
 
-;; --- Core commands ---
-
 (defn insert-string
   "Insert string at offset in block-id"
   [!state block-id offset text]
   (dart:core/print (str "[input] insert-string entry block-id=" block-id " offset=" offset " text=" (pr-str text)))
   (let [new-offset (+ offset (count text))
-        ;; 1. Delta: retain up to offset, insert text
         ops [(tx/update-content-op 
                block-id 
                (delta/make-delta [(delta/retain offset) 
                                   (delta/insert text)]))]
-        ;; 2. New selection (caret after insert)
         after-sel (sel/make-position block-id new-offset)]
     
     (tx/commit-transaction! !state
@@ -71,10 +65,12 @@
         :after-selection after-sel)
       :merge? true)))
 
-;; --- Style commands (placeholder for rich text) ---
+;; =============================================================
+;; 基础单块格式化
+;; =============================================================
 
 (defn apply-style
-  "Apply style to current selection (e.g. bold)"
+  "Apply style to current selection (e.g. bold) within a single block"
   [!state block-id selection-start selection-end attr-key attr-val]
   (let [len (- selection-end selection-start)
         ops [(tx/update-content-op 
@@ -88,3 +84,53 @@
         :after-selection (m/TextSelection. 
                            .baseOffset selection-start 
                            .extentOffset selection-end)))))
+
+;; =============================================================
+;; [新增] 跨块格式化操作 (Cross-Block Formatting)
+;; =============================================================
+
+(defn apply-style-cross-block!
+  "跨块应用行内格式（头块截尾，中间全包，尾块截头）。
+   参数 global-selection 必须是包含 :start 和 :end 的 Map。"
+  [!state global-selection attr-key attr-val]
+  (let [state @!state
+        n-sel (sel/normalize state global-selection)
+        start-pos (:start n-sel)
+        end-pos (:end n-sel)
+        start-id (:id start-pos)
+        end-id (:id end-pos)
+        start-off (or (:offset start-pos) 0)
+        end-off (or (:offset end-pos) 0)
+        root (:root state)]
+
+    (if (= start-id end-id)
+      ;; 未跨块，安全降级
+      (apply-style !state start-id start-off end-off attr-key attr-val)
+      
+      (let [start-idx (.indexOf root start-id)
+            end-idx (.indexOf root end-id)
+            
+            ;; 1. 头部：从 start-off 开始到内容末尾，应用格式
+            start-len (max 0 (- (count (:content (get-in state [:blocks start-id]) "")) start-off))
+            op-start (tx/update-content-op start-id 
+                       (delta/make-delta [(delta/retain start-off) 
+                                          (delta/retain start-len {attr-key attr-val})]))
+            
+            ;; 2. 尾部：从 0 开始直到 end-off，应用格式
+            op-end (tx/update-content-op end-id 
+                     (delta/make-delta [(delta/retain end-off {attr-key attr-val})]))
+            
+            ;; 3. 身体：处于中间的所有完整块，全范围应用格式
+            middle-ids (subvec root (inc start-idx) end-idx)
+            middle-ops (map (fn [id]
+                              (let [len (count (:content (get-in state [:blocks id]) ""))]
+                                (tx/update-content-op id 
+                                  (delta/make-delta [(delta/retain len {attr-key attr-val})]))))
+                            middle-ids)
+            
+            ;; 4. 组合并执行
+            ops (concat [op-start op-end] middle-ops)]
+            
+        (tx/commit-transaction! !state
+          (tx/make-transaction :ops (vec ops) :after-selection nil)
+          :merge? false)))))
