@@ -10,8 +10,10 @@
             [rich-editor.defaults :as defaults]
             [rich-editor.components.node-view :as node-view]
             [shared-ime.fst-reader :as fst]
-            [shared-ime.next :as next]
-            [shared-ime.overlay-view :as overlay]))
+            [shared-ime.overlay-view :as overlay]
+            ;; 🌟 引入刚写好的导入导出服务
+            [rich-editor.services.export-service :as export]
+            [rich-editor.services.import-service :as import]))
 
 (defonce !state (atom {:root []
                        :blocks {}
@@ -21,10 +23,23 @@
 
 (defonce !ime-attached (atom false))
 
+;; 🌟 准备一段用于测试的复杂 HTML（包含标题、加粗、斜体和嵌套列表）
+(def test-html-string
+  "<h1>ᠮᠣᠩᠭᠣᠯ ᠪᠢᠴᠢᠭ</h1>
+   <p>ᠰᠠᠢᠨ ᠪᠠᠢᠨ᠎ᠠ ᠤᠤ, <strong>ᠲᠠᠨᠢᠯᠴᠠᠬᠤ ᠳᠤ</strong> ᠲᠠᠭᠠᠲᠠᠢ ᠪᠠᠢᠨ᠎ᠠ.</p>
+   <ul>
+     <li>ᠡᠬᠢᠨ ᠦ ᠮᠥᠷ (List 1)</li>
+     <ul>
+       <li>ᠳᠡᠳ᠋ ᠮᠥᠷ (Nested List 1)</li>
+       <li>ᠳᠡᠳ᠋ ᠮᠥᠷ ᠬᠣᠶᠠᠷ (Nested List 2)</li>
+     </ul>
+     <li>ᠳᠠᠷᠠᠭᠠᠬᠢ ᠮᠥᠷ (List 2)</li>
+   </ul>
+   <blockquote>ᠡᠨᠡ ᠪᠣᠯ ᠢᠰᠢᠲᠠᠲᠠᠯ᠂ <em>ᠮᠢᠨᠢ</em> ᠲᠤᠷᠰᠢᠯᠲᠠ (Blockquote with italic)</blockquote>")
+
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)
   (fst/ensure-loaded)
-  (next/ensure-loaded)
 
   (editor-cmd/clear-document !state)
 
@@ -34,7 +49,6 @@
                                    (editor-cmd/focus-block !state new-id 0)))
   (ime/set-after-update-callback! (fn [] (swap! root/!refresh-tick inc)))
 
-  ;; inject caret-offset callback into ime-service to break cyclic dependency
   (ime/set-get-caret-offset-callback!
    (fn [block-id]
      (when-let [text-key (get @node-view/!block-text-keys block-id)]
@@ -51,7 +65,6 @@
       .theme (m/ThemeData 
                .primarySwatch m.Colors/blue
                .brightness m.Brightness/dark
-               .fontFamily "OyunQaganTig"
                .visualDensity m.VisualDensity/adaptivePlatformDensity)
       .home
       (f/widget
@@ -76,7 +89,37 @@
              (m/IconButton
                .icon (m/Icon m.Icons/format_bold)
                .tooltip "Bold (Ctrl+B)"
-               .onPressed #(config/run-command defaults/full-default-config !state :bold))])
+               .onPressed #(config/run-command defaults/full-default-config !state :bold))
+             
+             ;; 🌟 垂直分割线，区分编辑和导入导出功能
+             (m/VerticalDivider .color m.Colors/grey .width 20.0 .indent 10.0 .endIndent 10.0)
+
+             ;; 🌟 1. 导入测试按钮 (Import HTML)
+             (m/IconButton
+               .icon (m/Icon m.Icons/file_download)
+               .tooltip "Test Import HTML"
+               .onPressed #(let [new-nodes (import/html->blocks test-html-string)
+                                 new-root (mapv :id new-nodes)
+                                 new-blocks-map (into {} (map (juxt :id identity) new-nodes))]
+                             ;; 将解析出来的块直接覆盖进状态中，并重置历史记录
+                             (swap! !state assoc 
+                                    :root new-root 
+                                    :blocks new-blocks-map 
+                                    :history {:undo-stack [] :redo-stack [] :max-depth 100}
+                                    :global-selection nil)
+                             ;; 强制重获焦点
+                             (when (seq new-root)
+                               (editor-cmd/focus-block !state (first new-root) 0))))
+
+             ;; 🌟 2. 导出测试按钮 (Export HTML)
+             (m/IconButton
+               .icon (m/Icon m.Icons/code)
+               .tooltip "Export HTML to Console"
+               .onPressed #(let [html (export/state->html @!state)]
+                             ;; 打印到控制台
+                             (dart:core/print "\n========= 🚀 EXPORTED HTML =========")
+                             (dart:core/print html)
+                             (dart:core/print "====================================\n")))])
           
           .body
           (overlay/ime-global-wrapper

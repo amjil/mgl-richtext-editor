@@ -1,0 +1,163 @@
+(ns rich-editor.services.import-service
+  (:require ["package:html/parser.dart" :as html-parser]
+            ["package:html/dom.dart" :as dom]
+            [clojure.string :as str]
+            [rich-editor.model.node :as node]
+            [rich-editor.model.delta :as delta]))
+
+(defn- generate-id []
+  (str "b-" (.-microsecondsSinceEpoch (dart:core/DateTime.now)) "-" (rand-int 10000)))
+
+;; =============================================================
+;; 1. Helper: convert temporary Delta to editor content-spans
+;; =============================================================
+
+(defn- deltas->content-spans 
+  "Convert temporary {:insert text :attributes attrs} to editor span format"
+  [deltas]
+  (loop [ds deltas
+         current-pos 0
+         spans []]
+    (if (empty? ds)
+      spans
+      (let [d (first ds)
+            text-len (count (:insert d))
+            attrs (:attributes d)]
+        (if (and attrs (seq attrs))
+          (recur (rest ds) 
+                 (+ current-pos text-len) 
+                 (conj spans {:start current-pos :end (+ current-pos text-len) :attrs attrs}))
+          (recur (rest ds) 
+                 (+ current-pos text-len) 
+                 spans))))))
+
+;; =============================================================
+;; 2. HTML tag mapping
+;; =============================================================
+
+(defn- tag->block-type [tag default-type]
+  (case tag
+    "h1" :heading-1
+    "h2" :heading-2
+    "blockquote" :blockquote
+    "pre" :code-block
+    "li" :list-item
+    "p"  :paragraph
+    "img" :image
+    default-type))
+
+(defn- tag->inline-style [tag current-styles]
+  (case tag
+    ("b" "strong") (assoc current-styles :bold true)
+    ("i" "em")     (assoc current-styles :italic true)
+    ("u" "ins")    (assoc current-styles :underline true)
+    current-styles))
+
+;; =============================================================
+;; 3. Core DOM recursive walker
+;; =============================================================
+
+(defn- flush-block! 
+  "Wrap accumulated parsed text and styles into a single Block"
+  [!current-block !blocks]
+  (let [{:keys [type deltas indent url]} @!current-block]
+    (when (or (seq deltas) (= type :image))
+      (let [content (apply str (map :insert deltas))
+            spans (deltas->content-spans deltas)
+            new-node (node/make-node (generate-id) type content)
+            
+            ;; Attach indent attribute
+            new-node (if (> indent 0)
+                       (assoc-in new-node [:attributes :indent] indent)
+                       new-node)
+            ;; Attach image data
+            new-node (if (= type :image)
+                       (assoc new-node :data {:url url})
+                       new-node)]
+                       
+        (swap! !blocks conj (assoc new-node :content-spans spans))))
+    
+    (reset! !current-block {:type :paragraph :deltas [] :indent 0})))
+
+(defn- walk-node! 
+  "Recursively walk DOM tree; increment current-indent on nested lists"
+  [^dom/Node node current-styles current-indent !current-block !blocks]
+  (cond
+    (= (.-nodeType node) dom/Node.TEXT_NODE)
+    (let [text (.-text node)]
+      (when-not (str/blank? (str/trim text))
+        (swap! !current-block update :deltas conj (delta/insert text current-styles))))
+
+    (= (.-nodeType node) dom/Node.ELEMENT_NODE)
+    (let [^dom/Element el node
+          tag-name (str/lower-case (.-localName el))]
+      (cond
+        ;; A. List container: level + 1, recurse children
+        (#{"ul" "ol"} tag-name)
+        (doseq [child (.-nodes el)]
+          (walk-node! child current-styles (inc current-indent) !current-block !blocks))
+
+        ;; B. Block element: flush previous block, start new block
+        (#{"p" "div" "h1" "h2" "h3" "blockquote" "pre" "li" "img"} tag-name)
+        (do
+          (flush-block! !current-block !blocks)
+          (let [b-type (tag->block-type tag-name :paragraph)
+                actual-indent (max 0 current-indent)]
+            (if (= b-type :image)
+              (let [src (if (.-attributes el) (get (.-attributes el) "src") "")]
+                (reset! !current-block {:type :image :deltas [] :indent actual-indent :url src})
+                (flush-block! !current-block !blocks))
+              (do
+                (reset! !current-block {:type b-type :deltas [] :indent actual-indent})
+                (doseq [child (.-nodes el)]
+                  (walk-node! child current-styles current-indent !current-block !blocks))
+                (flush-block! !current-block !blocks)))))
+
+        ;; C. Inline element: update current effective styles
+        :else
+        (let [new-styles (tag->inline-style tag-name current-styles)]
+          (doseq [child (.-nodes el)]
+            (walk-node! child new-styles current-indent !current-block !blocks)))))))
+
+;; =============================================================
+;; Public API
+;; =============================================================
+
+(defn html->blocks 
+  "Parse external HTML string into editor Block array"
+  [html-str]
+  (let [document (html-parser/parse html-str)
+        body (.-body document)
+        !blocks (atom [])
+        !current-block (atom {:type :paragraph :deltas [] :indent 0})]
+    
+    (when body
+      (doseq [child (.-nodes body)]
+        ;; Pass -1 as top-level indent so first ul becomes 0
+        (walk-node! child {} -1 !current-block !blocks)))
+    
+    (flush-block! !current-block !blocks)
+    @!blocks))
+
+(defn md->blocks
+  "Simple Markdown parsing (block markers and leading indent only)"
+  [md-text]
+  (let [lines (str/split-lines md-text)
+        valid-lines (filter #(not (str/blank? %)) lines)]
+    (mapv (fn [line]
+            (let [[_ spaces raw-content] (re-find #"^( *)(.*)$" line)
+                  indent-level (quot (count spaces) 2)
+                  id (generate-id)
+                  make-node (fn [type content]
+                              (let [n (node/make-node id type content)]
+                                (if (> indent-level 0)
+                                  (assoc-in n [:attributes :indent] indent-level)
+                                  n)))]
+              (cond
+                (str/starts-with? raw-content "# ")  (make-node :heading-1 (subs raw-content 2))
+                (str/starts-with? raw-content "## ") (make-node :heading-2 (subs raw-content 3))
+                (str/starts-with? raw-content "> ")  (make-node :blockquote (subs raw-content 2))
+                (or (str/starts-with? raw-content "- ") 
+                    (str/starts-with? raw-content "* ")) (make-node :list-item (subs raw-content 2))
+                :else (make-node :paragraph raw-content))))
+          valid-lines)))

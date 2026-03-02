@@ -1,0 +1,83 @@
+(ns rich-editor.services.export-service
+  (:require [clojure.string :as str]
+            [rich-editor.model.delta :as delta]))
+
+(defn- escape-html [text]
+  (-> text
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")
+      (str/replace "\n" "<br>")))
+
+(defn- span->html [{:keys [text attrs]}]
+  (let [t (escape-html text)
+        t (if (:bold attrs) (str "<strong>" t "</strong>") t)
+        t (if (:italic attrs) (str "<em>" t "</em>") t)
+        t (if (:underline attrs) (str "<u>" t "</u>") t)]
+    t))
+
+(defn- block->html [block]
+  (let [b-type (:type block)
+        content (:content block "")
+        spans (:content-spans block [])
+        
+        ;; Read indent, convert to inline CSS (top padding for vertical layout)
+        indent-level (get-in block [:attributes :indent] 0)
+        style-str (if (> indent-level 0)
+                    (str " style=\"padding-top: " (* indent-level 32) "px;\"")
+                    "")
+                    
+        segments (delta/content+spans->segments content spans)
+        inner-html (apply str (map span->html segments))]
+    
+    (case b-type
+      :heading-1  (str "<h1" style-str ">" inner-html "</h1>\n")
+      :heading-2  (str "<h2" style-str ">" inner-html "</h2>\n")
+      :blockquote (str "<blockquote" style-str ">" inner-html "</blockquote>\n")
+      :code-block (str "<pre" style-str "><code>" inner-html "</code></pre>\n")
+      :list-item  (str "<li" style-str ">" inner-html "</li>\n")
+      :image      (str "<img" style-str " src=\"" (get-in block [:data :url] "") "\" />\n")
+      ;; Default to paragraph
+      (str "<p" style-str ">" inner-html "</p>\n"))))
+
+(defn state->html 
+  "Export editor state to HTML string"
+  [state]
+  (let [root (:root state)]
+    (apply str (map #(block->html (get-in state [:blocks %])) root))))
+
+;; =============================================================
+;; Markdown export (with indent)
+;; =============================================================
+
+(defn- span->md [{:keys [text attrs]}]
+  (let [t text
+        t (if (:bold attrs) (str "**" t "**") t)
+        t (if (:italic attrs) (str "*" t "*") t)]
+    t))
+
+(defn- block->md [block]
+  (let [b-type (:type block)
+        content (:content block "")
+        spans (:content-spans block [])
+        indent-level (get-in block [:attributes :indent] 0)
+        ;; Markdown indent: 2 spaces per level
+        indent-str (apply str (repeat (* 2 indent-level) " "))
+        
+        segments (delta/content+spans->segments content spans)
+        inner-md (apply str (map span->md segments))]
+    
+    (case b-type
+      :heading-1  (str indent-str "# " inner-md "\n\n")
+      :heading-2  (str indent-str "## " inner-md "\n\n")
+      :blockquote (str indent-str "> " inner-md "\n\n")
+      :code-block (str indent-str "```\n" indent-str inner-md "\n" indent-str "```\n\n")
+      :list-item  (str indent-str "- " inner-md "\n")
+      :image      (str indent-str "![image](" (get-in block [:data :url] "") ")\n\n")
+      (str indent-str inner-md "\n\n"))))
+
+(defn state->md 
+  "Export editor state to Markdown string"
+  [state]
+  (let [root (:root state)]
+    (apply str (map #(block->md (get-in state [:blocks %])) root))))
