@@ -24,26 +24,21 @@
 
 (defn- apply-op [state op]
   (case (:type op)
-    ;; Insert: update blocks pool and parent id list
     :insert
     (let [{:keys [parent-id index nodes]} op
           node-ids (mapv :id nodes)
-          ;; 1. Add to blocks pool
           state (update state :blocks (fn [m] (reduce #(assoc %1 (:id %2) %2) m nodes)))
-          ;; 2. Insert id refs
           parent-path (if (= parent-id :root) [:root] [:blocks parent-id :children])]
-      (update-in state parent-path 
+      (update-in state parent-path
                  (fn [ids] (let [[before after] (split-at index (or ids []))]
-                            (vec (concat before node-ids after))))))
+                             (vec (concat before node-ids after))))))
 
-    ;; Delete: remove from id list; keep blocks for undo
     :delete
     (let [{:keys [parent-id index count]} op
           parent-path (if (= parent-id :root) [:root] [:blocks parent-id :children])]
-      (update-in state parent-path 
+      (update-in state parent-path
                  (fn [ids] (vec (concat (subvec ids 0 index) (subvec ids (+ index count)))))))
 
-    ;; Update content via delta; also update content-spans for inline format (bold, italic, etc.)
     :update-content
     (let [{:keys [block-id delta]} op
           block (get-in state [:blocks block-id])
@@ -83,10 +78,13 @@
           with-global)))))
 
 (defn commit-transaction!
-  "Apply transaction to global atom. When merge? is false, push-history first for undo."
-  [!state transaction & {:keys [merge?]}]
+  "Apply transaction to global atom. Uses history service to handle debounced undo stack pushes."
+  ;; 🌟 Note: defaulting to false is safer here
+  [!state transaction & {:keys [merge?] :or {merge? false}}]
   (dart:core/print (str "[input] commit-transaction! merge?=" merge? " ops-count=" (count (:ops transaction))))
   (swap! !state (fn [curr]
-                  (let [curr' (if merge? curr (history/push-history curr))
+                  ;; 🌟 Core change: pass current state and merge? flag together to push-history
+                  ;; History service decides by timestamp whether to save a new snapshot or just refresh last-edit time
+                  (let [curr' (history/push-history curr merge?)
                         next-state (apply-transaction curr' transaction)]
                     next-state))))

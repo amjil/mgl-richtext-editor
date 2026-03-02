@@ -1,27 +1,46 @@
 (ns rich-editor.services.history-service)
 
-;; 1. History stack. Keep under :history in !state: {:undo-stack [] :redo-stack [] :max-depth 100}
+;; 🌟 Debounce threshold for consecutive operations (ms). 800ms is a common sweet spot for typing feel.
+(def ^:private debounce-interval-ms 800)
+
+;; 1. History stack. Keep under :history in !state: {:undo-stack [] :redo-stack [] :max-depth 100 :last-edit-time 0}
 
 (defn- capture-snapshot
-  "Document snapshot for history (blocks, root, selection, active-block-id)"
+  "Document snapshot for history (blocks, root, selection, active-block-id, global-selection)"
   [state]
   {:blocks (:blocks state)
    :root (:root state)
    :selection (:selection state)
-   :active-block-id (:active-block-id state)})
+   :active-block-id (:active-block-id state)
+   ;; 🌟 Also persist global selection
+   :global-selection (:global-selection state)})
 
 ;; 2. Undo/redo
 
 (defn push-history
-  "Call before transaction; push current state to undo stack"
-  [state]
-  (let [history (or (:history state) {:undo-stack [] :redo-stack [] :max-depth 100})
-        snapshot (capture-snapshot state)
-        new-undo-stack (conj (:undo-stack history) snapshot)]
-    (assoc state :history 
-           (assoc history 
-                  :undo-stack (vec (take-last (:max-depth history) new-undo-stack))
-                  :redo-stack []))))
+  "Call before transaction; push current state to undo stack with debouncing"
+  [state merge?]
+  (let [now (.-millisecondsSinceEpoch (dart:core/DateTime.now))
+        history (or (:history state) {:undo-stack [] :redo-stack [] :max-depth 100})
+        last-time (:last-edit-time history 0)]
+
+    (if (and merge? (< (- now last-time) debounce-interval-ms))
+      ;; 🌟 [Debounce hit]: last input was recent and merge allowed. No new snapshot, only refresh timestamp
+      (assoc state :history (assoc history :last-edit-time now))
+
+      ;; 🌟 [Normal push]: last op was long ago, or this is a major action (merge? = false)
+      (let [snapshot (capture-snapshot state)
+            new-undo-stack (conj (:undo-stack history []) snapshot)
+            max-depth (:max-depth history 100)
+            ;; Cap max undo depth to avoid memory blowup
+            trimmed-undo (if (> (count new-undo-stack) max-depth)
+                           (vec (rest new-undo-stack))
+                           new-undo-stack)]
+        (assoc state :history
+               (assoc history
+                      :undo-stack trimmed-undo
+                      :redo-stack []
+                      :last-edit-time now))))))
 
 (defn undo
   "Undo: pop undo-stack, push current to redo-stack"
@@ -35,7 +54,9 @@
         (assoc new-state :history
                (assoc history
                       :undo-stack (pop undo-stack)
-                      :redo-stack (conj redo-stack current-snapshot)))))))
+                      :redo-stack (conj redo-stack current-snapshot)
+                      ;; 🌟 After undo, reset timestamp so next typing becomes a new history entry
+                      :last-edit-time 0))))))
 
 (defn redo
   "Redo: pop redo-stack, push current to undo-stack"
@@ -49,7 +70,9 @@
         (assoc new-state :history
                (assoc history
                       :undo-stack (conj undo-stack current-snapshot)
-                      :redo-stack (pop redo-stack)))))))
+                      :redo-stack (pop redo-stack)
+                      ;; 🌟 After redo, reset timestamp as well
+                      :last-edit-time 0))))))
 
 ;; 3. Command integration
 
