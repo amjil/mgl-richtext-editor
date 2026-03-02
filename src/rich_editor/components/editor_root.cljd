@@ -5,7 +5,8 @@
             [rich-editor.components.node-view :as node-view]
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
-            ;; shared-ime controller and overlay view
+            ;; Introduce editor-cmd for focus jump across blocks
+            [rich-editor.commands.editor-commands :as editor-cmd]
             [shared-ime.controller :as ime-ctrl]
             [shared-ime.overlay-view :as overlay]))
 
@@ -20,30 +21,102 @@
      (f/widget
       :watch [state !state _ !refresh-tick]
       (let [cfg* (get state :editor-config cfg)]
-        
+
         ;; wrap root with shared-ime candidate panel
         (overlay/ime-global-wrapper
          (m/Focus
           .autofocus true
           ;; delegate key events to FST engine
-          .onKeyEvent  (fn [node event]
-                         ;; 1. let FST input engine handle first
-                         (let [ime-res (ime-ctrl/handle-key-event event)]
-                           (if (= ime-res m.KeyEventResult/handled)
-                             ime-res
-                             ;; 2. if IME didn't handle, we intercept Tab
-                             (if (= (.-logicalKey event) s.LogicalKeyboardKey/tab)
-                               ;; must handle both KeyDown and KeyUp or focus will still escape
-                               (if (dart/is? event s/KeyDownEvent)
-                                 (do
-                                   ;; check if Shift is pressed
-                                   (if (.-isShiftPressed (.-instance s/HardwareKeyboard))
-                                     (config/run-command cfg* !state :outdent)
-                                     (config/run-command cfg* !state :indent))
-                                   m.KeyEventResult/handled)
-                                 m.KeyEventResult/handled)
-                               ;; other keys: pass through to CallbackShortcuts
-                               m.KeyEventResult/ignored))))
+          .onKeyEvent
+          (fn [node event]
+            (let [ime-res (ime-ctrl/handle-key-event event)]
+              (if (= ime-res m.KeyEventResult/handled)
+                ime-res
+
+                (let [logical-key (.-logicalKey event)
+                      is-down? (dart/is? event s/KeyDownEvent)
+
+                      is-up? (= logical-key s.LogicalKeyboardKey/arrowUp)
+                      is-down-arrow? (= logical-key s.LogicalKeyboardKey/arrowDown)
+                      is-left? (= logical-key s.LogicalKeyboardKey/arrowLeft)
+                      is-right? (= logical-key s.LogicalKeyboardKey/arrowRight)
+                      is-arrow? (or is-up? is-down-arrow? is-left? is-right?)]
+
+                  (cond
+                    ;; A. Intercept Tab key (level indent)
+                    (= logical-key s.LogicalKeyboardKey/tab)
+                    (if is-down?
+                      (do
+                        (if (.-isShiftPressed (.-instance s/HardwareKeyboard))
+                          (config/run-command cfg* !state :outdent)
+                          (config/run-command cfg* !state :indent))
+                        m.KeyEventResult/handled)
+                      m.KeyEventResult/handled)
+
+                    ;; B. Separate logic for the four arrow keys
+                    is-arrow?
+                    (if is-down?
+                      (let [active-id (:active-block-id @!state)]
+                        (if active-id
+                          (let [block (get-in @!state [:blocks active-id])
+                                sel (:selection block)
+                                offset (if sel (.-extentOffset sel) 0)
+                                content-len (count (:content block ""))
+                                root (:root @!state)
+                                idx (.indexOf root active-id)]
+
+                            (cond
+                              ;; Up: move back 1 character within current paragraph
+                              is-up?
+                              (if (> offset 0)
+                                (do (editor-cmd/focus-block !state active-id (dec offset))
+                                    m.KeyEventResult/handled)
+                                (if (> idx 0)
+                                  (let [prev-id (nth root (dec idx))
+                                        prev-len (count (:content (get-in @!state [:blocks prev-id]) ""))]
+                                    (editor-cmd/focus-block !state prev-id prev-len)
+                                    m.KeyEventResult/handled)
+                                  m.KeyEventResult/handled))
+
+                              ;; Down: move forward 1 character within current paragraph
+                              is-down-arrow?
+                              (if (< offset content-len)
+                                (do (editor-cmd/focus-block !state active-id (inc offset))
+                                    m.KeyEventResult/handled)
+                                (if (< idx (dec (count root)))
+                                  (let [next-id (nth root (inc idx))]
+                                    (editor-cmd/focus-block !state next-id 0)
+                                    m.KeyEventResult/handled)
+                                  m.KeyEventResult/handled))
+
+                              ;; Left: jump to previous block, try to keep vertical position
+                              is-left?
+                              (if (> idx 0)
+                                (let [prev-id (nth root (dec idx))
+                                      prev-len (count (:content (get-in @!state [:blocks prev-id]) ""))
+                                      ;; Prevent cursor out of bounds when new paragraph is shorter
+                                      new-offset (min offset prev-len)]
+                                  (editor-cmd/focus-block !state prev-id new-offset)
+                                  m.KeyEventResult/handled)
+                                m.KeyEventResult/handled)
+
+                              ;; Right: jump to next block, try to keep vertical position
+                              is-right?
+                              (if (< idx (dec (count root)))
+                                (let [next-id (nth root (inc idx))
+                                      next-len (count (:content (get-in @!state [:blocks next-id]) ""))
+                                      new-offset (min offset next-len)]
+                                  (editor-cmd/focus-block !state next-id new-offset)
+                                  m.KeyEventResult/handled)
+                                m.KeyEventResult/handled)
+
+                              :else m.KeyEventResult/ignored))
+                          m.KeyEventResult/handled))
+                      m.KeyEventResult/handled)
+
+                    ;; C. Other keys: pass through
+                    :else m.KeyEventResult/ignored)))))
+
           .child
           (m/CallbackShortcuts
            .bindings (config/shortcut-bindings cfg* !state)

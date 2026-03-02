@@ -65,6 +65,7 @@
       .theme (m/ThemeData 
                .primarySwatch m.Colors/blue
                .brightness m.Brightness/dark
+               .fontFamily "OyunQaganTig"
                .visualDensity m.VisualDensity/adaptivePlatformDensity)
       .home
       (f/widget
