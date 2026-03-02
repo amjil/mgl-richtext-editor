@@ -1,0 +1,133 @@
+(ns rich-editor.config
+  "编辑器配置与注册表：块类型、行内格式、命令、快捷键。支持高度定制。
+   不依赖 clipboard/history/commands，避免与 block-commands 循环加载；完整默认命令见 rich-editor.defaults。"
+  (:require ["package:flutter/material.dart" :as m]
+            ["package:flutter/services.dart" :as s]))
+
+;; =============================================================
+;; 1. 默认块样式 (block-type -> TextStyle 或 (fn [block-type] -> TextStyle))
+;; =============================================================
+
+(defn default-block-style [block-type]
+  (case block-type
+    :heading-1 (m/TextStyle. .fontSize 28.0 .fontWeight m.FontWeight/bold
+                           .height 2.0 .fontFamily "OyunQaganTig")
+    :heading-2 (m/TextStyle. .fontSize 24.0 .fontWeight m.FontWeight/bold
+                           .height 2.0 .fontFamily "OyunQaganTig")
+    :blockquote (m/TextStyle. .fontSize 20.0 .fontStyle m.FontStyle/italic
+                             .height 2.0 .fontFamily "OyunQaganTig")
+    :code-block (m/TextStyle. .fontSize 16.0 .fontFamily "monospace" .height 1.8)
+    :list-item (m/TextStyle. .fontSize 20.0 .height 2.0 .fontFamily "OyunQaganTig")
+    (m/TextStyle. .fontSize 20.0 .height 2.0 .fontFamily "OyunQaganTig")))
+
+;; =============================================================
+;; 2. 默认行内格式 (attr -> 应用到 base-style)
+;; =============================================================
+
+(defn default-apply-inline [base-style attrs]
+  (if (or (empty? attrs) (nil? base-style))
+    base-style
+    (let [s (if (:bold attrs) (.copyWith base-style .fontWeight m.FontWeight/bold) base-style)
+          s (if (:italic attrs) (.copyWith s .fontStyle m.FontStyle/italic) s)
+          s (if (:underline attrs) (.copyWith s .decoration m.TextDecoration/underline) s)
+          s (if (:link attrs) (.copyWith s .decoration m.TextDecoration/underline .color m.Colors/blue) s)]
+      s)))
+
+;; =============================================================
+;; 3. 默认快捷键 (SingleActivator -> intent)
+;; =============================================================
+
+(defn- default-shortcuts []
+  [[(m/SingleActivator. (.-keyA s/LogicalKeyboardKey) :control true) :select-all]
+   [(m/SingleActivator. (.-keyA s/LogicalKeyboardKey) :meta true) :select-all]
+   [(m/SingleActivator. (.-keyZ s/LogicalKeyboardKey) :control true) :undo]
+   [(m/SingleActivator. (.-keyZ s/LogicalKeyboardKey) :meta true) :undo]
+   [(m/SingleActivator. (.-keyZ s/LogicalKeyboardKey) :control true :shift true) :redo]
+   [(m/SingleActivator. (.-keyZ s/LogicalKeyboardKey) :meta true :shift true) :redo]
+   [(m/SingleActivator. (.-keyY s/LogicalKeyboardKey) :control true) :redo]
+   [(m/SingleActivator. (.-keyY s/LogicalKeyboardKey) :meta true) :redo]
+   [(m/SingleActivator. (.-keyX s/LogicalKeyboardKey) :control true) :cut]
+   [(m/SingleActivator. (.-keyX s/LogicalKeyboardKey) :meta true) :cut]
+   [(m/SingleActivator. (.-keyC s/LogicalKeyboardKey) :control true) :copy]
+   [(m/SingleActivator. (.-keyC s/LogicalKeyboardKey) :meta true) :copy]
+   [(m/SingleActivator. (.-keyV s/LogicalKeyboardKey) :control true) :paste]
+   [(m/SingleActivator. (.-keyV s/LogicalKeyboardKey) :meta true) :paste]
+   [(m/SingleActivator. (.-keyB s/LogicalKeyboardKey) :control true) :bold]
+   [(m/SingleActivator. (.-keyB s/LogicalKeyboardKey) :meta true) :bold]
+   [(m/SingleActivator. (.-keyI s/LogicalKeyboardKey) :control true) :italic]
+   [(m/SingleActivator. (.-keyI s/LogicalKeyboardKey) :meta true) :italic]
+   [(m/SingleActivator. (.-keyU s/LogicalKeyboardKey) :control true) :underline]
+   [(m/SingleActivator. (.-keyU s/LogicalKeyboardKey) :meta true) :underline]
+   [(m/SingleActivator. (.-keyK s/LogicalKeyboardKey) :control true) :link]
+   [(m/SingleActivator. (.-keyK s/LogicalKeyboardKey) :meta true) :link]])
+
+;; =============================================================
+;; 5. 配置合并与访问
+;; =============================================================
+
+(def default-config
+  "默认配置骨架（无 :commands，避免循环依赖）。完整默认见 rich-editor.defaults/full-default-config。"
+  {:block-style default-block-style
+   :inline-format-applier default-apply-inline
+   :commands {}
+   :shortcuts (default-shortcuts)
+   :text-block-types #{:paragraph :heading-1 :heading-2 :blockquote :code-block :list-item}
+   :default-block-type :paragraph
+   :custom-block-renderers {}})
+
+(defn merge-config
+  "将 user-config 合并到 base。base 通常为 defaults/full-default-config。
+   用户可覆盖 :block-style :inline-format-applier :commands :shortcuts :text-block-types :default-block-type :custom-block-renderers。"
+  ([base user-config]
+   (let [base (or base default-config)
+        block-style (or (:block-style user-config) (:block-style base))
+        ;; block-style 若是 map，包装成 fn
+        block-style-fn (if (fn? block-style)
+                        block-style
+                        (fn [t] (get block-style t (default-block-style t))))
+        inline (or (:inline-format-applier user-config) (:inline-format-applier base))
+        cmd-default (:commands base)
+        cmd-user (:commands user-config)
+        commands (if (empty? cmd-user) cmd-default (merge cmd-default cmd-user))
+        shortcuts (or (:shortcuts user-config) (:shortcuts base))
+        text-types (or (:text-block-types user-config) (:text-block-types base))
+        default-type (or (:default-block-type user-config) (:default-block-type base))
+        custom-renderers (merge (:custom-block-renderers base) (:custom-block-renderers user-config {}))]
+    {:block-style block-style-fn
+     :inline-format-applier inline
+     :commands commands
+     :shortcuts shortcuts
+     :text-block-types text-types
+     :default-block-type default-type
+        :custom-block-renderers custom-renderers})))
+
+(defn get-block-style
+  [config block-type]
+  ((:block-style config) block-type))
+
+(defn apply-inline-formats
+  [config base-style attrs]
+  ((:inline-format-applier config) base-style attrs))
+
+(defn get-command [config intent]
+  (get (:commands config) intent))
+
+(defn run-command
+  "根据 config 执行 intent；无注册则返回 nil"
+  [config !state intent]
+  (when-let [handler (get-command config intent)]
+    (handler !state)))
+
+(defn shortcut-bindings
+  "从 config 生成 CallbackShortcuts 的 bindings map：activator -> (fn [])"
+  [config !state]
+  (into {} (map (fn [[activator intent]]
+                  [activator (fn [] (run-command config !state intent))])
+                (:shortcuts config))))
+
+(defn text-block-type?
+  [config block-type]
+  (contains? (:text-block-types config) block-type))
+
+(defn default-block-type [config]
+  (:default-block-type config))

@@ -1,31 +1,90 @@
 (ns editor-test.main
-  (:require
-   ["package:flutter/material.dart" :as m]
-   ["package:flutter/foundation.dart" :as foundation]
-   [cljd.flutter :as f]
-   [rich-editor.ui.editor-main :refer [mongol-editor-view]]
-   [rich-editor.services.virtual-keyboard-service :as vk-service]))
+  (:require ["package:flutter/material.dart" :as m]
+            ["package:mgl_editor_core/post_frame_trigger.dart" :as pft]
+            [cljd.flutter :as f]
+            [rich-editor.components.editor-root :as root]
+            [rich-editor.commands.editor-commands :as editor-cmd]
+            [rich-editor.services.history-service :as history]
+            [rich-editor.services.ime-service :as ime]
+            [rich-editor.config :as config]
+            [rich-editor.defaults :as defaults]
+            [rich-editor.components.node-view :as node-view]
+            [shared-ime.fst-reader :as fst]
+            [shared-ime.next :as next]
+            [shared-ime.overlay-view :as overlay]))
+
+(defonce !state (atom {:root []
+                       :blocks {}
+                       :active-block-id nil
+                       :cursor-visible false
+                       :history {:undo-stack [] :redo-stack [] :max-depth 100}}))
+
+(defonce !ime-attached (atom false))
 
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)
-  
-  ;; Initialize virtual keyboard service on mobile platforms
-  (when (or 
-          (= foundation/defaultTargetPlatform m/TargetPlatform.iOS)
-          (= foundation/defaultTargetPlatform m/TargetPlatform.android)) 
-    (vk-service/initialize!))
+  (fst/ensure-loaded)
+  (next/ensure-loaded)
+
+  (editor-cmd/clear-document !state)
+
+  (ime/set-merge-focus-callback! (fn [!state prev-id new-offset]
+                                   (editor-cmd/focus-block !state prev-id new-offset)))
+  (ime/set-split-focus-callback! (fn [!state new-id _]
+                                   (editor-cmd/focus-block !state new-id 0)))
+  (ime/set-after-update-callback! (fn [] (swap! root/!refresh-tick inc)))
+
+  ;; 【新增】：向 ime-service 注入获取光标坐标的逻辑，彻底打破循环依赖！
+  (ime/set-get-caret-offset-callback!
+   (fn [block-id]
+     (when-let [text-key (get @node-view/!block-text-keys block-id)]
+       (when-let [ctx (.-currentContext text-key)]
+         (try
+           (let [^m/RenderBox rb (.findRenderObject ctx)]
+             (.localToGlobal rb m.Offset/zero))
+           (catch Exception _ nil))))))
 
   (f/run
-   (f/widget
     (m/MaterialApp
-     .title "MGL Rich Text Editor Test"
-     .debugShowCheckedModeBanner false
-     .theme (m/ThemeData
-             .brightness m.Brightness/dark
-             .useMaterial3 true)
-     .home (m/Scaffold
-            .appBar (m/AppBar
-                     .elevation 0)
-            .body (mongol-editor-view)
-            ;; (m/Text "Hello, World!"))
-            )))))
+      .title "Mongol Editor Test"
+      .debugShowCheckedModeBanner false
+      .theme (m/ThemeData 
+               .primarySwatch m.Colors/blue
+               .brightness m.Brightness/dark
+               .fontFamily "OyunQaganTig"
+               .visualDensity m.VisualDensity/adaptivePlatformDensity)
+      .home
+      (f/widget
+        :watch [state !state]
+        (m/Scaffold
+          .appBar
+          (m/AppBar
+            .title (m/Text "ᠮᠣᠩᠭᠣᠯ ᠵᠠᠰᠠᠪᠤᠷᠢᠯᠠᠭᠴᠢ" .style (m/TextStyle .fontFamily "OyunQaganTig"))
+            .actions
+            [(m/IconButton
+               .icon (m/Icon m.Icons/undo)
+               .tooltip "Undo (Ctrl+Z)"
+               .onPressed (if (empty? (get-in state [:history :undo-stack]))
+                            nil
+                            #(history/undo! !state)))
+             (m/IconButton
+               .icon (m/Icon m.Icons/redo)
+               .tooltip "Redo (Ctrl+Y)"
+               .onPressed (if (empty? (get-in state [:history :redo-stack]))
+                            nil
+                            #(history/redo! !state)))
+             (m/IconButton
+               .icon (m/Icon m.Icons/format_bold)
+               .tooltip "Bold (Ctrl+B)"
+               .onPressed #(config/run-command defaults/full-default-config !state :bold))])
+          
+          .body
+          (overlay/ime-global-wrapper
+            (pft/PostFrameTrigger
+              .onLayout (fn []
+                          (when (compare-and-set! !ime-attached false true)
+                            (when-let [active-id (:active-block-id @!state)]
+                              (when (seq (:root @!state))
+                                (ime/attach! !state active-id)))))
+              .child (m/SafeArea
+                       .child (root/editor-container !state defaults/full-default-config)))))))))

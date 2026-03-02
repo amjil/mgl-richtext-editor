@@ -1,91 +1,68 @@
-(ns rich-editor.model.node)
+(ns rich-editor.model.node
+  (:require [clojure.string :as str]))
 
 ;; =============================================================
-;; Node constructor
+;; 1. Node (matches AppState)
 ;; =============================================================
 
 (defn make-node
-  "Create a document node.
-   id: unique identifier (String/UUID)
-   type: node type (e.g. :paragraph, :heading, :image)
-   data: node content (e.g. {:text \"...\"})
-   children: child node list (Vector of Nodes)
-   attributes: styles or metadata (e.g. {:align :center})"
-  ([id type data]
-   (make-node id type data [] {}))
-  ([id type data children]
-   (make-node id type data children {}))
-  ([id type data children attributes]
+  "Create document node. content at top level (not under :data) for MglSelectableText."
+  ([id type content]
+   (make-node id type content [] {}))
+  ([id type content children]
+   (make-node id type content children {}))
+  ([id type content children attributes]
    {:id id
     :type type
-    :data data
+    :content content
     :children (vec children)
     :attributes attributes}))
 
 ;; =============================================================
-;; Query and attribute operations (pure functions)
+;; 2. Attributes
 ;; =============================================================
 
-(defn get-attribute
-  "Get the attribute of the node"
-  [node k default]
+(defn get-attribute [node k default]
   (get-in node [:attributes k] default))
 
 ;; =============================================================
-;; Document tree path lookup (Path Operations)
+;; 3. Flat map path ops
 ;; =============================================================
+
+(defn get-node-by-id
+  "Get node by id from flat blocks map"
+  [state id]
+  (get-in state [:blocks id]))
 
 (defn get-node-at-path
-  "Find a node in the tree by the path vector. For example, path [0 1] represents the 0th child of the root node and the 1st child of the 0th child."
-  [root path]
-  (if (empty? path)
-    root
-    (let [child-idx (first path)]
-      (if-let [child (get-in root [:children child-idx])]
-        (recur child (rest path))
-        nil))))
+  "Path is list of ids e.g. [\"b1\" \"b2\"]. Resolve to node at path."
+  [state path]
+  (let [target-id (last path)]
+    (get-node-by-id state target-id)))
 
-(defn get-block-at-path
-  "Get a block from the document by path. This is a convenience function for getting top-level blocks."
-  [doc path]
-  (get-in doc [:children (first path)]))
-
-(defn insert-block-at-index
-  "Insert a new block at the specified index in the document.
-   Returns a new document with the block inserted."
-  [doc block-index new-block]
-  (let [blocks (:children doc)
-        new-blocks (vec (concat (subvec blocks 0 block-index)
-                               [new-block]
-                               (subvec blocks block-index)))]
-    (assoc doc :children new-blocks)))
-
-(defn update-block-at-index
-  "Update a block at the specified index and optionally remove the next block.
-   Returns a new document with the block updated."
-  [doc block-index updated-block & {:keys [remove-next?]}]
-  (let [blocks (:children doc)]
-    (if remove-next?
-      ;; Update block and remove the next one
-      (let [new-blocks (vec (concat (subvec blocks 0 block-index)
-                                    [updated-block]
-                                    (subvec blocks (+ 2 block-index))))]
-        (assoc doc :children new-blocks))
-      ;; Just update the block
-      (assoc-in doc [:children block-index] updated-block))))
-
-
+(defn insert-child-id
+  "Insert child-id at index in parent's children"
+  [state parent-id child-id index]
+  (let [path (if (= parent-id :root) [:root] [:blocks parent-id :children])]
+    (update-in state path
+               (fn [ids]
+                 (let [ids (or ids [])
+                       [before after] (split-at index ids)]
+                   (vec (concat before [child-id] after)))))))
 
 ;; =============================================================
-;; Auxiliary conversion
+;; 4. Helpers
 ;; =============================================================
 
-(defn path->ks
-  "Convert a path vector [0 1] to a keyword sequence [:children 0 :children 1] for use with get-in/assoc-in.
-   If the path already contains keywords (structural path), prepend :children to the first index."
-  [path]
-  (if (empty? path)
-    []
-    (if (some keyword? path)
-      (vec (cons :children path))
-      (vec (concat [:children] (interpose :children path))))))
+(defn update-node-content
+  "Update node text content"
+  [state id new-content]
+  (assoc-in state [:blocks id :content] new-content))
+
+(defn delete-node
+  "Remove node and its ref from parent"
+  [state parent-id id]
+  (let [parent-path (if (= parent-id :root) [:root] [:blocks parent-id :children])]
+    (-> state
+        (update-in parent-path (fn [ids] (vec (remove #(= % id) ids))))
+        (update :blocks dissoc id))))

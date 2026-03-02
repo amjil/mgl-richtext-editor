@@ -1,0 +1,90 @@
+(ns rich-editor.commands.text-commands
+  (:require ["package:flutter/services.dart" :as s]
+            ["package:flutter/material.dart" :as m]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.model.transaction :as tx]
+            [rich-editor.model.selection :as sel]))
+
+;; --- Helpers: active block data ---
+
+(defn- get-active-info [state]
+  (let [block-id (:active-block-id state)
+        block (get-in state [:blocks block-id])
+        selection (:selection block)]
+    {:id block-id
+     :block block
+     :selection selection}))
+
+;; --- Core commands ---
+
+(defn insert-string
+  "Insert string at offset in block-id"
+  [!state block-id offset text]
+  (dart:core/print (str "[input] insert-string entry block-id=" block-id " offset=" offset " text=" (pr-str text)))
+  (let [new-offset (+ offset (count text))
+        ;; 1. Delta: retain up to offset, insert text
+        ops [(tx/update-content-op 
+               block-id 
+               (delta/make-delta [(delta/retain offset) 
+                                  (delta/insert text)]))]
+        ;; 2. New selection (caret after insert)
+        after-sel (sel/make-position block-id new-offset)]
+    
+    (tx/commit-transaction! !state
+      (tx/make-transaction
+        :ops ops
+        :after-selection (m/TextSelection. .baseOffset new-offset .extentOffset new-offset))
+      :merge? true)
+    (dart:core/print (str "[input] insert-string committed block-id=" block-id " new-offset=" new-offset))))
+
+(defn delete-range
+  "Delete a range of text in block-id"
+  [!state block-id offset length]
+  (when (> length 0)
+    (let [ops [(tx/update-content-op 
+                 block-id 
+                 (delta/make-delta [(delta/retain offset) 
+                                    (delta/delete length)]))]
+          after-sel (m/TextSelection. .baseOffset offset .extentOffset offset)]
+      
+      (tx/commit-transaction! !state
+        (tx/make-transaction
+          :ops ops
+          :after-selection after-sel)
+        :merge? true))))
+
+(defn replace-text
+  "Replace text (e.g. IME candidate)"
+  [!state block-id offset old-text new-text]
+  (let [old-len (count old-text)
+        new-len (count new-text)
+        ops [(tx/update-content-op 
+               block-id 
+               (delta/make-delta [(delta/retain offset) 
+                                  (delta/delete old-len) 
+                                  (delta/insert new-text)]))]
+        after-sel (m/TextSelection. .baseOffset (+ offset new-len) .extentOffset (+ offset new-len))]
+    
+    (tx/commit-transaction! !state
+      (tx/make-transaction
+        :ops ops
+        :after-selection after-sel)
+      :merge? true)))
+
+;; --- Style commands (placeholder for rich text) ---
+
+(defn apply-style
+  "Apply style to current selection (e.g. bold)"
+  [!state block-id selection-start selection-end attr-key attr-val]
+  (let [len (- selection-end selection-start)
+        ops [(tx/update-content-op 
+               block-id 
+               (delta/make-delta [(delta/retain selection-start) 
+                                  (delta/retain len {attr-key attr-val})]))]]
+    
+    (tx/commit-transaction! !state
+      (tx/make-transaction
+        :ops ops
+        :after-selection (m/TextSelection. 
+                           .baseOffset selection-start 
+                           .extentOffset selection-end)))))

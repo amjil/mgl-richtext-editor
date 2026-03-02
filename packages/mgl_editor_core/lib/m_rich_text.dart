@@ -3,6 +3,9 @@ import 'package:flutter/widgets.dart';
 import 'm_render_paragraph.dart';
 import 'package:mongol/src/base/mongol_text_align.dart';
 
+/// Mongol vertical text. Only [TextSpan] (and [TextSpan] children) are supported.
+/// [MongolRenderParagraph]/Mongol do not support other [InlineSpan] subtypes (e.g. [WidgetSpan]).
+/// For rich text, build a tree of [TextSpan] only.
 class MongolRichText extends LeafRenderObjectWidget {
   const MongolRichText({
     Key? key,

@@ -7,6 +7,8 @@ import 'package:mongol/src/base/mongol_text_painter.dart';
 
 const String _kEllipsis = '\u2026';
 
+/// Renders vertical Mongol text. Uses [MongolTextPainter] with [TextSpan] only;
+/// other [InlineSpan] subtypes (e.g. [WidgetSpan]) are not supported.
 class MongolRenderParagraph extends RenderBox
     with
         ContainerRenderObjectMixin<RenderBox, TextParentData>,

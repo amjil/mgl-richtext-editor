@@ -1,0 +1,27 @@
+(ns rich-editor.services.serialization-service)
+
+;; Serialize/deserialize document state for save/load. Export as map; caller can pr-str (EDN) or JSON.encode.
+
+(defn export-state
+  "Export state as persistent map (:blocks :root, optional :selection :active-block-id). pr-str for EDN or JSON."
+  [state]
+  (select-keys state [:blocks :root :selection :active-block-id]))
+
+(defn import-from-map
+  "Merge parsed data map (EDN/JSON) into state. Returns merged state; does not modify !state."
+  [state data]
+  (merge state data))
+
+(defn load-state!
+  "Merge data into !state (keeps :history etc. not in export)."
+  [!state data]
+  (when (map? data)
+    (swap! !state (fn [curr] (merge curr data)))
+    true))
+
+(defn replace-state!
+  "Replace !state with data (clears history etc.)."
+  [!state data]
+  (when (map? data)
+    (reset! !state data)
+    true))

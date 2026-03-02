@@ -1,0 +1,60 @@
+(ns rich-editor.services.history-service)
+
+;; 1. History stack. Keep under :history in !state: {:undo-stack [] :redo-stack [] :max-depth 100}
+
+(defn- capture-snapshot
+  "Document snapshot for history (blocks, root, selection, active-block-id)"
+  [state]
+  {:blocks (:blocks state)
+   :root (:root state)
+   :selection (:selection state)
+   :active-block-id (:active-block-id state)})
+
+;; 2. Undo/redo
+
+(defn push-history
+  "Call before transaction; push current state to undo stack"
+  [state]
+  (let [history (or (:history state) {:undo-stack [] :redo-stack [] :max-depth 100})
+        snapshot (capture-snapshot state)
+        new-undo-stack (conj (:undo-stack history) snapshot)]
+    (assoc state :history 
+           (assoc history 
+                  :undo-stack (vec (take-last (:max-depth history) new-undo-stack))
+                  :redo-stack []))))
+
+(defn undo
+  "Undo: pop undo-stack, push current to redo-stack"
+  [state]
+  (let [{:keys [undo-stack redo-stack] :as history} (:history state)]
+    (if (empty? undo-stack)
+      state
+      (let [snapshot (last undo-stack)
+            current-snapshot (capture-snapshot state)
+            new-state (merge state snapshot)]
+        (assoc new-state :history
+               (assoc history
+                      :undo-stack (pop undo-stack)
+                      :redo-stack (conj redo-stack current-snapshot)))))))
+
+(defn redo
+  "Redo: pop redo-stack, push current to undo-stack"
+  [state]
+  (let [{:keys [undo-stack redo-stack] :as history} (:history state)]
+    (if (empty? redo-stack)
+      state
+      (let [snapshot (last redo-stack)
+            current-snapshot (capture-snapshot state)
+            new-state (merge state snapshot)]
+        (assoc new-state :history
+               (assoc history
+                      :undo-stack (conj undo-stack current-snapshot)
+                      :redo-stack (pop redo-stack)))))))
+
+;; 3. Command integration
+
+(defn undo! [!state]
+  (swap! !state undo))
+
+(defn redo! [!state]
+  (swap! !state redo))

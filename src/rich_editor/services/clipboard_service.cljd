@@ -1,0 +1,69 @@
+(ns rich-editor.services.clipboard-service
+  (:require ["package:flutter/services.dart" :as s]
+            [rich-editor.commands.text-commands :as text-cmd]
+            [rich-editor.commands.block-commands :as block-cmd]
+            [rich-editor.model.node :as node-model]))
+
+;; --- 1. Serialize ---
+
+(defn- selection->data
+  "Selection content to portable format"
+  [state]
+  (let [{:keys [active-block-id blocks]} state]
+    (if-let [block (get blocks active-block-id)]
+      (let [sel (:selection block)
+            content (:content block)
+            start (.-start sel)
+            end (.-end sel)
+            selected-text (subs content start end)]
+        {:text selected-text
+         :type (:type block)
+         :source "mongol-rich-editor-v1"})
+      nil)))
+
+;; --- 2. Copy ---
+
+(defn copy!
+  "Put selection into system clipboard"
+  [state]
+  (when-let [data (selection->data state)]
+    (let [clipboard-data (s/ClipboardData. .text (:text data))]
+      (s/Clipboard.setData clipboard-data)
+      ;;
+      (dart:core/print "Copied to clipboard"))))
+
+;; --- 3. Paste ---
+
+(defn paste!
+  "Read clipboard and insert at caret. Future resolves to {:focus-block id :offset 0} when new block created (no focus); caller focus-block."
+  [!state]
+  (let [f (s/Clipboard.getData s.Clipboard/kTextPlain)
+        f2 (.then f (fn [data]
+                      (when-let [raw-text (and data (.-text data))]
+                        (let [state @!state
+                              active-id (:active-block-id state)]
+                          (if active-id
+                            ;; A: paste into current block
+                            (do (let [offset (.-extentOffset (get-in state [:blocks active-id :selection]))]
+                                  (text-cmd/insert-string !state active-id offset raw-text))
+                                nil)
+                            ;; B: no focus -> new block at end, return focus info
+                            (let [new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
+                                  new-block (node-model/make-node new-id :paragraph raw-text)]
+                              (block-cmd/insert-block-at-end !state new-block)
+                              {:focus-block new-id :offset 0}))))))]
+    (.catchError f2 (fn [err] (dart:core/print err)))))
+
+;; --- 4. Cut ---
+
+(defn cut!
+  "Copy and delete selection"
+  [!state]
+  (let [state @!state
+        active-id (:active-block-id state)]
+    (when active-id
+      (copy! state)
+      (let [sel (get-in state [:blocks active-id :selection])
+            start (.-start sel)
+            len (- (.-end sel) start)]
+        (text-cmd/delete-range !state active-id start len)))))

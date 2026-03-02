@@ -1,126 +1,92 @@
 (ns rich-editor.model.transaction
-  (:require
-   [rich-editor.model.node :as node]
-   [rich-editor.utils.history :as hist]))
+  (:require [rich-editor.model.delta :as delta]
+            [rich-editor.services.history-service :as history]))
 
-;; --- Operation constructors ---
-(defn insert-op [path nodes]
-  {:type :insert
-   :path path
-   :nodes nodes})
+;; =============================================================
+;; 1. Operation constructors
+;; =============================================================
 
-(defn delete-op [path count]
-  {:type :delete
-   :path path
-   :count count})
+(defn insert-op [parent-id index nodes]
+  {:type :insert :parent-id parent-id :index index :nodes nodes})
 
-(defn update-text-op [path delta]
-  {:type :update-text
-   :path path
-   :delta delta})
+(defn delete-op [parent-id index count]
+  {:type :delete :parent-id parent-id :index index :count count})
 
-(defn update-attr-op [path attributes]
-  {:type :update-attr
-   :path path
-   :attributes attributes})
+(defn update-content-op [block-id delta]
+  {:type :update-content :block-id block-id :delta delta})
 
-(defn update-data-op [path data]
-  {:type :update-data
-   :path path
-   :data data})
+(defn update-attr-op [block-id attributes]
+  {:type :update-attr :block-id block-id :attributes attributes})
 
-;; --- Core logic: apply operations ---
+;; =============================================================
+;; 2. Apply logic (pure)
+;; =============================================================
 
-(defn- apply-op [doc op]
-  (let [{:keys [type path]} op
-    ks (node/path->ks path)]
-    (case type
-      :insert
-      (let [parent-path (vec (butlast path))
-            index (last path)
-            ;; if the root node is inserted, parent-ks should be [:children]
-            parent-ks (if (empty? parent-path) [:children] (conj (node/path->ks parent-path) :children))]
-        (update-in doc parent-ks 
-          (fn [children]
-            (let [children (or children [])]
-              (into [] (concat (subvec children 0 index) 
-                               (:nodes op) 
-                               (subvec children index)))))))
+(defn- apply-op [state op]
+  (case (:type op)
+    ;; Insert: update blocks pool and parent id list
+    :insert
+    (let [{:keys [parent-id index nodes]} op
+          node-ids (mapv :id nodes)
+          ;; 1. Add to blocks pool
+          state (update state :blocks (fn [m] (reduce #(assoc %1 (:id %2) %2) m nodes)))
+          ;; 2. Insert id refs
+          parent-path (if (= parent-id :root) [:root] [:blocks parent-id :children])]
+      (update-in state parent-path 
+                 (fn [ids] (let [[before after] (split-at index (or ids []))]
+                            (vec (concat before node-ids after))))))
 
-      :delete
-      (let [parent-path (vec (butlast path))
-            index (last path)
-            parent-ks (if (empty? parent-path) [:children] (conj (node/path->ks parent-path) :children))]
-        (update-in doc parent-ks 
-          (fn [children]
-            (into [] (concat (subvec children 0 index) 
-                             (subvec children (+ index (:count op))))))))
+    ;; Delete: remove from id list; keep blocks for undo
+    :delete
+    (let [{:keys [parent-id index count]} op
+          parent-path (if (= parent-id :root) [:root] [:blocks parent-id :children])]
+      (update-in state parent-path 
+                 (fn [ids] (vec (concat (subvec ids 0 index) (subvec ids (+ index count)))))))
 
-      :update-text
-      ;; update the delta content inside the paragraph
-      (let [delta-ks (if (some #{:delta} path)
-                       ks
-                       (conj ks :data :delta))]
-        (assoc-in doc delta-ks (:delta op)))
+    ;; Update content via delta; also update content-spans for inline format (bold, italic, etc.)
+    :update-content
+    (let [{:keys [block-id delta]} op
+          block (get-in state [:blocks block-id])
+          content (or (:content block) "")
+          spans (or (:content-spans block) [])
+          new-content (delta/apply-to-string content delta)
+          new-spans (delta/transform-spans spans delta (count content))]
+      (assoc-in (assoc-in state [:blocks block-id :content] new-content)
+                [:blocks block-id :content-spans] new-spans))
 
-      :update-attr
-      ;; update the attribute mapping of the node
-      (let [attr-ks (conj ks :attributes)]
-        (update-in doc attr-ks merge (:attributes op)))
+    :update-attr
+    (update-in state [:blocks (:block-id op) :attributes] merge (:attributes op))
 
-      :update-data
-      ;; update the data mapping of the node (merge)
-      (let [data-ks (conj ks :data)]
-        (update-in doc data-ks merge (:data op)))
+    state))
 
-      ;; default no change
-      doc)))
-
-;; --- Transaction executor ---
-
-
-
-(defn apply-transaction
-  "Receive the current document and a set of operations, return the updated document.
-   Corresponding to the execution logic of Transaction in Dart."
-  [doc operations]
-  (reduce apply-op doc operations))
-
-;; --- Transaction helper (for building logic) ---
+;; =============================================================
+;; 3. Transaction runner
+;; =============================================================
 
 (defn make-transaction
-  "Create a transaction package containing the previous and subsequent selection states"
-  [& {:keys [ops before-selection after-selection]}]
+  "Build transaction. :ops - list of ops; :after-selection - caret position after apply."
+  [& {:keys [ops after-selection]}]
   {:ops (vec ops)
-   :before-selection before-selection
    :after-selection after-selection})
 
+(defn apply-transaction
+  "Apply transaction to state; return new state. :after-selection updates top-level and active block selection for UI."
+  [state transaction]
+  (let [new-state (reduce apply-op state (:ops transaction))
+        sel (:after-selection transaction)]
+    (if-not sel
+      new-state
+      (let [with-global (assoc new-state :selection sel)
+            active-id (:active-block-id new-state)]
+        (if active-id
+          (assoc-in with-global [:blocks active-id :selection] sel)
+          with-global)))))
+
 (defn commit-transaction!
-  "Apply the transaction to the global state Atom.
-   This is the key to connecting the UI and logic."
+  "Apply transaction to global atom. When merge? is false, push-history first for undo."
   [!state transaction & {:keys [merge?]}]
-  (let [current-state @!state
-        current-selection (:selection current-state)
-        after-sel (:after-selection transaction)]
-    ;; Only log selection changes when they're unexpected (e.g., path changes or large offset differences)
-    (when (and after-sel (not= current-selection after-sel))
-      (let [current-path (when current-selection (:path (:start current-selection)))
-            after-path (when after-sel (:path (:start after-sel)))
-            current-offset (when current-selection (:offset (:start current-selection)))
-            after-offset (when after-sel (:offset (:start after-sel)))
-            path-changed? (not= current-path after-path)
-            offset-diff (when (and current-offset after-offset) (max (- after-offset current-offset) (- current-offset after-offset)))]
-        ;; Only warn on path changes or very large offset differences (normal multi-char input like IME is expected)
-        ;; Threshold allows normal IME input, fast typing, and small paste operations (up to 15 chars) without warnings
-        (when (or path-changed? (and offset-diff (> offset-diff 15)))
-          (dart:core/print (str "[Transaction Commit] ⚠️ commit-transaction! will modify selection - current: " current-selection ", transaction after-selection: " after-sel))))))
-    (swap! !state (fn [current-state]
-                    (let [new-doc (apply-transaction (:doc current-state) (:ops transaction))
-                          after-sel (:after-selection transaction)
-                          new-path (when after-sel (:path (:start after-sel)))]
-                      (if merge?
-                        (cond-> (assoc current-state :doc new-doc :selection after-sel)
-                          new-path (assoc :focused-path new-path))
-                        (let [next-state (hist/push-history current-state new-doc :new-selection after-sel)]
-                          (cond-> next-state
-                            new-path (assoc :focused-path new-path))))))))
+  (dart:core/print (str "[input] commit-transaction! merge?=" merge? " ops-count=" (count (:ops transaction))))
+  (swap! !state (fn [curr]
+                  (let [curr' (if merge? curr (history/push-history curr))
+                        next-state (apply-transaction curr' transaction)]
+                    next-state))))

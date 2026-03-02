@@ -1,0 +1,119 @@
+(ns rich-editor.commands.editor-commands
+  (:require [rich-editor.services.ime-service :as ime]
+            [rich-editor.services.history-service :as history]
+            [rich-editor.services.clipboard-service :as clipboard]
+            [rich-editor.commands.text-commands :as text-cmd]
+            [rich-editor.model.transaction :as tx]
+            [rich-editor.model.node :as node]
+            [rich-editor.config :as config]
+            ["package:flutter/services.dart" :as s]))
+
+;; =============================================================
+;; 1. Focus and selection
+;; =============================================================
+
+(defn focus-block
+  "Activate block: update state and attach IME"
+  [!state block-id offset]
+  (dart:core/print (str "[input] focus-block entry block-id=" block-id " offset=" offset))
+  (let [new-selection (s/TextSelection. .baseOffset offset .extentOffset offset)]
+    ;; 1. Update active-id, block selection, cursor visible
+    (swap! !state (fn [curr]
+                    (-> curr
+                        (assoc :active-block-id block-id)
+                        (assoc :cursor-visible true)
+                        (assoc-in [:blocks block-id :selection] new-selection))))
+    (dart:core/print "[input] focus-block state updated")
+    ;; 2. No transaction (pure state switch). 3. Attach IME.
+    (ime/attach! !state block-id)
+    (dart:core/print (str "[input] focus-block ime/attach! done block-id=" block-id))))
+
+(defn blur-all
+  "Blur: clear focus and detach IME"
+  [!state]
+  (swap! !state (fn [s] (assoc s :active-block-id nil :cursor-visible false)))
+  (ime/detach!))
+
+;; =============================================================
+;; 2. Document ops
+;; =============================================================
+
+(defn clear-document
+  "Clear document and reset to single empty block. 块类型来自 state 的 :editor-config 的 :default-block-type。
+   会设置 active-block-id、cursor-visible 和首块 selection，使光标可见；调用方需在首帧挂载后调用 ime/attach!。"
+  [!state]
+  (let [block-type (or (some-> (get @!state :editor-config) config/default-block-type) :paragraph)
+        new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
+        empty-block (node/make-node new-id block-type "")]
+    (tx/commit-transaction! !state
+      (tx/make-transaction
+        :ops [(tx/delete-op :root 0 (count (:root @!state)))
+              (tx/insert-op :root 0 [empty-block])]
+        :after-selection (s/TextSelection. .baseOffset 0 .extentOffset 0)))
+    ;; 使首块获得焦点与光标，否则光标不显示且无法输入
+    (swap! !state (fn [s]
+                    (-> s
+                        (assoc :active-block-id new-id)
+                        (assoc :cursor-visible true)
+                        (assoc-in [:blocks new-id :selection] (s/TextSelection. .baseOffset 0 .extentOffset 0)))))))
+
+;; =============================================================
+;; 3. Shortcuts and actions
+;; =============================================================
+
+(defn handle-global-shortcut
+  "Dispatch global shortcuts (Ctrl+A, Z, X/C/V, etc.)"
+  [!state intent]
+  (cond
+    (= intent :select-all)
+    (let [active-id (:active-block-id @!state)]
+      (when active-id
+        (let [content (get-in @!state [:blocks active-id :content])]
+          (swap! !state assoc-in [:blocks active-id :selection]
+                 (s/TextSelection. .baseOffset 0 .extentOffset (count content))))))
+
+    (= intent :undo)
+    (history/undo! !state)
+
+    (= intent :redo)
+    (history/redo! !state)
+
+    (= intent :copy)
+    (clipboard/copy! @!state)
+
+    (= intent :cut)
+    (clipboard/cut! !state)
+
+    (= intent :paste)
+    (-> (clipboard/paste! !state)
+        (.then (fn [focus-info]
+                 (when focus-info
+                   (focus-block !state (:focus-block focus-info) (:offset focus-info))))))
+
+    ;; Inline format (multi-TextSpan tree; Mongol supports TextSpan only)
+    (= intent :bold)
+    (when-let [active-id (:active-block-id @!state)]
+      (let [block (get-in @!state [:blocks active-id])
+            sel (:selection block)]
+        (when (and sel (< (.-start sel) (.-end sel)))
+          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold true))))
+
+    (= intent :italic)
+    (when-let [active-id (:active-block-id @!state)]
+      (let [block (get-in @!state [:blocks active-id])
+            sel (:selection block)]
+        (when (and sel (< (.-start sel) (.-end sel)))
+          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic true))))
+
+    (= intent :underline)
+    (when-let [active-id (:active-block-id @!state)]
+      (let [block (get-in @!state [:blocks active-id])
+            sel (:selection block)]
+        (when (and sel (< (.-start sel) (.-end sel)))
+          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline true))))
+
+    ;; Link: placeholder; URL dialog later
+    (= intent :link)
+    nil
+
+    :else nil))

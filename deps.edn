@@ -2,6 +2,15 @@
  :deps {tensegritics/clojuredart
         {:git/url "https://github.com/tensegritics/ClojureDart.git"
          :sha "9385be3c88ab6593350fdda50d86af985224971b"}
+
+        amjil/mgl-components
+        {:git/url "https://github.com/amjil/mgl-components.git"
+         :sha "86a24fa48e0b737a2ca2bac649c3991641982559"}
+
+        amjil/mongol-ime
+        {:git/url "https://github.com/amjil/mongol-ime.git"
+         :sha "c5862a41828536c0e59101120a35290cf5f6b4f2"}
+
         amjil/mongol-virtual-keyboard
         {:git/url "https://github.com/amjil/mongol-virtual-keyboard.git"
          :sha "ab43a23db57bd7739a89989ca8b7ad739f9db509"}}

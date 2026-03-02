@@ -1,0 +1,115 @@
+(ns rich-editor.components.node-view
+  (:require ["package:flutter/material.dart" :as m]
+            [cljd.flutter :as f]
+            ["package:mgl_editor_core/mgl_selectable_text.dart" :as native]
+            [rich-editor.commands.editor-commands :as editor-cmd]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.config :as config]))
+
+;; Stable GlobalKey per block so caret lookup does not fail on rebuild
+(defonce !block-text-keys (atom {}))
+
+(defn- ordered-list-number
+  "1-based number of this list-item in a contiguous ordered list; nil if not ordered"
+  [state id root-index]
+  (when (= (get-in state [:blocks id :attributes :list-type]) :ordered)
+    (let [root (:root state)
+          start (loop [i (int (or root-index 0))]
+                  (if (or (<= i 0)
+                          (not= :list-item (get-in state [:blocks (nth root (dec i)) :type])))
+                    i
+                    (recur (dec i))))]
+      (inc (- (int (or root-index 0)) start)))))
+
+(defn- get-text-key [id]
+  (get (swap! !block-text-keys
+              (fn [m] (if (contains? m id) m (assoc m id (m/GlobalKey.)))))
+       id))
+
+;; content + content-spans -> single TextSpan (tree of TextSpan children for Mongol)
+(defn- content->text-span [content content-spans base-style cfg]
+  (let [apply-inline (fn [base attrs] (config/apply-inline-formats cfg base attrs))
+        segments (delta/content+spans->segments content content-spans)]
+    (cond
+      (empty? segments)
+      (m/TextSpan. .text "" .style base-style)
+      (and (= (count segments) 1) (empty? (:attrs (first segments))))
+      (m/TextSpan. .text (:text (first segments)) .style base-style)
+      :else
+      (m/TextSpan.
+       .style base-style
+       .children (mapv (fn [seg]
+                         (m/TextSpan. .text (:text seg)
+                                     .style (apply-inline base-style (:attrs seg))))
+                       segments)))))
+
+(defn block-node
+  "Render a single block. root-index optional; config 可选，缺省用 config/default-config。
+   支持高度定制：块样式与行内格式来自 config。"
+  ([id !state] (block-node id !state nil nil))
+  ([id !state root-index] (block-node id !state root-index nil))
+  ([id !state root-index editor-config]
+   (let [cfg (or editor-config config/default-config)
+         text-key (get-text-key id)]
+     (f/widget
+      :watch [state !state]
+      (let [block (get-in state [:blocks id])
+            block-type (:type block)
+            is-active (= (:active-block-id state) id)
+            cursor-visible (:cursor-visible state)
+            selection (:selection block)
+            style (config/get-block-style cfg block-type)]
+        (m/GestureDetector
+         .onTapDown
+         (fn [^m/TapDownDetails details]
+           (dart:core/print (str "[input] block onTapDown id=" id))
+           (let [position (native/MglSelectableText.getPositionAtOffset
+                           text-key
+                           (.globalPosition details))
+                 offset (.-offset position)]
+             (dart:core/print (str "[input] block tapped id=" id " offset=" offset))
+             (editor-cmd/focus-block !state id offset)
+             (dart:core/print (str "[input] focus-block returned id=" id))))
+         .child
+          (m/Padding
+           .padding (m.EdgeInsets/only .top 4.0 .left 4.0 .right 4.0 .bottom 4.0)
+           .child
+           (if-let [custom-render (get-in cfg [:custom-block-renderers block-type])]
+             (custom-render id !state root-index block style cfg)
+             (cond
+             (config/text-block-type? cfg block-type)
+             (if (= block-type :list-item)
+               (m/Column
+                .crossAxisAlignment m.CrossAxisAlignment/start
+                .children
+                [(m/Padding
+                  .padding (m.EdgeInsets/only .top 4.0 .right 8.0)
+                  .child (m/Text (if-let [n (ordered-list-number state id root-index)]
+                                   (str n ". ")
+                                   "• ")
+                                 .style (m/TextStyle. .fontSize 20.0 .height 2.0)))
+                 (native/MglSelectableText.
+                  .textKey text-key
+                  .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
+                  .selection selection
+                  .isFocused is-active
+                  .showCursor (and is-active cursor-visible)
+                  .showLineDivider true)])
+               (let [text-widget (native/MglSelectableText.
+                                  .textKey text-key
+                                  .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
+                                  .selection selection
+                                  .isFocused is-active
+                                  .showCursor (and is-active cursor-visible)
+                                  .showLineDivider true)]
+                 (if (= block-type :blockquote)
+                   (m/Container
+                    .padding (m.EdgeInsets/only .left 12.0)
+                    .decoration (m/BoxDecoration.
+                                 .border (m/Border. .left (m/BorderSide. .width 4.0 .color m.Colors/grey)))
+                    .child text-widget)
+                   text-widget)))
+             (= block-type :image)
+             (m/Image.network (get-in block [:data :url] ""))
+             :else
+             (m/SizedBox.shrink))))))))))

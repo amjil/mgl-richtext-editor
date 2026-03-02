@@ -1,0 +1,148 @@
+(ns rich-editor.commands.block-commands
+  (:require [rich-editor.model.node :as node]
+            [rich-editor.model.delta :as delta]
+            [rich-editor.model.transaction :as tx]
+            [rich-editor.model.selection :as sel]
+            [rich-editor.config :as config]
+            ["package:flutter/services.dart" :as s]))
+
+(defn- default-block-type-from-state [!state]
+  (or (some-> (get @!state :editor-config) config/default-block-type) :paragraph))
+
+(defn split-block-at-cursor
+  "Enter: split block at cursor. 新块类型来自 state 的 :editor-config 的 :default-block-type。"
+  [!state block-id]
+  (let [state @!state
+        block (get-in state [:blocks block-id])
+        content (:content block)
+        selection (:selection block)
+        offset (if selection (.-extentOffset selection) 0)
+        
+        ;; 1. Text before/after split
+        text-before (subs content 0 offset)
+        text-after (subs content offset)
+        
+        ;; 2. New block id and node（类型可配置）
+        new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
+        new-block (node/make-node new-id (default-block-type-from-state !state) text-after)
+        
+        ;; 3. Index of current block in parent (:root); single-level for now
+        parent-id :root
+        current-index (.indexOf (get state parent-id) block-id)]
+    
+    (tx/commit-transaction! !state
+      (tx/make-transaction
+        :ops [;; Update old block to text-before
+              (tx/update-content-op block-id 
+                (delta/make-delta [(delta/retain 0) (delta/delete (count content)) (delta/insert text-before)]))
+              ;; Insert new block after current
+              (tx/insert-op parent-id (inc current-index) [new-block])]
+        ;; Do not set :after-selection here: transaction would write to "current active block" and caret would jump back. Focus/IME by ime-service callback.
+        :after-selection nil)
+      :merge? false)
+    new-id))
+
+(defn merge-with-previous
+  "Backspace at block start: merge current block into previous"
+  [!state block-id]
+  (let [state @!state
+        root (:root state)
+        current-idx (.indexOf root block-id)]
+    ;; Only merge when not first block
+    (when (> current-idx 0)
+      (let [prev-id (nth root (dec current-idx))
+            prev-block (get-in state [:blocks prev-id])
+            curr-block (get-in state [:blocks block-id])
+            
+            prev-content (:content prev-block)
+            curr-content (:content curr-block)
+            new-offset (count prev-content)]
+        
+        (tx/commit-transaction! !state
+          (tx/make-transaction
+            :ops [;; Append current block to previous
+                  (tx/update-content-op prev-id 
+                    (delta/make-delta [(delta/retain new-offset) (delta/insert curr-content)]))
+                  ;; Remove current block
+                  (tx/delete-op :root current-idx 1)]
+            ;; Caret at merge point
+            :after-selection (s/TextSelection. .baseOffset new-offset .extentOffset new-offset))
+          :merge? false)
+        ;; Return prev block id and offset; caller (e.g. ime-service) does focus-block
+        {:prev-id prev-id :new-offset new-offset}))))
+
+(defn move-block-up
+  "Move block up (reorder)"
+  [!state block-id]
+  (let [state @!state
+        root (:root state)
+        idx (.indexOf root block-id)]
+    (when (> idx 0)
+      (tx/commit-transaction! !state
+        (tx/make-transaction
+          :ops [(tx/delete-op :root idx 1)
+                (tx/insert-op :root (dec idx) [(get-in state [:blocks block-id])])]
+          :after-selection (:selection (get-in state [:blocks block-id])))))))
+
+(defn move-block-down
+  "Move block down (reorder)"
+  [!state block-id]
+  (let [state @!state
+        root (:root state)
+        idx (.indexOf root block-id)
+        n (count root)]
+    (when (and (< idx (dec n)) (>= n 1))
+      (tx/commit-transaction! !state
+        (tx/make-transaction
+          :ops [(tx/delete-op :root idx 1)
+                (tx/insert-op :root (inc idx) [(get-in state [:blocks block-id])])]
+          :after-selection (:selection (get-in state [:blocks block-id])))))))
+
+(defn reorder-blocks
+  "Move block from old-index to new-index in root (Flutter ReorderableListView callback)"
+  [!state old-index new-index]
+  (let [state @!state
+        root (:root state)
+        n (count root)
+        ;; Flutter newIndex is post-drag; derive insert index from old/new
+        old-index (int old-index)
+        new-index (int new-index)
+        insert-index (if (> new-index old-index) (dec new-index) new-index)
+        insert-index (max 0 (min insert-index n))]
+    (when (and (>= old-index 0) (< old-index n))
+      (let [block-id (nth root old-index)
+            block (get-in state [:blocks block-id])]
+        (tx/commit-transaction! !state
+          (tx/make-transaction
+            :ops [(tx/delete-op :root old-index 1)
+                  (tx/insert-op :root insert-index [block])]
+            :after-selection nil))))))
+
+(defn insert-block-at-end
+  "Insert new block at document end (e.g. paste when no focus)"
+  [!state new-block]
+  (let [state @!state
+        root (:root state)
+        idx (count root)]
+    (tx/commit-transaction! !state
+      (tx/make-transaction
+        :ops [(tx/insert-op :root idx [new-block])]
+        :after-selection nil))
+    ;; Activate new block and IME at block start (image blocks skip IME). Caller focus-block when needed.
+    nil))
+
+(defn insert-image-block
+  "Insert image block after block-id; if nil, append to document"
+  [!state url & {:keys [after-block-id]}]
+  (let [state @!state
+        root (:root state)
+        new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
+        image-block (assoc (node/make-node new-id :image "" [] {}) :data {:url url})
+        idx (if after-block-id
+              (inc (.indexOf root after-block-id))
+              (count root))
+        idx (max 0 (min idx (count root)))]
+    (tx/commit-transaction! !state
+      (tx/make-transaction
+        :ops [(tx/insert-op :root idx [image-block])]
+        :after-selection nil))))

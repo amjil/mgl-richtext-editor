@@ -1,0 +1,44 @@
+(ns rich-editor.components.editor-root
+  (:require ["package:flutter/material.dart" :as m]
+            [cljd.flutter :as f]
+            [rich-editor.components.node-view :as node-view]
+            [rich-editor.config :as config]
+            [rich-editor.defaults :as defaults]
+            ;; 引入 shared-ime 的控制器和视图层
+            [shared-ime.controller :as ime-ctrl]
+            [shared-ime.overlay-view :as overlay]))
+
+(defonce !refresh-tick (atom 0))
+
+(defn editor-container
+  ([!state] (editor-container !state nil))
+  ([!state editor-config]
+   (let [cfg (if editor-config (config/merge-config defaults/full-default-config editor-config) defaults/full-default-config)]
+     (when (or (nil? (get @!state :editor-config)) editor-config)
+       (swap! !state assoc :editor-config cfg))
+     (f/widget
+      :watch [state !state _ !refresh-tick]
+      (let [cfg* (get state :editor-config cfg)]
+        
+        ;; 【核心修改】：在根部加上 shared-ime 的候选词包裹器
+        (overlay/ime-global-wrapper
+         (m/Focus
+          .autofocus true
+          ;; 【核心修改】：将键盘事件交给 FST 引擎拦截
+          .onKeyEvent (fn [node event] 
+                        (ime-ctrl/handle-key-event event))
+          .child
+          (m/CallbackShortcuts
+           .bindings (config/shortcut-bindings cfg* !state)
+           .child
+           (m/ListView
+            .scrollDirection m.Axis/horizontal
+            .padding (m.EdgeInsets/all 20.0)
+            .children (mapv (fn [i]
+                              (let [id (nth (:root state) i)]
+                                (m/KeyedSubtree
+                                 .key (m/ValueKey. id)
+                                 .child (m/Padding
+                                         .padding (m.EdgeInsets/only .right 12.0)
+                                         .child (node-view/block-node id !state i cfg*)))))
+                            (range (count (:root state)))))))))))))
