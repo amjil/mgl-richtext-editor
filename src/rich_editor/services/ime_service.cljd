@@ -3,7 +3,6 @@
             ["package:flutter/material.dart" :as m]
             ["package:flutter/widgets.dart" :as w]
             [rich-editor.commands.text-commands :as text-cmd]
-            [rich-editor.commands.block-commands :as block-cmd]
             [shared-ime.controller :as ime-ctrl]))
 
 (declare update-state! attach!)
@@ -27,6 +26,18 @@
 (defonce !get-caret-offset-callback (atom nil))
 
 (defonce !handled-newline-in-delta (atom false))
+
+(defn- split-block-at-cursor! [!state block-id]
+  (when-let [f (get-in @!state [:editor-config :block-ops :split-block-at-cursor!])]
+    (f !state block-id)))
+
+(defn- merge-with-previous! [!state block-id]
+  (when-let [f (get-in @!state [:editor-config :block-ops :merge-with-previous!])]
+    (f !state block-id)))
+
+(defn- delete-cross-block-selection! [!state g-sel]
+  (when-let [f (get-in @!state [:editor-config :block-ops :delete-cross-block-selection!])]
+    (f !state g-sel)))
 
 (defn set-merge-focus-callback! [f] (reset! !merge-focus-callback f))
 (defn set-split-focus-callback! [f] (reset! !split-focus-callback f))
@@ -62,11 +73,16 @@
           (let [text (.-textInserted delta)]
             (if (or (= text "\n") (= text "\r\n"))
               (do (reset! !handled-newline-in-delta true)
-                  (when-let [new-id (block-cmd/split-block-at-cursor !state block-id)]
-                    (if-let [f @!split-focus-callback]
-                      (f !state new-id 0)
-                      (focus-block-internal! !state new-id 0))
-                    (request-frame!)))
+                  (if-let [new-id (split-block-at-cursor! !state block-id)]
+                    (do (if-let [f @!split-focus-callback]
+                          (f !state new-id 0)
+                          (focus-block-internal! !state new-id 0))
+                        (request-frame!))
+                    ;; No block-ops: insert newline in current block (single-block mode)
+                    (do (text-cmd/insert-string !state block-id (.-insertionOffset delta) "\n")
+                        (update-state! (get-in @!state [:blocks block-id :content])
+                                       (get-in @!state [:blocks block-id :selection]))
+                        (request-frame!))))
               (do (text-cmd/insert-string !state block-id (.-insertionOffset delta) text)
                   (update-state! (get-in @!state [:blocks block-id :content])
                                  (get-in @!state [:blocks block-id :selection]))
@@ -77,7 +93,7 @@
                 offset (.-start dr)
                 len (count (.-textDeleted delta))]
             (if (and (= offset 0) (= len 1))
-              (when-let [{:keys [prev-id new-offset]} (block-cmd/merge-with-previous !state block-id)]
+              (when-let [{:keys [prev-id new-offset]} (merge-with-previous! !state block-id)]
                 (if-let [f @!merge-focus-callback]
                   (f !state prev-id new-offset)
                   (focus-block-internal! !state prev-id new-offset)))
@@ -103,10 +119,17 @@
       (when (or (= action s.TextInputAction/newline) (= action s.TextInputAction/done))
         (if @!handled-newline-in-delta
           (reset! !handled-newline-in-delta false)
-          (when-let [new-id (block-cmd/split-block-at-cursor !state block-id)]
+          (if-let [new-id (split-block-at-cursor! !state block-id)]
             (if-let [f @!split-focus-callback]
               (f !state new-id 0)
-              (focus-block-internal! !state new-id 0))))))
+              (focus-block-internal! !state new-id 0))
+            ;; Fallback: insert newline at caret
+            (let [sel (get-in @!state [:blocks block-id :selection])
+                  offset (if sel (max 0 (.-extentOffset sel)) 0)]
+              (text-cmd/insert-string !state block-id offset "\n")
+              (update-state! (get-in @!state [:blocks block-id :content])
+                             (get-in @!state [:blocks block-id :selection]))
+              (request-frame!))))))
 
     (^void performSelector [this ^String selectorName]
       (let [block (get-in @!state [:blocks block-id])
@@ -119,19 +142,18 @@
         (cond
           (= selectorName "deleteBackward:")
           (if-let [g-sel (:global-selection @!state)]
-            (do
-              (let [focus-info (block-cmd/delete-cross-block-selection! !state g-sel)]
-                (swap! !state dissoc :global-selection)
-                (if-let [f @!merge-focus-callback]
-                  (f !state (:focus-block focus-info) (:offset focus-info))
-                  (focus-block-internal! !state (:focus-block focus-info) (:offset focus-info))))
+            (when-let [focus-info (delete-cross-block-selection! !state g-sel)]
+              (swap! !state dissoc :global-selection)
+              (if-let [f @!merge-focus-callback]
+                (f !state (:focus-block focus-info) (:offset focus-info))
+                (focus-block-internal! !state (:focus-block focus-info) (:offset focus-info)))
               (request-frame!))
             (if (< start end)
               (do (text-cmd/delete-range !state block-id start (- end start))
                   (update-state! (get-in @!state [:blocks block-id :content]) (get-in @!state [:blocks block-id :selection]))
                   (request-frame!))
               (if (<= ext 0)
-                (when-let [{:keys [prev-id new-offset]} (block-cmd/merge-with-previous !state block-id)]
+                (when-let [{:keys [prev-id new-offset]} (merge-with-previous! !state block-id)]
                   (if-let [f @!merge-focus-callback] (f !state prev-id new-offset) (focus-block-internal! !state prev-id new-offset)))
                 (do (text-cmd/delete-range !state block-id (dec ext) 1)
                     (update-state! (get-in @!state [:blocks block-id :content]) (get-in @!state [:blocks block-id :selection]))
@@ -148,8 +170,12 @@
               (request-frame!)))
 
           (or (= selectorName "insertNewline:") (= selectorName "insertNewlineIgnoringFieldEditor:"))
-          (when-let [new-id (block-cmd/split-block-at-cursor !state block-id)]
-            (if-let [f @!split-focus-callback] (f !state new-id 0) (focus-block-internal! !state new-id 0)))
+          (if-let [new-id (split-block-at-cursor! !state block-id)]
+            (if-let [f @!split-focus-callback] (f !state new-id 0) (focus-block-internal! !state new-id 0))
+            (do (text-cmd/insert-string !state block-id ext "\n")
+                (update-state! (get-in @!state [:blocks block-id :content])
+                               (get-in @!state [:blocks block-id :selection]))
+                (request-frame!)))
           :else nil)))
 
     (^void updateEditingValue [this ^s/TextEditingValue value]

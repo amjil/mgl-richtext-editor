@@ -4,8 +4,58 @@
             [rich-editor.services.history-service :as history]
             [rich-editor.services.clipboard-service :as clipboard]
             [rich-editor.commands.editor-commands :as editor-cmd]
-            [rich-editor.commands.text-commands :as text-cmd]
-            [rich-editor.commands.block-commands :as block-cmd]))
+            [rich-editor.commands.text-commands :as text-cmd]))
+
+;; =============================================================
+;; Style detector (production-grade): checks if selection is 100% covered by target style
+;; =============================================================
+
+(defn- calc-overlap 
+  "Calculate total overlap character count of a style in the given range [start-off, end-off]"
+  [start-off end-off spans attr-key]
+  (reduce (fn [acc span]
+            (if (get-in span [:attrs attr-key])
+              ;; Calculate the intersection length of two ranges
+              (let [overlap-start (max start-off (:start span))
+                    overlap-end   (min end-off (:end span))]
+                (if (< overlap-start overlap-end)
+                  (+ acc (- overlap-end overlap-start))
+                  acc))
+              acc))
+          0
+          spans))
+
+(defn- is-active-style? 
+  "Check if current selection has fully applied this style"
+  [state attr-key]
+  (if-let [g-sel (:global-selection state)]
+    ;; Cross-block case: for performance and intuition, check if selected portion of start block is 100% covered
+    (let [start-id (get-in g-sel [:start :id])
+          start-off (get-in g-sel [:start :offset])
+          content-len (count (get-in state [:blocks start-id :content] ""))
+          spans (get-in state [:blocks start-id :content-spans] [])
+          target-len (- content-len start-off)]
+      (if (<= target-len 0) 
+        false
+        (>= (calc-overlap start-off content-len spans attr-key) target-len)))
+
+    ;; Single-block case: exact calculation
+    (when-let [active-id (:active-block-id state)]
+      (when-let [sel (get-in state [:blocks active-id :selection])]
+        (let [start-off (min (.-baseOffset sel) (.-extentOffset sel))
+              end-off (max (.-baseOffset sel) (.-extentOffset sel))
+              spans (get-in state [:blocks active-id :content-spans] [])]
+          (if (= start-off end-off)
+            ;; No text selected, cursor only: detect style of character before cursor
+            (> (calc-overlap (max 0 (dec start-off)) start-off spans attr-key) 0)
+            
+            ;; Text selected: check if 100% covered by this style
+            (let [target-len (- end-off start-off)]
+              (>= (calc-overlap start-off end-off spans attr-key) target-len))))))))
+
+;; =============================================================
+;; Default command registry
+;; =============================================================
 
 (defn default-command-handlers []
   {:select-all (fn [!state]
@@ -14,13 +64,16 @@
                      (let [content (get-in @!state [:blocks active-id :content])]
                        (swap! !state assoc-in [:blocks active-id :selection]
                               (s/TextSelection. .baseOffset 0 .extentOffset (count content)))))))
+   
    :undo (fn [!state] (history/undo! !state))
    :redo (fn [!state] (history/redo! !state))
+   
    :copy (fn [!state] (clipboard/copy! @!state))
    :cut (fn [!state] 
           (let [state @!state]
             (if-let [g-sel (:global-selection state)]
-              (do (block-cmd/delete-cross-block-selection! !state g-sel)
+              (do (when-let [del! (get-in state [:editor-config :block-ops :delete-cross-block-selection!])]
+                    (del! !state g-sel))
                   (swap! !state dissoc :global-selection))
               (clipboard/cut! @!state))))
    :paste (fn [!state]
@@ -29,39 +82,54 @@
                          (when focus-info
                            (editor-cmd/focus-block !state (:focus-block focus-info) (:offset focus-info)))))))
                            
-   ;; cross-block bold support
+   ;; Smart bold toggle (Ctrl+B)
    :bold (fn [!state]
-           (let [state @!state]
+           (let [state @!state
+                 ;; If 100% covered pass nil (remove), otherwise pass true (bold)
+                 target-val (if (is-active-style? state :bold) nil true)]
              (if-let [g-sel (:global-selection state)]
-               (text-cmd/apply-style-cross-block! !state g-sel :bold true)
+               (text-cmd/apply-style-cross-block! !state g-sel :bold target-val)
                (when-let [active-id (:active-block-id state)]
                  (let [sel (get-in state [:blocks active-id :selection])]
                    (when (and sel (< (.-start sel) (.-end sel)))
-                     (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold true)))))))
+                     (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold target-val)))))))
                      
-   ;; cross-block italic support
+   ;; Smart italic toggle (Ctrl+I)
    :italic (fn [!state]
-             (let [state @!state]
+             (let [state @!state
+                   target-val (if (is-active-style? state :italic) nil true)]
                (if-let [g-sel (:global-selection state)]
-                 (text-cmd/apply-style-cross-block! !state g-sel :italic true)
+                 (text-cmd/apply-style-cross-block! !state g-sel :italic target-val)
                  (when-let [active-id (:active-block-id state)]
                    (let [sel (get-in state [:blocks active-id :selection])]
                      (when (and sel (< (.-start sel) (.-end sel)))
-                       (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic true)))))))
+                       (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic target-val)))))))
                        
-   ;; cross-block underline support
+   ;; Smart underline toggle (Ctrl+U)
    :underline (fn [!state]
-                (let [state @!state]
+                (let [state @!state
+                      target-val (if (is-active-style? state :underline) nil true)]
                   (if-let [g-sel (:global-selection state)]
-                    (text-cmd/apply-style-cross-block! !state g-sel :underline true)
+                    (text-cmd/apply-style-cross-block! !state g-sel :underline target-val)
                     (when-let [active-id (:active-block-id state)]
                       (let [sel (get-in state [:blocks active-id :selection])]
                         (when (and sel (< (.-start sel) (.-end sel)))
-                          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline true)))))))
-   :link (fn [_state] nil)
+                          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline target-val)))))))
+                          
+   ;; Block indent (Tab / Shift+Tab) — delegated via :block-ops when provided (e.g. by block-editor)
+   :indent (fn [!state]
+             (when-let [indent! (get-in @!state [:editor-config :block-ops :indent-selection!])]
+               (indent! !state 1)))
+   :outdent (fn [!state]
+              (when-let [indent! (get-in @!state [:editor-config :block-ops :indent-selection!])]
+                (indent! !state -1)))
+   
+   ;; Reserved link interface
+   :link (fn [_state] nil)})
 
-   :indent (fn [!state] (block-cmd/indent-selection! !state 1))
-   :outdent (fn [!state] (block-cmd/indent-selection! !state -1))})
+;; =============================================================
+;; Config export
+;; =============================================================
 
 (def full-default-config
   (assoc config/default-config :commands (default-command-handlers)))

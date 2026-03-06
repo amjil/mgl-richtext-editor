@@ -44,7 +44,7 @@ src/rich_editor/
 ├── config.cljd       # Config skeleton + merge-config(base, user-config); avoids service deps to prevent cycles
 ├── defaults.cljd     # Full default config (including command implementations) + defaults/merge-config(user-config)
 ├── commands/         # Commands (editor, text, block)
-├── components/       # UI (editor-root, node-view)
+├── components/       # UI (node-view)
 ├── model/            # Models (node, selection, delta, transaction)
 └── services/         # Services (IME, history, clipboard, serialization)
 ```
@@ -82,16 +82,11 @@ src/rich_editor/
 
 ### Basic usage
 
-Mount the editor in your Flutter app (see `example/` for a working reference):
+This library provides **node-view** (block rendering) and **config** (commands, shortcuts, styles). You mount the editor by building a container that uses `node-view/block-node` for each block and wires up `config/shortcut-bindings`, focus, and key handling. See `example/src/editor_test/main.cljd` for a minimal working app that uses only node-view.
 
-```clojure
-(ns your-app.main
-  (:require [rich-editor.components.editor-root :as editor-root]))
+For a ready-made block-level container (list + shortcuts + focus + optional drag-to-reorder), use [mgl-block-editor](https://github.com/amjil/mgl-block-editor) and its `block-editor.widgets.editor-container`.
 
-;; Your editor state atom should contain keys like:
-;; :root :blocks :active-block-id :cursor-visible :selection :history ...
-(editor-root/editor-container !state)
-```
+State atom shape: `:root` (vector of block ids), `:blocks` (id -> block), `:active-block-id`, `:cursor-visible`, `:history`, etc.
 
 ### Highly customizable
 
@@ -99,12 +94,14 @@ The editor is driven by a **config** map, which makes block types, inline format
 
 #### Config entry points
 
-- **No config provided**: uses `defaults/full-default-config` (default block styles, bold/italic/underline/link, common shortcuts like Ctrl+Z/X/C/V/B/I/U/K, etc.).
-- **Custom config**: build it via `(defaults/merge-config user-config)` and pass the merged result to `editor-container`.
+- **No config provided**: use `defaults/full-default-config` (default block styles, bold/italic/underline/link, common shortcuts like Ctrl+Z/X/C/V/B/I/U/K, etc.).
+- **Custom config**: build via `(config/merge-config defaults/full-default-config user-config)` and pass the merged result where you build your UI.
 
 ```clojure
-(require '[rich-editor.defaults :as defaults])
-(editor-root/editor-container !state (defaults/merge-config {:default-block-type :heading-1}))
+(require '[rich-editor.defaults :as defaults]
+         '[rich-editor.config :as config])
+;; e.g. merge and pass to your container / node-view
+(def cfg (config/merge-config defaults/full-default-config {:default-block-type :heading-1}))
 ```
 
 #### Customizable options
@@ -124,19 +121,16 @@ The editor is driven by a **config** map, which makes block types, inline format
 ```clojure
 (require ["package:flutter/material.dart" :as m]
          [rich-editor.config :as config]
-         [rich-editor.components.editor-root :as editor-root])
-
-(require '[rich-editor.defaults :as defaults])
+         [rich-editor.defaults :as defaults])
 
 (def my-config
-  (defaults/merge-config
+  (config/merge-config defaults/full-default-config
    {:default-block-type :paragraph
     :block-style (fn [block-type]
                    (case block-type
                      :heading-1 (m/TextStyle. .fontSize 32.0 .fontWeight m.FontWeight/bold .height 1.5)
-                     (config/default-block-style block-type))}))
-
-(editor-root/editor-container !state my-config)
+                     (config/default-block-style block-type)))}))
+;; Use my-config when building your container (CallbackShortcuts bindings, node-view/block-node, etc.)
 ```
 
 #### Example: add a command and a shortcut

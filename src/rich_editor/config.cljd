@@ -1,6 +1,7 @@
 (ns rich-editor.config
   "Editor config and registry: block types, inline formats, commands, shortcuts. Highly customizable.
-   Does not depend on clipboard/history/commands to avoid cyclic load with block-commands; full defaults in rich-editor.defaults."
+   Does not depend on clipboard/history/commands to avoid cyclic load; full defaults in rich-editor.defaults.
+   Block-level behavior (split/merge/indent etc.) is delegated via :block-ops when provided by the host (e.g. block-editor)."
   (:require ["package:flutter/material.dart" :as m]
             ["package:flutter/services.dart" :as s]))
 

@@ -1,8 +1,6 @@
 (ns rich-editor.services.clipboard-service
   (:require ["package:flutter/services.dart" :as s]
-            [rich-editor.commands.text-commands :as text-cmd]
-            [rich-editor.commands.block-commands :as block-cmd]
-            [rich-editor.model.node :as node-model]))
+            [rich-editor.commands.text-commands :as text-cmd]))
 
 ;; --- 1. Serialize ---
 
@@ -47,11 +45,9 @@
                             (do (let [offset (.-extentOffset (get-in state [:blocks active-id :selection]))]
                                   (text-cmd/insert-string !state active-id offset raw-text))
                                 nil)
-                            ;; B: no focus -> new block at end, return focus info
-                            (let [new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
-                                  new-block (node-model/make-node new-id :paragraph raw-text)]
-                              (block-cmd/insert-block-at-end !state new-block)
-                              {:focus-block new-id :offset 0}))))))]
+                            ;; B: no focus -> delegate to block layer (if any); return focus-info for caller to focus
+                            (when-let [paste-no-focus! (get-in state [:editor-config :block-ops :paste-when-no-focus!])]
+                              (paste-no-focus! !state raw-text)))))))]
     (.catchError f2 (fn [err] (dart:core/print err)))))
 
 ;; --- 4. Cut ---
