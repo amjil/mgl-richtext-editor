@@ -1,7 +1,7 @@
 {:paths ["src"] ; where your cljd files are
  :deps {tensegritics/clojuredart
         {:git/url "https://github.com/tensegritics/ClojureDart.git"
-         :sha "9385be3c88ab6593350fdda50d86af985224971b"}
+         :sha "4ee792f3044589c96b019c2a86db9b23f1b283ab"}
 
         amjil/mgl-components
         {:git/url "https://github.com/amjil/mgl-components.git"
@@ -9,11 +9,11 @@
 
         amjil/mongol-ime
         {:git/url "https://github.com/amjil/mongol-ime.git"
-         :sha "de2f8235152de7297345b6b1ade4e6daba1b7d1c"}
+         :sha "bd3f38040ad855b969cdbe509ae8e98ca04f17fb"}
 
         amjil/mongol-virtual-keyboard
         {:git/url "https://github.com/amjil/mongol-virtual-keyboard.git"
-         :sha "ab43a23db57bd7739a89989ca8b7ad739f9db509"}}
+         :sha "bb83ef01b9610053e8529c453b102db74a40b5a7"}}
        
  :aliases {:cljd {:main-opts ["-m" "cljd.build"]}}
  }
