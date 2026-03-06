@@ -32,7 +32,7 @@ TextSpan _ensureLineHeight(TextSpan span) {
 
 /// Minimal Mongol block rendering atom. Stateless, no focus or gesture handling; selection, caret, dividers are driven by props.
 /// Pass only a [TextSpan] tree (no [WidgetSpan] / other [InlineSpan]) — MongolRenderParagraph does not support them.
-class MglSelectableText extends StatelessWidget {
+class MglSelectableText extends StatefulWidget {
   final TextSpan textSpan;
   final TextSelection? selection;
   
@@ -79,8 +79,53 @@ class MglSelectableText extends StatelessWidget {
   }
 
   @override
+  State<MglSelectableText> createState() => _MglSelectableTextState();
+}
+
+class _MglSelectableTextState extends State<MglSelectableText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _blinkController;
+
+  bool get _shouldBlink =>
+      widget.isFocused && widget.showCursor && (widget.selection?.isCollapsed == true);
+
+  @override
+  void initState() {
+    super.initState();
+    _blinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    );
+    if (_shouldBlink) {
+      _blinkController.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant MglSelectableText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final wasBlinking = oldWidget.isFocused &&
+        oldWidget.showCursor &&
+        (oldWidget.selection?.isCollapsed == true);
+    if (_shouldBlink && !wasBlinking) {
+      _blinkController
+        ..value = 0.0
+        ..repeat();
+    } else if (!_shouldBlink && wasBlinking) {
+      _blinkController.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _blinkController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final MongolRenderParagraph? renderBox = _safeRenderParagraph(textKey);
+    final MongolRenderParagraph? renderBox =
+        MglSelectableText._safeRenderParagraph(widget.textKey);
 
     return IntrinsicWidth(
       child: Stack(
@@ -90,19 +135,19 @@ class MglSelectableText extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10.0),
             child: MongolRichText(
-              key: textKey,
-              text: _ensureLineHeight(textSpan),
+              key: widget.textKey,
+              text: _ensureLineHeight(widget.textSpan),
             ),
           ),
 
           // 2. Vertical line dividers
-          if (showLineDivider)
+          if (widget.showLineDivider)
             Positioned.fill(
               child: IgnorePointer(
                 child: CustomPaint(
                   painter: LineDividerPainter(
                     renderBox: renderBox,
-                    text: textSpan.toPlainText(),
+                    text: widget.textSpan.toPlainText(),
                     extendToLineEnd: true,
                   ),
                 ),
@@ -110,22 +155,24 @@ class MglSelectableText extends StatelessWidget {
             ),
 
           // 3. Selection background
-          if (selection != null && !selection!.isCollapsed)
+          if (widget.selection != null && !widget.selection!.isCollapsed)
             CustomPaint(
               painter: MongolSelectionPainter(
-                textKey: textKey,
-                selection: selection!,
-                hasFocus: isFocused,
+                textKey: widget.textKey,
+                selection: widget.selection!,
+                hasFocus: widget.isFocused,
               ),
             ),
 
           // 4. Caret (driven by showCursor, no internal AnimationController)
-          if (selection?.isCollapsed == true && showCursor)
+          // Use onSurface so cursor is visible in both light and dark themes (contrasts with surface).
+          if (widget.selection?.isCollapsed == true && widget.showCursor)
             CustomPaint(
               painter: MongolCaretPainter(
-                textKey: textKey,
-                selection: selection!,
-                caretColor: Theme.of(context).colorScheme.primary,
+                textKey: widget.textKey,
+                selection: widget.selection!,
+                caretColor: Theme.of(context).colorScheme.onSurface,
+                blinkAnimation: _shouldBlink ? _blinkController : null,
               ),
             ),
         ],

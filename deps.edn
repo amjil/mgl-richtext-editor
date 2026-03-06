@@ -9,7 +9,7 @@
 
         amjil/mongol-ime
         {:git/url "https://github.com/amjil/mongol-ime.git"
-         :sha "bd3f38040ad855b969cdbe509ae8e98ca04f17fb"}
+         :sha "5110cc95a51a9980f5f39599fdc94d85e9d77491"}
 
         amjil/mongol-virtual-keyboard
         {:git/url "https://github.com/amjil/mongol-virtual-keyboard.git"

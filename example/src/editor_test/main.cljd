@@ -11,6 +11,7 @@
             [rich-editor.components.node-view :as node-view]
             [shared-ime.controller :as ime-ctrl]
             [shared-ime.fst-reader :as fst]
+            [shared-ime.next :as next]
             [shared-ime.overlay-view :as overlay]))
 
 (defonce !state (atom {:root []
@@ -129,6 +130,8 @@
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)
   (fst/ensure-loaded)
+  (next/ensure-loaded)
+
 
   (editor-cmd/clear-document !state)
 
