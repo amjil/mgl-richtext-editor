@@ -9,17 +9,19 @@
 ;; 1. Default block style (block-type -> TextStyle or (fn [block-type] -> TextStyle))
 ;; =============================================================
 
+(def ^:private default-text-color m.Colors/black)
+
 (defn default-block-style [block-type]
   (case block-type
     :heading-1 (m/TextStyle. .fontSize 28.0 .fontWeight m.FontWeight/bold
-                           .height 2.0 .fontFamily "OyunQaganTig")
+                           .height 2.0 .fontFamily "OyunQaganTig" .color default-text-color)
     :heading-2 (m/TextStyle. .fontSize 24.0 .fontWeight m.FontWeight/bold
-                           .height 2.0 .fontFamily "OyunQaganTig")
+                           .height 2.0 .fontFamily "OyunQaganTig" .color default-text-color)
     :blockquote (m/TextStyle. .fontSize 20.0 .fontStyle m.FontStyle/italic
-                             .height 2.0 .fontFamily "OyunQaganTig")
-    :code-block (m/TextStyle. .fontSize 16.0 .fontFamily "monospace" .height 1.8)
-    :list-item (m/TextStyle. .fontSize 20.0 .height 2.0 .fontFamily "OyunQaganTig")
-    (m/TextStyle. .fontSize 20.0 .height 2.0 .fontFamily "OyunQaganTig")))
+                             .height 2.0 .fontFamily "OyunQaganTig" .color default-text-color)
+    :code-block (m/TextStyle. .fontSize 16.0 .fontFamily "monospace" .height 1.8 .color default-text-color)
+    :list-item (m/TextStyle. .fontSize 20.0 .height 2.0 .fontFamily "OyunQaganTig" .color default-text-color)
+    (m/TextStyle. .fontSize 20.0 .height 2.0 .fontFamily "OyunQaganTig" .color default-text-color)))
 
 ;; =============================================================
 ;; 2. Default inline format (attr -> applied to base-style)

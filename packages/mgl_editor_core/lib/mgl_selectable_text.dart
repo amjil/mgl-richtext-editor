@@ -78,6 +78,14 @@ class MglSelectableText extends StatefulWidget {
     return renderBox.getPositionForOffset(localOffset);
   }
 
+  /// Static helper: get global offset for caret at [caretOffset] (character index). Used for IME candidate panel positioning.
+  static Offset? getGlobalOffsetForCaret(GlobalKey key, int caretOffset) {
+    final renderBox = _safeRenderParagraph(key);
+    if (renderBox == null || !renderBox.hasSize) return null;
+    final local = renderBox.getOffsetForCaret(TextPosition(offset: caretOffset), Rect.zero);
+    return renderBox.localToGlobal(local);
+  }
+
   @override
   State<MglSelectableText> createState() => _MglSelectableTextState();
 }
