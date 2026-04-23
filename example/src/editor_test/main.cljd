@@ -12,6 +12,8 @@
             [rich-editor.defaults :as defaults]
             [rich-editor.components.node-view :as node-view]
             [virtual-keyboard.keyboard :as keyboard]
+            [virtual-keyboard.keyboard-state :as vk-state]
+            [virtual-keyboard.keyboard-action :as vk-action]
             [virtual-keyboard.keyboard-candidates :as kc]
             [virtual-keyboard.zip-utils :as zip-utils]
             [virtual-keyboard.fst-reader :as vk-fst]
@@ -158,15 +160,18 @@
                      (text-cmd/insert-string !state active-id offset "\n"))))
                :on-backspace
                (fn []
-                 (when-let [active-id (:active-block-id @!state)]
-                   (let [block (get-in @!state [:blocks active-id])
-                         sel (:selection block)
-                         start (if sel (.-baseOffset sel) 0)
-                         end (if sel (.-extentOffset sel) 0)]
-                     (if (not= start end)
-                       (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
-                       (when (> start 0)
-                         (text-cmd/delete-range !state active-id (dec start) 1))))))}})]))
+                 (let [candidates (:keyboard/candidates-list @vk-state/state)]
+                   (if (seq candidates)
+                     (vk-action/clear-candidates)
+                     (when-let [active-id (:active-block-id @!state)]
+                       (let [block (get-in @!state [:blocks active-id])
+                             sel (:selection block)
+                             start (if sel (.-baseOffset sel) 0)
+                             end (if sel (.-extentOffset sel) 0)]
+                         (if (not= start end)
+                           (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
+                           (when (> start 0)
+                            (text-cmd/delete-range !state active-id (dec start) 1))))))))}})]))
          (overlay/ime-global-wrapper
           (m/CallbackShortcuts
            .bindings (config/shortcut-bindings cfg* !state)
