@@ -9,7 +9,7 @@
 ;; 1. Default block style (block-type -> TextStyle or (fn [block-type] -> TextStyle))
 ;; =============================================================
 
-(def ^:private default-text-color m.Colors/black)
+(def ^:private default-text-color m.Colors/white)
 
 (defn default-block-style [block-type]
   (case block-type

@@ -212,7 +212,7 @@
                    .child (m/Text (if-let [n (ordered-list-number state id root-index)]
                                     (str n ". ")
                                     "• ")
-                                  .style (m/TextStyle. .fontSize 20.0 .height 2.0 .color m.Colors/black)))
+                                  .style (m/TextStyle. .fontSize 20.0 .height 2.0 .color m.Colors/white)))
                   (native/MglSelectableText.
                    .textKey text-key
                    .textSpan (content->text-span (:content block) (:content-spans block) style cfg)

@@ -179,8 +179,15 @@
           :else nil)))
 
     (^void updateEditingValue [this ^s/TextEditingValue value]
-      (when-let [sel (.-selection value)]
-        (swap! !state assoc-in [:blocks block-id :selection] sel)
+      (let [new-text (.-text value)
+            sel (.-selection value)
+            old-content (get-in @!state [:blocks block-id :content] "")]
+        ;; Some virtual keyboards send full-state updates via updateEditingValue
+        ;; even when delta model is enabled, so we must sync text here too.
+        (when (not= new-text old-content)
+          (text-cmd/replace-text !state block-id 0 old-content new-text))
+        (when sel
+          (swap! !state assoc-in [:blocks block-id :selection] sel))
         (bump-after-update!)))
     (^void updateFloatingCursor [this ^s/RawFloatingCursorPoint point] nil)
     (^void connectionClosed [this] (reset! !connection nil))
