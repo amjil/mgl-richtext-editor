@@ -49,4 +49,3 @@ class MongolRichText extends LeafRenderObjectWidget {
       ..maxLines = maxLines;
   }
 }
-

@@ -1,0 +1,16 @@
+(ns rich-editor.commands.transaction
+  "Re-export model transaction and provide update-data-op for block-level :content/:type/:data updates."
+  (:require [rich-editor.model.transaction :as tx]))
+
+;; Re-export for notes-app / other consumers
+(def make-transaction tx/make-transaction)
+(def commit-transaction! tx/commit-transaction!)
+(def insert-op tx/insert-op)
+(def delete-op tx/delete-op)
+(def update-content-op tx/update-content-op)
+(def update-attr-op tx/update-attr-op)
+
+(defn update-data-op
+  "One op to update block by id: :content (replace), :type, and any other key merged into block's :data (e.g. :checked)."
+  [block-id data]
+  (tx/update-block-data-op block-id data))

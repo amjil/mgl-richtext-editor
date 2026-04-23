@@ -18,6 +18,10 @@
 (defn update-attr-op [block-id attributes]
   {:type :update-attr :block-id block-id :attributes attributes})
 
+;; Merge into block: :content (replace), :type, :data (merge), :attributes (merge)
+(defn update-block-data-op [block-id data]
+  {:type :update-block-data :block-id block-id :data data})
+
 ;; =============================================================
 ;; 2. Apply logic (pure)
 ;; =============================================================
@@ -51,6 +55,20 @@
 
     :update-attr
     (update-in state [:blocks (:block-id op) :attributes] merge (:attributes op))
+
+    :update-block-data
+    (let [{:keys [block-id data]} op
+          path [:blocks block-id]
+          content (get data :content)
+          type (get data :type)
+          data-keys (remove #{:content :type} (keys data))
+          data-merger (when (seq data-keys) (select-keys data data-keys))]
+      (update-in state path
+                 (fn [b]
+                   (cond-> b
+                     (some? content) (assoc :content content :content-spans [])
+                     (some? type) (assoc :type type)
+                     (seq data-merger) (update :data merge data-merger)))))
 
     state))
 

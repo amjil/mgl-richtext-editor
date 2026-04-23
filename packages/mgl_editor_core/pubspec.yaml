@@ -10,5 +10,5 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  mongol: ^9.0.0
+  mongol: ^9.2.1
 
