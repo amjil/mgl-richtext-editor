@@ -1,0 +1,204 @@
+(ns rich-editor.components.text-field
+  (:require
+   ["package:flutter/material.dart" :as m]
+   ["package:flutter/services.dart" :as s]
+   ["package:flutter/foundation.dart" :as foundation]
+   ["package:mongol/mongol.dart" :as mgl]
+   [cljd.flutter :as f]
+   [shared-ime.controller :as ime-ctrl])) ;; 🌟 Must require IME controller
+
+;; 判断是否为桌面端
+(def is-desktop? 
+  (let [p foundation/defaultTargetPlatform]
+    (or (= p foundation.TargetPlatform/macOS)
+        (= p foundation.TargetPlatform/windows)
+        (= p foundation.TargetPlatform/linux))))
+
+(defn text-field
+  "Autonomous Mongolian text field.
+   Supports both Mobile virtual keyboard routing and Desktop physical keyboard IME injection."
+  [!shared-state 
+   {:keys [controller hint on-changed on-submitted style decoration max-lines min-lines autofocus
+           prefix-icon suffix-icon obscure-text focus-node]
+    :or {max-lines nil
+         min-lines nil
+         autofocus false
+         obscure-text false
+         focus-node nil}}]
+  (let [is-empty (atom (empty? (.-text controller)))
+        default-font-size 16.0
+        default-line-height 1.2]
+
+    (f/widget
+     :get {{{:flds [onSurface onSurfaceVariant]} .-colorScheme
+            {:flds [bodyMedium]} .-textTheme} m/Theme}
+     :watch [is-empty? is-empty]
+     :let [font-size (or (when style (.-fontSize style))
+                         (when bodyMedium (.-fontSize bodyMedium))
+                         default-font-size)
+           line-height (or (when style (.-height style))
+                           (when bodyMedium (.-height bodyMedium))
+                           default-line-height)
+           base-style (let [style-obj (or style (m/TextStyle .color onSurface .fontSize font-size))]
+                        (if (.-height style-obj) style-obj (.copyWith style-obj .height line-height)))
+
+           final-decoration (-> (or decoration (m/InputDecoration .border m/InputBorder.none))
+                                (.copyWith
+                                 .hintText nil
+                                 .hintStyle nil
+                                 .contentPadding (m/EdgeInsets.symmetric .horizontal 8 .vertical 4)))]
+
+     (m/Focus
+      .onFocusChange 
+      (fn [has-focus?]
+        (if has-focus?
+          (do
+            (s/SystemChannels.textInput.invokeMethod "TextInput.hide")
+            
+            ;; 1. 向桌面端 IME 引擎注册，告知如何插入和删除文本
+            (ime-ctrl/register-client!
+             {:replace-text!
+              (fn [delete-len insert-str]
+                (let [text (.-text controller)
+                      sel (.-selection controller)
+                      offset (max 0 (.-extentOffset sel))
+                      start-idx (max 0 (- offset delete-len))
+                      new-text (str (subs text 0 start-idx) insert-str (subs text offset))]
+                  (set! (.-value controller)
+                        (m/TextEditingValue 
+                         .text new-text
+                         .selection (m/TextSelection.collapsed .offset (+ start-idx (count insert-str)))))))
+              :update-caret! (fn [])
+              :get-context-text! 
+              (fn []
+                (let [text (.-text controller)
+                      sel (.-selection controller)
+                      offset (max 0 (.-extentOffset sel))]
+                  (subs text 0 offset)))})
+            
+            ;; 2. 向移动端状态树注册虚拟键盘委托
+            (swap! !shared-state assoc :external-keyboard-delegate
+                   {:on-return 
+                    (fn []
+                      (if on-submitted
+                        (on-submitted (.-text controller))
+                        (when focus-node (.unfocus focus-node))))
+                    
+                    :on-backspace 
+                    (fn []
+                      (let [text (.-text controller)
+                            sel (.-selection controller)
+                            base (max 0 (.-baseOffset sel))
+                            ext (max 0 (.-extentOffset sel))
+                            start (min base ext)
+                            end (max base ext)]
+                        (if (not= start end)
+                          (set! (.-value controller)
+                                (m/TextEditingValue 
+                                 .text (str (subs text 0 start) (subs text end))
+                                 .selection (m/TextSelection.collapsed .offset start)))
+                          (when (> start 0)
+                            (set! (.-value controller)
+                                  (m/TextEditingValue 
+                                   .text (str (subs text 0 (dec start)) (subs text end))
+                                   .selection (m/TextSelection.collapsed .offset (dec start))))))))}))
+          
+          (do
+            (ime-ctrl/unregister-client!)
+            (swap! !shared-state assoc :external-keyboard-delegate nil))))
+      
+      ;; 🌟 核心拦截器：由于下方 TextField 变成了只读，所有物理按键都会乖乖冒泡到这里！
+      .onKeyEvent 
+      (fn ^m/KeyEventResult [^m/FocusNode node ^s/KeyEvent event]
+        (let [res (ime-ctrl/handle-key-event event)]
+          (if (= res m.KeyEventResult/handled)
+            res
+            ;; 如果 IME 没有处理，且在桌面端，我们必须手动处理退格和回车
+            (if (and is-desktop? (dart/is? event s/KeyDownEvent))
+              (let [logical-key (.-logicalKey event)]
+                (cond
+                  (= logical-key s.LogicalKeyboardKey/backspace)
+                  (do
+                    (let [text (.-text controller)
+                          sel (.-selection controller)
+                          base (max 0 (.-baseOffset sel))
+                          ext (max 0 (.-extentOffset sel))
+                          start (min base ext)
+                          end (max base ext)]
+                      (if (not= start end)
+                        (set! (.-value controller)
+                              (m/TextEditingValue 
+                               .text (str (subs text 0 start) (subs text end))
+                               .selection (m/TextSelection.collapsed .offset start)))
+                        (when (> start 0)
+                          (set! (.-value controller)
+                                (m/TextEditingValue 
+                                 .text (str (subs text 0 (dec start)) (subs text end))
+                                 .selection (m/TextSelection.collapsed .offset (dec start)))))))
+                    m.KeyEventResult/handled)
+                  
+                  (= logical-key s.LogicalKeyboardKey/enter)
+                  (do
+                    (when on-submitted (on-submitted (.-text controller)))
+                    (when focus-node (.unfocus focus-node))
+                    m.KeyEventResult/handled)
+                  
+                  :else m.KeyEventResult/ignored))
+              m.KeyEventResult/ignored))))
+
+      .child
+      (m/Column
+       .mainAxisSize m/MainAxisSize.min
+       .children
+       [(if prefix-icon
+          (m/Padding .padding (m/EdgeInsets.only .bottom 4) .child prefix-icon)
+          (m/SizedBox.shrink))
+
+        (m/Flexible
+         .fit m/FlexFit.loose
+         .child
+         (let [stack
+               (m/Stack
+                .alignment m/Alignment.topCenter
+                .children
+                [(if (and is-empty? hint)
+                   (m/Positioned
+                    .top 4
+                    .child
+                    (m/IgnorePointer
+                     .child
+                     (mgl/MongolText
+                      hint
+                      .style (.copyWith base-style .color (.withOpacity onSurfaceVariant 0.6))
+                      .textAlign mgl/MongolTextAlign.top)))
+                   (m/SizedBox.shrink))
+
+                 (mgl/MongolTextField
+                  .controller controller
+                  .focusNode focus-node
+                  ;; 🌟 核心物理屏障：桌面端彻底只读，禁用系统英文字符侵入，但保留光标闪烁！
+                  .readOnly is-desktop?
+                  .showCursor true
+                  
+                  .autofocus autofocus
+                  .minLines min-lines
+                  .maxLines max-lines
+                  .obscureText obscure-text
+                  .style base-style
+                  .decoration final-decoration
+                  .textAlign mgl/MongolTextAlign.top
+                  .cursorColor onSurface
+                  .onChanged (fn [text]
+                               (reset! is-empty (empty? text))
+                               (when on-changed (on-changed text))))])]
+           
+           (if focus-node
+             (m/GestureDetector
+              .behavior m/HitTestBehavior.opaque
+              .onTap #(.requestFocus focus-node)
+              .child stack)
+             stack)))
+
+        (if suffix-icon
+          (m/Padding .padding (m/EdgeInsets.only .top 4) .child suffix-icon)
+          (m/SizedBox.shrink))])))))

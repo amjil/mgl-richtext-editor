@@ -3,7 +3,7 @@
    ["package:flutter/material.dart" :as m]
    [cljd.flutter :as f]
    [rich-editor.components.editor :as editor]
-   [components.text-field :as custom-tf]
+   [rich-editor.components.text-field :as custom-tf]
    [rich-editor.defaults :as defaults]
 
    ;; Dictionary and keyboard initialization dependencies
