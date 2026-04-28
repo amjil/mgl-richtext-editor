@@ -100,14 +100,13 @@
 
 (defn mongol-editor
   "Highly encapsulated Mongolian rich text editor.
-   Supports slot injection for externally managed input fields (e.g., :leading-widget)."
+   Supports slot injection for externally managed input fields."
   [!state editor-config & {:keys [leading-widget]}]
   (let [cfg (config/merge-config defaults/full-default-config editor-config)]
-
     (f/widget
      :managed [editor-focus-node (m/FocusNode)]
      :watch [state !state]
-
+     
      (let [content-list (m/ListView
                          .scrollDirection m.Axis/horizontal
                          .padding (m.EdgeInsets/all 20.0)
@@ -119,9 +118,7 @@
                                                       .padding (m.EdgeInsets/only .right 12.0)
                                                       .child (node-view/block-node id !state i cfg)))))
                                          (range (count (:root state)))))
-
-           ;; Use Listener to aggressively intercept raw touch events to ensure focus is always requested.
-           ;; This prevents inner text widgets from swallowing the tap event.
+           
            clickable-content (m/Listener
                               .behavior m.HitTestBehavior/translucent
                               .onPointerDown (fn [_]
@@ -131,26 +128,25 @@
                               (m/GestureDetector
                                .behavior m.HitTestBehavior/translucent
                                .onTap (fn []
-                                        ;; If tapping the empty area, activate the last block by default
                                         (when-not (:active-block-id @!state)
                                           (when-let [last-id (last (:root @!state))]
                                             (let [len (count (get-in @!state [:blocks last-id :content] ""))]
                                               (editor-cmd/focus-block !state last-id len)))))
                                .child content-list))
-
+           
            core-input-area (m/Focus
                             .focusNode editor-focus-node
-                            .onFocusChange (fn [has-focus?]
-                                             (if has-focus?
-                                               ;; Aggressively hide native system keyboard when gaining focus
-                                               (do
-                                                 (s/SystemChannels.textInput.invokeMethod "TextInput.hide")
-                                                 (when-let [active-id (:active-block-id @!state)]
-                                                   (ime/attach! !state active-id)))
-                                               ;; Clean up logic when losing focus to the Title field or outside
-                                               (do
-                                                 (ime/detach!)
-                                                 (swap! !state assoc :active-block-id nil :cursor-visible false))))
+                            .onFocusChange 
+                            (fn [has-focus?]
+                              (if has-focus?
+                                (do
+                                  (s/SystemChannels.textInput.invokeMethod "TextInput.hide")
+                                  (when-let [active-id (:active-block-id @!state)]
+                                    (ime/attach! !state active-id)))
+                                (do
+                                  (ime/detach!)
+                                  ;; 🌟 Pure state update. No unregister-client! here.
+                                  (swap! !state assoc :active-block-id nil :cursor-visible false))))
                             .onKeyEvent (fn [node event] (handle-key-event cfg !state node event))
                             .child clickable-content)
 
@@ -175,55 +171,54 @@
              (m/Stack
               .children
               [combined-input-area
-               (keyboard/candidates nil)]))
+               (if (or (:active-block-id state) (:external-keyboard-delegate state))
+                 (keyboard/candidates nil)
+                 (m/SizedBox.shrink))]))
 
-            (keyboard/keyboard
-             {:custom-fns
-              {:on-return
-               (fn []
-                 (cond
-                   ;; Route A: Rich text editor handles return
-                   (:active-block-id @!state)
-                   (let [active-id (:active-block-id @!state)
-                         block (get-in @!state [:blocks active-id])
-                         sel (:selection block)
-                         offset (if sel (.-extentOffset sel) 0)]
-                     (editor-cmd/focus-block !state active-id offset)
-                     (text-cmd/insert-string !state active-id offset "\n"))
+            (if (or (:active-block-id state) (:external-keyboard-delegate state))
+              (keyboard/keyboard
+               {:custom-fns
+                {:on-return
+                 (fn []
+                   (cond
+                     (:active-block-id @!state)
+                     (let [active-id (:active-block-id @!state)
+                           block (get-in @!state [:blocks active-id])
+                           sel (:selection block)
+                           offset (if sel (.-extentOffset sel) 0)]
+                       (editor-cmd/focus-block !state active-id offset)
+                       (text-cmd/insert-string !state active-id offset "\n"))
 
-                   ;; Route B: External delegate (e.g., Title field) handles return
-                   (:external-keyboard-delegate @!state)
-                   (when-let [on-return-fn (:on-return (:external-keyboard-delegate @!state))]
-                     (on-return-fn))
+                     (:external-keyboard-delegate @!state)
+                     (when-let [on-return-fn (:on-return (:external-keyboard-delegate @!state))]
+                       (on-return-fn))
 
-                   :else nil))
+                     :else nil))
 
-               :on-backspace
-               (fn []
-                 (let [candidates (:keyboard/candidates-list @vk-state/state)]
-                   (if (seq candidates)
-                     (vk-action/clear-candidates)
-                     (cond
-                       ;; Route A: Rich text editor handles backspace
-                       (:active-block-id @!state)
-                       (let [active-id (:active-block-id @!state)
-                             block (get-in @!state [:blocks active-id])
-                             sel (:selection block)
-                             start (if sel (.-baseOffset sel) 0)
-                             end (if sel (.-extentOffset sel) 0)]
-                         (if (not= start end)
-                           (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
-                           (when (> start 0)
-                             (text-cmd/delete-range !state active-id (dec start) 1))))
+                 :on-backspace
+                 (fn []
+                   (let [candidates (:keyboard/candidates-list @vk-state/state)]
+                     (if (seq candidates)
+                       (vk-action/clear-candidates)
+                       (cond
+                         (:active-block-id @!state)
+                         (let [active-id (:active-block-id @!state)
+                               block (get-in @!state [:blocks active-id])
+                               sel (:selection block)
+                               start (if sel (.-baseOffset sel) 0)
+                               end (if sel (.-extentOffset sel) 0)]
+                           (if (not= start end)
+                             (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
+                             (when (> start 0)
+                               (text-cmd/delete-range !state active-id (dec start) 1))))
 
-                       ;; Route B: External delegate (e.g., Title field) handles backspace
-                       (:external-keyboard-delegate @!state)
-                       (when-let [on-backspace-fn (:on-backspace (:external-keyboard-delegate @!state))]
-                         (on-backspace-fn))
+                         (:external-keyboard-delegate @!state)
+                         (when-let [on-backspace-fn (:on-backspace (:external-keyboard-delegate @!state))]
+                           (on-backspace-fn))
 
-                       :else nil))))}})]))
+                         :else nil))))}})
+              (m/SizedBox.shrink))]))
 
-         ;; Desktop environment: Wrap with shortcuts and standard focus events
          (overlay/ime-global-wrapper
           (m/CallbackShortcuts
            .bindings (config/shortcut-bindings cfg !state)

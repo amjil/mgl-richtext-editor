@@ -202,13 +202,11 @@
   (when-let [conn @!connection]
     (when (.-attached conn)
       (.close conn))
-    (reset! !connection nil))
-  (ime-ctrl/unregister-client!))
+    (reset! !connection nil)))
 
 (defn attach! [!state block-id]
   (detach!)
   
-  ;; Register the current rich text block to the physical keyboard IME engine
   (ime-ctrl/register-client!
    {:replace-text!
     (fn [delete-len insert-str]
@@ -221,14 +219,9 @@
                        (subs content start-idx offset) 
                        "")]
         ;; Dispatch command to update rich text block content
-        ;; The UI will automatically rebuild since it watches !state
         (text-cmd/replace-text !state block-id start-idx old-text insert-str)))
 
-    :update-caret!
-    (fn []
-      ;; Tell candidate overlay where to position itself
-      ;; You can implement specific caret tracking logic here if needed for desktop
-      nil)
+    :update-caret! (fn [] nil)
 
     :get-context-text!
     (fn []
@@ -240,7 +233,7 @@
           (subs content 0 offset)
           content)))})
 
-  ;; Standard System TextInput attach logic (Must exist in this file)
+  ;; Standard System TextInput attach (Direct call, NO resolve!)
   (let [block (get-in @!state [:blocks block-id])
         content (:content block "")
         config (s/TextInputConfiguration.
