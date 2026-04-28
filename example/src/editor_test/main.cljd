@@ -1,254 +1,89 @@
 (ns editor-test.main
-  (:require ["package:flutter/material.dart" :as m]
-            ["package:flutter/foundation.dart" :as foundation]
-            ["package:flutter/services.dart" :as s]
-            ["package:mgl_editor_core/post_frame_trigger.dart" :as pft]
-            [cljd.flutter :as f]
-            [rich-editor.commands.editor-commands :as editor-cmd]
-            [rich-editor.commands.text-commands :as text-cmd]
-            [rich-editor.services.history-service :as history]
-            [rich-editor.services.ime-service :as ime]
-            [rich-editor.config :as config]
-            [rich-editor.defaults :as defaults]
-            [rich-editor.components.node-view :as node-view]
-            [virtual-keyboard.keyboard :as keyboard]
-            [virtual-keyboard.keyboard-state :as vk-state]
-            [virtual-keyboard.keyboard-action :as vk-action]
-            [virtual-keyboard.keyboard-candidates :as kc]
-            [virtual-keyboard.zip-utils :as zip-utils]
-            [virtual-keyboard.fst-reader :as vk-fst]
-            [virtual-keyboard.input-control :as input-control]
-            [virtual-keyboard.options :as options]
-            [shared-ime.controller :as ime-ctrl]
-            [shared-ime.fst-reader :as fst]
-            [shared-ime.next :as next]
-            [shared-ime.overlay-view :as overlay]))
+  (:require
+   ["package:flutter/material.dart" :as m]
+   [cljd.flutter :as f]
+   [rich-editor.components.editor :as editor]
+   [components.text-field :as custom-tf]
+   [rich-editor.defaults :as defaults]
 
-(defonce !state (atom {:root []
-                       :blocks {}
-                       :active-block-id nil
-                       :cursor-visible false
-                       :history {:undo-stack [] :redo-stack [] :max-depth 100}}))
+   ;; Dictionary and keyboard initialization dependencies
+   [virtual-keyboard.zip-utils :as zip-utils]
+   [virtual-keyboard.fst-reader :as vk-fst]
+   [virtual-keyboard.input-control :as input-control]
+   [virtual-keyboard.keyboard-candidates :as kc]
+   [shared-ime.fst-reader :as fst]
+   [shared-ime.next :as next]))
 
-(defonce !refresh-tick (atom 0))
-(defonce !ime-attached (atom false))
+;; =============================================================
+;; 1. Declare shared global state
+;; =============================================================
+(defonce !editor-state
+  (atom {:root ["b-init"]
+         :blocks {"b-init" {:id "b-init" :type :paragraph :content ""}}
+         :active-block-id nil
+         :cursor-visible false
+         :external-keyboard-delegate nil
+         :history {:undo-stack [] :redo-stack [] :max-depth 100}}))
 
-(defn is-mobile? []
-  (let [platform foundation/defaultTargetPlatform]
-    (or (= platform foundation.TargetPlatform/android)
-        (= platform foundation.TargetPlatform/iOS))))
+;; =============================================================
+;; 2. Main Page View
+;; =============================================================
+(defn main-page []
+  (f/widget
+   :managed [title-focus-node (m/FocusNode)
+             title-controller (m/TextEditingController)]
 
-(defn- handle-key-event [cfg* !state _node event]
-  (let [ime-res (ime-ctrl/handle-key-event event)]
-    (if (= ime-res m.KeyEventResult/handled)
-      ime-res
-      (let [logical-key (.-logicalKey event)
-            is-down? (dart/is? event s/KeyDownEvent)
-            is-up? (= logical-key s.LogicalKeyboardKey/arrowUp)
-            is-down-arrow? (= logical-key s.LogicalKeyboardKey/arrowDown)
-            is-left? (= logical-key s.LogicalKeyboardKey/arrowLeft)
-            is-right? (= logical-key s.LogicalKeyboardKey/arrowRight)
-            is-arrow? (or is-up? is-down-arrow? is-left? is-right?)]
-        (cond
-          (= logical-key s.LogicalKeyboardKey/tab)
-          (if is-down?
-            (do
-              (if (.-isShiftPressed (.-instance s/HardwareKeyboard))
-                (config/run-command cfg* !state :outdent)
-                (config/run-command cfg* !state :indent))
-              m.KeyEventResult/handled)
-            m.KeyEventResult/handled)
+   (m/Scaffold
+    .appBar (m/AppBar
+             .title (m/Text "ᠮᠣᠩᠭᠣᠯ ᠵᠠᠰᠠᠪᠤᠷᠢᠯᠠᠭᠴᠢ"
+                            .style (m/TextStyle .fontFamily "OyunQaganTig"))
+             .elevation 0.0)
+    .body
+    (m/SafeArea
+     .child
+     (editor/mongol-editor
+      !editor-state
+      defaults/full-default-config
 
-          is-arrow?
-          (if is-down?
-            (let [active-id (:active-block-id @!state)]
-              (if active-id
-                (let [block (get-in @!state [:blocks active-id])
-                      sel (:selection block)
-                      offset (if sel (.-extentOffset sel) 0)
-                      content-len (count (:content block ""))
-                      root (:root @!state)
-                      idx (.indexOf root active-id)]
-                  (cond
-                    is-up?
-                    (if (> offset 0)
-                      (do (editor-cmd/focus-block !state active-id (dec offset))
-                          m.KeyEventResult/handled)
-                      (if (> idx 0)
-                        (let [prev-id (nth root (dec idx))
-                              prev-len (count (:content (get-in @!state [:blocks prev-id]) ""))]
-                          (editor-cmd/focus-block !state prev-id prev-len)
-                          m.KeyEventResult/handled)
-                        m.KeyEventResult/handled))
+      :leading-widget
+      (m/Padding
+       .padding (m/EdgeInsets.only .left 20.0 .right 20.0 .top 20.0)
+       .child
+       (m/SizedBox
+        .width 60.0
+        .child
+        (custom-tf/text-field
+         !editor-state
+         {:controller title-controller
+          :focus-node title-focus-node
+          :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
+          :on-submitted (fn [text]
+                          (dart:core/print (str "Title input completed: " text)))
 
-                    is-down-arrow?
-                    (if (< offset content-len)
-                      (do (editor-cmd/focus-block !state active-id (inc offset))
-                          m.KeyEventResult/handled)
-                      (if (< idx (dec (count root)))
-                        (let [next-id (nth root (inc idx))]
-                          (editor-cmd/focus-block !state next-id 0)
-                          m.KeyEventResult/handled)
-                        m.KeyEventResult/handled))
+          :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)}))))))))
 
-                    is-left?
-                    (if (> idx 0)
-                      (let [prev-id (nth root (dec idx))
-                            prev-len (count (:content (get-in @!state [:blocks prev-id]) ""))
-                            new-offset (min offset prev-len)]
-                        (editor-cmd/focus-block !state prev-id new-offset)
-                        m.KeyEventResult/handled)
-                      m.KeyEventResult/handled)
-
-                    is-right?
-                    (if (< idx (dec (count root)))
-                      (let [next-id (nth root (inc idx))
-                            next-len (count (:content (get-in @!state [:blocks next-id]) ""))
-                            new-offset (min offset next-len)]
-                        (editor-cmd/focus-block !state next-id new-offset)
-                        m.KeyEventResult/handled)
-                      m.KeyEventResult/handled)
-
-                    :else m.KeyEventResult/ignored))
-                m.KeyEventResult/handled))
-            m.KeyEventResult/handled)
-
-          :else m.KeyEventResult/ignored)))))
-
-(defn editor-body [!state editor-config]
-  (let [cfg (config/merge-config defaults/full-default-config editor-config)]
-    (when (or (nil? (get @!state :editor-config)) editor-config)
-      (swap! !state assoc :editor-config cfg))
-    (f/widget
-     :watch [state !state _ !refresh-tick]
-     (let [cfg* (get state :editor-config cfg)
-           content (m/ListView
-                    .scrollDirection m.Axis/horizontal
-                    .padding (m.EdgeInsets/all 20.0)
-                    .children (mapv (fn [i]
-                                      (let [id (nth (:root state) i)]
-                                        (m/KeyedSubtree
-                                         .key (m/ValueKey. id)
-                                         .child (m/Padding
-                                                 .padding (m.EdgeInsets/only .right 12.0)
-                                                 .child (node-view/block-node id !state i cfg*)))))
-                                    (range (count (:root state)))))]
-
-       (if (is-mobile?)
-         (f/widget
-          :let [info (merge options/keyboard-option {:keyboard/mongol-font-family "OyunQaganTig"
-                                                     :keyboard/key-container-color m/Colors.grey.shade500
-                                                     :keyboard/font-size 16})]
-          :bind {:info info}
-          (m/Column
-           .children
-           [(m/Expanded
-             .child
-             (m/Stack
-              .children
-              [content
-               (keyboard/candidates nil)]))
-            (keyboard/keyboard
-             {:custom-fns
-              {:on-return
-               (fn []
-                 (when-let [active-id (:active-block-id @!state)]
-                   (let [block (get-in @!state [:blocks active-id])
-                         sel (:selection block)
-                         offset (if sel (.-extentOffset sel) 0)]
-                     (editor-cmd/focus-block !state active-id offset)
-                     (text-cmd/insert-string !state active-id offset "\n"))))
-               :on-backspace
-               (fn []
-                 (let [candidates (:keyboard/candidates-list @vk-state/state)]
-                   (if (seq candidates)
-                     (vk-action/clear-candidates)
-                     (when-let [active-id (:active-block-id @!state)]
-                       (let [block (get-in @!state [:blocks active-id])
-                             sel (:selection block)
-                             start (if sel (.-baseOffset sel) 0)
-                             end (if sel (.-extentOffset sel) 0)]
-                         (if (not= start end)
-                           (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
-                           (when (> start 0)
-                            (text-cmd/delete-range !state active-id (dec start) 1))))))))}})]))
-         (overlay/ime-global-wrapper
-          (m/CallbackShortcuts
-           .bindings (config/shortcut-bindings cfg* !state)
-           .child
-           (m/Focus
-            .autofocus true
-            .onKeyEvent (fn [node event] (handle-key-event cfg* !state node event))
-            .child
-            content))))))))
-
+;; =============================================================
+;; 3. App Entry and Initialization
+;; =============================================================
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)
+
+  ;; 🌟 CORE FIX: Initialize core FST engines globally (for both Desktop and Mobile)
   (fst/ensure-loaded)
   (next/ensure-loaded)
 
-  (when (is-mobile?)
-    (zip-utils/load-assets-parallel
-     [[kc/next "assets/next.zip"]])
-    (await (vk-fst/ensure-loaded))
+  ;; Mobile specific asset loading for virtual keyboard
+  (when (editor/is-mobile?)
+    (zip-utils/load-assets-parallel [[kc/next "assets/next.zip"]])
+    (vk-fst/ensure-loaded) ;; Note: Use .then if await is not supported in this context
     (input-control/set-control))
-
-
-  (editor-cmd/clear-document !state)
-
-  (ime/set-merge-focus-callback! (fn [!state prev-id new-offset]
-                                   (editor-cmd/focus-block !state prev-id new-offset)))
-  (ime/set-split-focus-callback! (fn [!state new-id _]
-                                   (editor-cmd/focus-block !state new-id 0)))
-  (ime/set-after-update-callback! (fn [] (swap! !refresh-tick inc)))
-  (ime/set-get-caret-offset-callback!
-   (fn [block-id]
-     (when-let [text-key (get @node-view/!block-text-keys block-id)]
-       (when-let [ctx (.-currentContext text-key)]
-         (try
-           (let [^m/RenderBox rb (.findRenderObject ctx)]
-             (.localToGlobal rb m.Offset/zero))
-           (catch Exception _ nil))))))
 
   (f/run
    (m/MaterialApp
-    .title "Mongol Editor Test"
+    .title "Mongol Editor"
     .debugShowCheckedModeBanner false
     .theme (m/ThemeData
-            .primarySwatch m.Colors/blue
             .brightness m.Brightness/dark
-            .fontFamily "OyunQaganTig"
-            .visualDensity m.VisualDensity/adaptivePlatformDensity)
-    .home
-    (f/widget
-     :watch [state !state]
-     (m/Scaffold
-      .appBar
-      (m/AppBar
-       .title (m/Text "ᠮᠣᠩᠭᠣᠯ ᠵᠠᠰᠠᠪᠤᠷᠢᠯᠠᠭᠴᠢ" .style (m/TextStyle .fontFamily "OyunQaganTig"))
-       .actions
-       [(m/IconButton
-         .icon (m/Icon m.Icons/undo)
-         .tooltip "Undo (Ctrl+Z)"
-         .onPressed (if (empty? (get-in state [:history :undo-stack]))
-                      nil
-                      #(history/undo! !state)))
-        (m/IconButton
-         .icon (m/Icon m.Icons/redo)
-         .tooltip "Redo (Ctrl+Y)"
-         .onPressed (if (empty? (get-in state [:history :redo-stack]))
-                      nil
-                      #(history/redo! !state)))
-        (m/IconButton
-         .icon (m/Icon m.Icons/format_bold)
-         .tooltip "Bold (Ctrl+B)"
-         .onPressed #(config/run-command defaults/full-default-config !state :bold))])
-      .body
-      (pft/PostFrameTrigger
-       .onLayout (fn []
-                   (when (compare-and-set! !ime-attached false true)
-                     (when-let [active-id (:active-block-id @!state)]
-                       (when (seq (:root @!state))
-                         (ime/attach! !state active-id)))))
-       .child (m/SafeArea
-               .child (editor-body !state defaults/full-default-config))))))))
+            .primarySwatch m.Colors/blue
+            .fontFamily "OyunQaganTig")
+    .home (main-page))))

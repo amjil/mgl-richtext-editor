@@ -200,13 +200,15 @@
 
 (defn detach! []
   (when-let [conn @!connection]
-    (.close conn)
+    (when (.-attached conn)
+      (.close conn))
     (reset! !connection nil))
   (ime-ctrl/unregister-client!))
 
 (defn attach! [!state block-id]
   (detach!)
   
+  ;; Register the current rich text block to the physical keyboard IME engine
   (ime-ctrl/register-client!
    {:replace-text!
     (fn [delete-len insert-str]
@@ -215,17 +217,18 @@
             offset (if sel (max 0 (.-extentOffset sel)) 0)
             start-idx (max 0 (- offset delete-len))
             content (:content (get-in state [:blocks block-id]) "")
-            old-text (subs content start-idx offset)]
-        (text-cmd/replace-text !state block-id start-idx old-text insert-str)
-        (update-state! (get-in @!state [:blocks block-id :content])
-                       (get-in @!state [:blocks block-id :selection]))
-        (bump-after-update!)))
+            old-text (if (>= (count content) offset) 
+                       (subs content start-idx offset) 
+                       "")]
+        ;; Dispatch command to update rich text block content
+        ;; The UI will automatically rebuild since it watches !state
+        (text-cmd/replace-text !state block-id start-idx old-text insert-str)))
 
     :update-caret!
     (fn []
-      (when-let [f @!get-caret-offset-callback]
-        (when-let [global-offset (f block-id)]
-          (swap! ime-ctrl/!ime-state assoc :caret-offset global-offset))))
+      ;; Tell candidate overlay where to position itself
+      ;; You can implement specific caret tracking logic here if needed for desktop
+      nil)
 
     :get-context-text!
     (fn []
@@ -233,27 +236,20 @@
             sel (get-in state [:blocks block-id :selection])
             offset (if sel (max 0 (.-start sel)) 0)
             content (:content (get-in state [:blocks block-id]) "")]
-        (subs content 0 offset)))})
+        (if (>= (count content) offset)
+          (subs content 0 offset)
+          content)))})
 
+  ;; Standard System TextInput attach logic (Must exist in this file)
   (let [block (get-in @!state [:blocks block-id])
         content (:content block "")
-        content-len (count content)
         config (s/TextInputConfiguration.
-                 .inputType s.TextInputType/multiline
-                 .inputAction s.TextInputAction/newline
-                 .enableDeltaModel true
-                 .autocorrect false)
+                .inputType s.TextInputType/multiline
+                .enableDeltaModel true)
         conn (s/TextInput.attach (create-input-client !state block-id) config)]
     (reset! !connection conn)
-    
-    (let [raw-sel (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))
-          safe-base (max 0 (min (.-baseOffset raw-sel) content-len))
-          safe-ext  (max 0 (min (.-extentOffset raw-sel) content-len))
-          safe-sel  (s/TextSelection. .baseOffset safe-base .extentOffset safe-ext)]
-      (.setEditingState conn 
-        (s/TextEditingValue. 
-          .text content
-          .selection safe-sel)))
+    (let [raw-sel (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))]
+      (.setEditingState conn (s/TextEditingValue. .text content .selection raw-sel)))
     (.show conn)))
 
 (defn update-state! [content selection]
