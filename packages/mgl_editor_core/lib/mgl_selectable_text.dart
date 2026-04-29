@@ -14,6 +14,9 @@ import 'mgl_drag_handle.dart';
 const double _kBlockLineHeight = 2.0;
 const double _kCaretWidth = 2.0;
 
+// 🌟 Added a visual correction constant to push the handle perfectly to the right edge.
+const double _kHandleVisualShift = 3.0;
+
 /// Ensures the TextSpan uses the proper line height required for Mongolian vertical layout.
 TextSpan _ensureLineHeight(TextSpan span) {
   final baseStyle = span.style ?? const TextStyle();
@@ -163,53 +166,71 @@ class _MglSelectableTextState extends State<MglSelectableText>
       List<Widget> handles = [];
       const double touchExtension = 48.0;
 
-      // Handle Caret Placement
+      // Mathematical centering metrics
+      final double fontSize = widget.textSpan.style?.fontSize ?? 20.0;
+      final double heightMultiplier =
+          widget.textSpan.style?.height ?? _kBlockLineHeight;
+      final double columnWidth = fontSize * heightMultiplier;
+      final double paddingLeft = (columnWidth - fontSize) / 2.0;
+
+      // 1. Handle Caret Placement (Single Handle)
       if (widget.showCaretHandle && widget.selection!.isCollapsed) {
         final int offset = widget.selection!.baseOffset;
         final caretOffsetLocal = renderBox.getOffsetForCaret(
             TextPosition(offset: offset), Rect.zero);
 
-        double caretRightEdgeDx = caretOffsetLocal.dx;
-        final String plainText = widget.textSpan.toPlainText();
-        if (plainText.isNotEmpty) {
-          final int probeStart =
-              offset >= plainText.length ? plainText.length - 1 : offset;
-          final boxes = renderBox.getBoxesForSelection(TextSelection(
-              baseOffset: probeStart, extentOffset: probeStart + 1));
-          if (boxes.isNotEmpty) caretRightEdgeDx = boxes.first.right;
-        } else {
-          caretRightEdgeDx += 20.0;
-        }
+        // 🌟 Added visual shift to push the handle absolutely to the right side of the caret
+        final double targetX = caretOffsetLocal.dx +
+            paddingLeft +
+            fontSize +
+            _kCaretWidth +
+            _kHandleVisualShift;
+
+        final handlePos = Offset(
+            targetX + touchExtension, caretOffsetLocal.dy + touchExtension);
 
         handles.add(MglDragHandle(
           key: const ValueKey('mgl_caret_handle'),
-          center: Offset(caretRightEdgeDx + _kCaretWidth + touchExtension,
-              caretOffsetLocal.dy + touchExtension),
+          center: handlePos,
           onPanUpdate: _gestureHandler.handleCaretPanUpdate,
         ));
       }
 
-      // Handle Range Selection (Start and End)
+      // 2. Handle Range Selection (Start and End Handles)
       if (!widget.selection!.isCollapsed &&
           (widget.showStartHandle || widget.showEndHandle)) {
         final boxes = renderBox.getBoxesForSelection(widget.selection!);
         if (boxes.isNotEmpty) {
           if (widget.showStartHandle) {
             final firstBox = boxes.first;
+            final double startX = firstBox.left +
+                paddingLeft +
+                fontSize +
+                _kCaretWidth +
+                _kHandleVisualShift;
+
+            final startPos =
+                Offset(startX + touchExtension, firstBox.top + touchExtension);
             handles.add(MglDragHandle(
               key: const ValueKey('mgl_start_handle'),
-              center: Offset(firstBox.right + touchExtension,
-                  firstBox.top + touchExtension),
+              center: startPos,
               onPanUpdate: (details) =>
                   _gestureHandler.handleHandlePanUpdate(details, true),
             ));
           }
           if (widget.showEndHandle) {
             final lastBox = boxes.last;
+            final double endX = lastBox.left +
+                paddingLeft +
+                fontSize +
+                _kCaretWidth +
+                _kHandleVisualShift;
+
+            final endPos =
+                Offset(endX + touchExtension, lastBox.bottom + touchExtension);
             handles.add(MglDragHandle(
               key: const ValueKey('mgl_end_handle'),
-              center: Offset(lastBox.right + touchExtension,
-                  lastBox.bottom + touchExtension),
+              center: endPos,
               onPanUpdate: (details) =>
                   _gestureHandler.handleHandlePanUpdate(details, false),
             ));
@@ -269,10 +290,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
       });
     }
 
-    // 🌟 THE FIX: Accurately compare the PREVIOUS blink state with the CURRENT blink state.
-    // This ensures that transitioning from a range selection (not blinking)
-    // back to a single caret (blinking) properly restarts the animation,
-    // even if the widget remained focused the whole time.
+    // 2. Accurately control caret blinking state
     final bool wasBlinking = oldWidget.isFocused &&
         oldWidget.showCursor &&
         (oldWidget.selection?.isCollapsed == true);
