@@ -75,7 +75,7 @@
               (do (when-let [del! (get-in state [:editor-config :block-ops :delete-cross-block-selection!])]
                     (del! !state g-sel))
                   (swap! !state dissoc :global-selection))
-              (clipboard/cut! @!state))))
+              (clipboard/cut! @!state editor-cmd/delete-global-selection!))))
    :paste (fn [!state]
             (-> (clipboard/paste! !state)
                 (.then (fn [focus-info]

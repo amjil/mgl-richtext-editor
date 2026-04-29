@@ -5,6 +5,7 @@
             [rich-editor.commands.text-commands :as text-cmd]
             [rich-editor.model.transaction :as tx]
             [rich-editor.model.node :as node]
+            [rich-editor.model.selection :as sel]
             [rich-editor.config :as config]
             ["package:flutter/services.dart" :as s]))
 
@@ -57,6 +58,53 @@
                         (assoc :cursor-visible true)
                         (assoc-in [:blocks new-id :selection] (s/TextSelection. .baseOffset 0 .extentOffset 0)))))))
 
+(defn delete-global-selection!
+  "Deletes the text spanned by the global selection.
+   Merges the start and end blocks if they span multiple nodes, and cleans up the orphaned blocks."
+  [!state]
+  (let [state @!state
+        g-sel (:global-selection state)]
+    (when (and g-sel (:start g-sel) (:end g-sel))
+      (let [n-sel (sel/normalize state g-sel)
+            start-id (get-in n-sel [:start :id])
+            start-off (get-in n-sel [:start :offset])
+            end-id (get-in n-sel [:end :id])
+            end-off (get-in n-sel [:end :offset])
+            root (:root state)
+            start-idx (.indexOf root start-id)
+            end-idx (.indexOf root end-id)]
+        
+        (if (= start-id end-id)
+          ;; Single block fallback
+          (let [len (- end-off start-off)]
+            (swap! !state dissoc :global-selection)
+            ;; If focus-block is in this same file, you can just call it:
+            ;; (focus-block !state start-id start-off)
+            (swap! !state assoc :active-block-id start-id :cursor-visible true)
+            (swap! !state assoc-in [:blocks start-id :selection] 
+                   (s/TextSelection.collapsed .offset start-off))
+            (text-cmd/delete-range !state start-id start-off len))
+
+          ;; 🌟 Multi-block deletion & merge
+          (let [start-content (get-in state [:blocks start-id :content] "")
+                end-content (get-in state [:blocks end-id :content] "")
+                keep-prefix (subs start-content 0 start-off)
+                keep-suffix (subs end-content end-off)
+                new-content (str keep-prefix keep-suffix)
+                blocks-to-remove (set (subvec root (inc start-idx) (inc end-idx)))
+                new-root (vec (remove blocks-to-remove root))]
+            
+            (swap! !state
+                   (fn [s]
+                     (-> s
+                         (dissoc :global-selection)
+                         (assoc :root new-root)
+                         (update :blocks (fn [blocks-map] (apply dissoc blocks-map blocks-to-remove)))
+                         (assoc-in [:blocks start-id :content] new-content)
+                         (assoc :active-block-id start-id)
+                         (assoc-in [:blocks start-id :selection] 
+                                   (s/TextSelection.collapsed .offset start-off))
+                         (assoc :cursor-visible true))))))))))
 ;; =============================================================
 ;; 3. Shortcuts and actions
 ;; =============================================================
@@ -82,7 +130,7 @@
     (clipboard/copy! @!state)
 
     (= intent :cut)
-    (clipboard/cut! !state)
+    (clipboard/cut! !state delete-global-selection!)
 
     (= intent :paste)
     (-> (clipboard/paste! !state)

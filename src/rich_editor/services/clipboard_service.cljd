@@ -82,17 +82,14 @@
 
 (defn cut!
   "Copy and delete selection"
-  [!state]
+  [!state delete-global-fn]
   (let [state @!state]
     ;; 1. Always copy the text first
     (copy! state)
     
     ;; 2. Delete the text based on selection type
     (if (:global-selection state)
-      ;; Note: Deleting across multiple blocks requires a specialized command 
-      ;; that merges the start and end blocks and deletes the ones in between.
-      ;; If you have a `delete-global-selection` command, call it here:
-      (dart:core/print "TODO: Implement cross-block delete command to fully support global Cut!")
+      (delete-global-fn !state)
       
       ;; 3. Single block cut (Kept your logic, but made it robust against direction)
       (when-let [active-id (:active-block-id state)]

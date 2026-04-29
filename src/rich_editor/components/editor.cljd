@@ -54,12 +54,59 @@
           ;; 🌟 CLIPBOARD SHORTCUTS: Ctrl+X / Cmd+X (Cut)
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyX))
           (do
-            (clipboard/cut! !state)
+            (clipboard/cut! !state editor-cmd/delete-global-selection!)
             m.KeyEventResult/handled)
 
           ;; Handle Escape
           (= logical-key s.LogicalKeyboardKey/escape)
           m.KeyEventResult/handled
+
+          (= logical-key s.LogicalKeyboardKey/backspace)
+          (if is-down?
+            (let [state @!state
+                  global-sel (:global-selection state)
+                  active-id (:active-block-id state)]
+              (cond
+                ;; Case 1: Cross-block global selection exists
+                global-sel
+                (do
+                  ;; 🌟 REPLACED TODO: Execute the cross-block deletion!
+                  (editor-cmd/delete-global-selection! !state)
+                  m.KeyEventResult/handled)
+
+                ;; Case 2: Local block is active
+                active-id
+                (let [block (get-in state [:blocks active-id])
+                      sel (:selection block)]
+                  (if sel
+                    (let [start (min (.-baseOffset sel) (.-extentOffset sel))
+                          end (max (.-baseOffset sel) (.-extentOffset sel))]
+                      (cond
+                        ;; Sub-case 2A: Range selection exists -> Delete the highlighted range
+                        (not= start end)
+                        (text-cmd/delete-range !state active-id start (- end start))
+
+                        ;; Sub-case 2B: Cursor is strictly inside the text -> Delete 1 char backwards
+                        (> start 0)
+                        (text-cmd/delete-range !state active-id (dec start) 1)
+
+                        ;; Sub-case 2C: Cursor is at index 0 (Line start) -> Merge with previous block
+                        (= start 0)
+                        (do
+                          ;; Note: Backspacing at the start of a block should merge it with the previous block.
+                          ;; Call your structural command here, for example:
+                          ;; (editor-cmd/merge-with-previous-block !state active-id)
+                          (dart:core/print "TODO: Merge block with previous block (Cursor at 0)"))))
+                    
+                    ;; If no selection is found in the active block, ignore
+                    m.KeyEventResult/ignored)
+                  m.KeyEventResult/handled)
+
+                ;; Case 3: Fallback if no block is active
+                :else m.KeyEventResult/ignored))
+            
+            ;; If it's a key-up event for backspace, mark as handled so it doesn't double-fire
+            m.KeyEventResult/handled)
 
           ;; Handle Tab / Shift+Tab for indentation
           (= logical-key s.LogicalKeyboardKey/tab)
