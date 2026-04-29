@@ -33,6 +33,9 @@
             is-right? (= logical-key s.LogicalKeyboardKey/arrowRight)
             is-arrow? (or is-up? is-down-arrow? is-left? is-right?)]
         (cond
+          (= logical-key s.LogicalKeyboardKey/escape)
+          m.KeyEventResult/handled
+
           (= logical-key s.LogicalKeyboardKey/tab)
           (if is-down?
             (do

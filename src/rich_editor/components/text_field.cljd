@@ -112,6 +112,23 @@
             (if (and is-desktop? (dart/is? event s/KeyDownEvent))
               (let [logical-key (.-logicalKey event)]
                 (cond
+                  (= logical-key s.LogicalKeyboardKey/escape)
+                  m.KeyEventResult/handled
+
+                  (= logical-key s.LogicalKeyboardKey/space)
+                  (do
+                    (let [text (.-text controller)
+                          sel (.-selection controller)
+                          base (max 0 (.-baseOffset sel))
+                          ext (max 0 (.-extentOffset sel))
+                          start (min base ext)
+                          end (max base ext)]
+                      (set! (.-value controller)
+                            (m/TextEditingValue 
+                             .text (str (subs text 0 start) " " (subs text end))
+                             .selection (m/TextSelection.collapsed .offset (inc start)))))
+                    m.KeyEventResult/handled)
+
                   (= logical-key s.LogicalKeyboardKey/backspace)
                   (do
                     (let [text (.-text controller)

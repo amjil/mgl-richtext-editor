@@ -211,15 +211,25 @@
    {:replace-text!
     (fn [delete-len insert-str]
       (let [state @!state
+            content (:content (get-in state [:blocks block-id]) "")
             sel (get-in state [:blocks block-id :selection])
-            offset (if sel (max 0 (.-extentOffset sel)) 0)
+            offset (if sel (max 0 (.-extentOffset sel)) (count content))
             start-idx (max 0 (- offset delete-len))
             content (:content (get-in state [:blocks block-id]) "")
-            old-text (if (>= (count content) offset) 
-                       (subs content start-idx offset) 
+            old-text (if (>= (count content) offset)
+                       (subs content start-idx offset)
                        "")]
         ;; Dispatch command to update rich text block content
-        (text-cmd/replace-text !state block-id start-idx old-text insert-str)))
+        (text-cmd/replace-text !state block-id start-idx old-text insert-str)
+        
+        (let [new-offset (+ start-idx (count insert-str))
+              new-content (:content (get-in @!state [:blocks block-id]) "")
+              new-sel (s/TextSelection.collapsed .offset new-offset)]
+          
+          (swap! !state assoc-in [:blocks block-id :selection] new-sel)
+          
+          (when-let [conn @!connection]
+            (.setEditingState conn (s/TextEditingValue. .text new-content .selection new-sel))))))
 
     :update-caret! (fn [] nil)
 
