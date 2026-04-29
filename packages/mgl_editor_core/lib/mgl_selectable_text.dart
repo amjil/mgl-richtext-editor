@@ -19,9 +19,8 @@ TextSpan _ensureLineHeight(TextSpan span) {
   final baseStyle = span.style ?? const TextStyle();
   final mergedStyle = baseStyle.copyWith(
     height: _kBlockLineHeight,
-    // 🌟 THE FIX: Forces the extra line-height space to be distributed equally
-    // on both the left and right sides of the Mongolian text glyphs.
-    // This perfectly centers the text inside its physical column box!
+    // Forces the extra line-height space to be distributed equally
+    // to perfectly center the text inside its physical column box.
     leadingDistribution: TextLeadingDistribution.even,
   );
 
@@ -259,6 +258,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
     super.didUpdateWidget(oldWidget);
     _initGestureHandler();
 
+    // 1. Handle Overlay lifecycle
     if (widget.textSpan != oldWidget.textSpan) {
       _hideHandle();
     } else if (widget.selection != oldWidget.selection) {
@@ -269,9 +269,19 @@ class _MglSelectableTextState extends State<MglSelectableText>
       });
     }
 
-    if (_shouldBlink && !oldWidget.isFocused) {
-      _blinkController.repeat();
-    } else if (!_shouldBlink) {
+    // 🌟 THE FIX: Accurately compare the PREVIOUS blink state with the CURRENT blink state.
+    // This ensures that transitioning from a range selection (not blinking)
+    // back to a single caret (blinking) properly restarts the animation,
+    // even if the widget remained focused the whole time.
+    final bool wasBlinking = oldWidget.isFocused &&
+        oldWidget.showCursor &&
+        (oldWidget.selection?.isCollapsed == true);
+
+    if (_shouldBlink && !wasBlinking) {
+      _blinkController
+        ..value = 0.0
+        ..repeat();
+    } else if (!_shouldBlink && wasBlinking) {
       _blinkController.stop();
     }
   }
@@ -289,16 +299,11 @@ class _MglSelectableTextState extends State<MglSelectableText>
     final MongolRenderParagraph? renderBox =
         MglSelectableText._safeRenderParagraph(widget.textKey);
 
-    // NESTED CUSTOMPAINTS:
-    // We wrap MongolRichText with CustomPaints using the 'child' property.
-    // This forces the Canvas size to exactly match the text layout size,
-    // solving the clipping/stacking issues with dividers in vertical layouts.
     Widget content = MongolRichText(
       key: widget.textKey,
       text: _ensureLineHeight(widget.textSpan),
     );
 
-    // 1. Line Dividers (Drawn behind text)
     if (widget.showLineDivider) {
       content = CustomPaint(
         painter: LineDividerPainter(
@@ -310,7 +315,6 @@ class _MglSelectableTextState extends State<MglSelectableText>
       );
     }
 
-    // 2. Selection Background (Drawn behind text)
     if (widget.selection != null && !widget.selection!.isCollapsed) {
       content = CustomPaint(
         painter: MongolSelectionPainter(
@@ -322,7 +326,6 @@ class _MglSelectableTextState extends State<MglSelectableText>
       );
     }
 
-    // 3. Caret (Drawn on top of text using foregroundPainter)
     if (widget.selection?.isCollapsed == true && widget.showCursor) {
       content = CustomPaint(
         foregroundPainter: MongolCaretPainter(
