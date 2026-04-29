@@ -1,36 +1,63 @@
 (ns rich-editor.services.clipboard-service
   (:require ["package:flutter/services.dart" :as s]
-            [rich-editor.commands.text-commands :as text-cmd]))
+            [rich-editor.commands.text-commands :as text-cmd]
+            [rich-editor.model.selection :as sel]
+            [clojure.string :as str]))
 
-;; --- 1. Serialize ---
+;; --- 1. Extract (Replaces old selection->data) ---
 
-(defn- selection->data
-  "Selection content to portable format"
+(defn- extract-selected-text
+  "Extracts text handling both global (cross-block) and local (single-block) selections."
   [state]
-  (let [{:keys [active-block-id blocks]} state]
-    (if-let [block (get blocks active-block-id)]
-      (let [sel (:selection block)
-            content (:content block)
-            start (.-start sel)
-            end (.-end sel)
-            selected-text (subs content start end)]
-        {:text selected-text
-         :type (:type block)
-         :source "mongol-rich-editor-v1"})
-      nil)))
+  (if-let [g-sel (:global-selection state)]
+    ;; Case 1: Cross-block selection exists
+    (if (and (:start g-sel) (:end g-sel))
+      (let [n-sel (sel/normalize state g-sel)
+            start-id (get-in n-sel [:start :id])
+            end-id (get-in n-sel [:end :id])
+            start-off (get-in n-sel [:start :offset])
+            end-off (get-in n-sel [:end :offset])
+            root (:root state)
+            start-idx (.indexOf root start-id)
+            end-idx (.indexOf root end-id)]
+        (if (and (>= start-idx 0) (>= end-idx 0))
+          (let [ids-in-range (subvec root start-idx (inc end-idx))
+                texts (map-indexed
+                       (fn [i id]
+                         (let [content (get-in state [:blocks id :content] "")]
+                           (cond
+                             (= start-idx end-idx) (subs content start-off end-off)
+                             (= i 0) (subs content start-off)
+                             (= i (dec (count ids-in-range))) (subs content 0 end-off)
+                             :else content)))
+                       ids-in-range)]
+            ;; Join blocks with newline character
+            (str/join "\n" texts))
+          ""))
+      "")
+    ;; Case 2: No cross-block selection, fallback to active block local selection
+    (if-let [active-id (:active-block-id state)]
+      (let [block (get-in state [:blocks active-id])
+            sel (:selection block)]
+        (if (and sel (not (.-isCollapsed sel)))
+          (let [start (min (.-baseOffset sel) (.-extentOffset sel))
+                end (max (.-baseOffset sel) (.-extentOffset sel))
+                content (:content block "")]
+            (subs content start end))
+          ""))
+      "")))
 
 ;; --- 2. Copy ---
 
 (defn copy!
   "Put selection into system clipboard"
   [state]
-  (when-let [data (selection->data state)]
-    (let [clipboard-data (s/ClipboardData. .text (:text data))]
-      (s/Clipboard.setData clipboard-data)
-      ;;
-      (dart:core/print "Copied to clipboard"))))
+  (let [text (extract-selected-text state)]
+    (when (not-empty text)
+      (s/Clipboard.setData (s/ClipboardData. .text text))
+      (dart:core/print "Copied to clipboard!"))))
 
-;; --- 3. Paste ---
+;; --- 3. Paste (Kept your exact logic) ---
 
 (defn paste!
   "Read clipboard and insert at caret. Future resolves to {:focus-block id :offset 0} when new block created (no focus); caller focus-block."
@@ -42,7 +69,8 @@
                               active-id (:active-block-id state)]
                           (if active-id
                             ;; A: paste into current block
-                            (do (let [offset (.-extentOffset (get-in state [:blocks active-id :selection]))]
+                            (do (let [sel (get-in state [:blocks active-id :selection])
+                                      offset (if sel (.-extentOffset sel) 0)]
                                   (text-cmd/insert-string !state active-id offset raw-text))
                                 nil)
                             ;; B: no focus -> delegate to block layer (if any); return focus-info for caller to focus
@@ -55,11 +83,22 @@
 (defn cut!
   "Copy and delete selection"
   [!state]
-  (let [state @!state
-        active-id (:active-block-id state)]
-    (when active-id
-      (copy! state)
-      (let [sel (get-in state [:blocks active-id :selection])
-            start (.-start sel)
-            len (- (.-end sel) start)]
-        (text-cmd/delete-range !state active-id start len)))))
+  (let [state @!state]
+    ;; 1. Always copy the text first
+    (copy! state)
+    
+    ;; 2. Delete the text based on selection type
+    (if (:global-selection state)
+      ;; Note: Deleting across multiple blocks requires a specialized command 
+      ;; that merges the start and end blocks and deletes the ones in between.
+      ;; If you have a `delete-global-selection` command, call it here:
+      (dart:core/print "TODO: Implement cross-block delete command to fully support global Cut!")
+      
+      ;; 3. Single block cut (Kept your logic, but made it robust against direction)
+      (when-let [active-id (:active-block-id state)]
+        (let [sel (get-in state [:blocks active-id :selection])]
+          (when (and sel (not (.-isCollapsed sel)))
+            (let [start (min (.-baseOffset sel) (.-extentOffset sel))
+                  end (max (.-baseOffset sel) (.-extentOffset sel))
+                  len (- end start)]
+              (text-cmd/delete-range !state active-id start len))))))))

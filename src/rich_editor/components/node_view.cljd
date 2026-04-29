@@ -1,6 +1,7 @@
 (ns rich-editor.components.node-view
   (:require ["package:flutter/material.dart" :as m]
             ["package:flutter/gestures.dart" :as g]
+            ["package:flutter/services.dart" :as s]
             [cljd.flutter :as f]
             ["package:mgl_editor_core/mgl_selectable_text.dart" :as native]
             [rich-editor.commands.editor-commands :as editor-cmd]
@@ -161,7 +162,7 @@
          .behavior m.HitTestBehavior/translucent
 
          ;; 🌟 CORE FIX 2: Zero-latency drag start for desktop mouse
-         .dragStartBehavior g.DragStartBehavior/down
+         .dragStartBehavior g/DragStartBehavior.down
 
          .onTapDown
          (fn [^m/TapDownDetails details]

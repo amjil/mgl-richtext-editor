@@ -6,6 +6,7 @@
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.commands.text-commands :as text-cmd]
             [rich-editor.services.ime-service :as ime]
+            [rich-editor.services.clipboard-service :as clipboard] ;; 🌟 REQUIRED: Our shiny new clipboard service!
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
             [rich-editor.components.node-view :as node-view]
@@ -27,24 +28,50 @@
       ime-res
       (let [logical-key (.-logicalKey event)
             is-down? (dart/is? event s/KeyDownEvent)
+            
+            ;; 🌟 Detect Ctrl (Win/Linux) or Cmd (Mac) modifier keys
+            hw-kb (.-instance s/HardwareKeyboard)
+            is-ctrl? (or (.-isControlPressed hw-kb) (.-isMetaPressed hw-kb))
+            
             is-up? (= logical-key s.LogicalKeyboardKey/arrowUp)
             is-down-arrow? (= logical-key s.LogicalKeyboardKey/arrowDown)
             is-left? (= logical-key s.LogicalKeyboardKey/arrowLeft)
             is-right? (= logical-key s.LogicalKeyboardKey/arrowRight)
             is-arrow? (or is-up? is-down-arrow? is-left? is-right?)]
         (cond
+          ;; 🌟 CLIPBOARD SHORTCUTS: Ctrl+C / Cmd+C (Copy)
+          (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyC))
+          (do
+            (clipboard/copy! @!state)
+            m.KeyEventResult/handled)
+
+          ;; 🌟 CLIPBOARD SHORTCUTS: Ctrl+V / Cmd+V (Paste)
+          (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyV))
+          (do
+            (clipboard/paste! !state)
+            m.KeyEventResult/handled)
+
+          ;; 🌟 CLIPBOARD SHORTCUTS: Ctrl+X / Cmd+X (Cut)
+          (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyX))
+          (do
+            (clipboard/cut! !state)
+            m.KeyEventResult/handled)
+
+          ;; Handle Escape
           (= logical-key s.LogicalKeyboardKey/escape)
           m.KeyEventResult/handled
 
+          ;; Handle Tab / Shift+Tab for indentation
           (= logical-key s.LogicalKeyboardKey/tab)
           (if is-down?
             (do
-              (if (.-isShiftPressed (.-instance s/HardwareKeyboard))
+              (if (.-isShiftPressed hw-kb)
                 (config/run-command cfg* !state :outdent)
                 (config/run-command cfg* !state :indent))
               m.KeyEventResult/handled)
             m.KeyEventResult/handled)
 
+          ;; Handle Arrow keys for cross-block navigation
           is-arrow?
           (if is-down?
             (let [active-id (:active-block-id @!state)]
@@ -148,7 +175,7 @@
                                     (ime/attach! !state active-id)))
                                 (do
                                   (ime/detach!)
-                                  ;; 🌟 Pure state update. No unregister-client! here.
+                                  ;; Pure state update. No unregister-client! here.
                                   (swap! !state assoc :active-block-id nil :cursor-visible false))))
                             .onKeyEvent (fn [node event] (handle-key-event cfg !state node event))
                             .child clickable-content)
