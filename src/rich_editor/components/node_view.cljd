@@ -1,5 +1,6 @@
 (ns rich-editor.components.node-view
   (:require ["package:flutter/material.dart" :as m]
+            ["package:flutter/gestures.dart" :as g]
             [cljd.flutter :as f]
             ["package:mgl_editor_core/mgl_selectable_text.dart" :as native]
             [rich-editor.commands.editor-commands :as editor-cmd]
@@ -156,6 +157,12 @@
 
         ;; mount global gestures
         (m/GestureDetector
+         ;; 🌟 CORE FIX 1: Ensure empty space catches the mouse events
+         .behavior m.HitTestBehavior/translucent
+
+         ;; 🌟 CORE FIX 2: Zero-latency drag start for desktop mouse
+         .dragStartBehavior g.DragStartBehavior/down
+
          .onTapDown
          (fn [^m/TapDownDetails details]
            (swap! !state dissoc :global-selection) ;; clear cross-block selection
@@ -165,32 +172,17 @@
          .onPanStart
          (fn [^m/DragStartDetails details]
            (swap! !state dissoc :global-selection)
-           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
-                 content (:content block "")
-                 [w-start w-end] (get-word-boundaries content offset)]
-             (swap! !state assoc :global-selection {:start {:id id :offset w-start}
-                                                    :end   {:id id :offset w-end}})))
+           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
+             (swap! !state assoc :global-selection {:start {:id id :offset offset}
+                                                    :end   {:id id :offset offset}})))
 
          .onPanUpdate
          (fn [^m/DragUpdateDetails details]
            (when-let [target (find-block-at-offset @!state (.globalPosition details))]
              (let [target-id (:id target)
-                   target-off (:offset target)
-                   content (:content (get-in @!state [:blocks target-id]) "")
-                   [w-start w-end] (get-word-boundaries content target-off)
-
-                   start-id (get-in @!state [:global-selection :start :id])
-                   start-off (get-in @!state [:global-selection :start :offset])
-                   cmp-block (sel/compare-block-order @!state start-id target-id)
-
-                   final-end-off
-                   (cond
-                     (< cmp-block 0) w-end   ;; drag down/right: snap to word end
-                     (> cmp-block 0) w-start ;; drag up/left: snap to word start
-                     :else (if (>= target-off start-off) w-end w-start))]
-
+                   target-off (:offset target)]
                (swap! !state assoc-in [:global-selection :end]
-                      {:id target-id :offset final-end-off}))))
+                      {:id target-id :offset target-off}))))
 
          .child
          (m/Padding
