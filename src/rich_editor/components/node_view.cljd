@@ -1,13 +1,19 @@
 (ns rich-editor.components.node-view
   (:require ["package:flutter/material.dart" :as m]
             ["package:flutter/gestures.dart" :as g]
-            ["package:flutter/services.dart" :as s]
+            ["package:flutter/foundation.dart" :as foundation]
             [cljd.flutter :as f]
             ["package:mgl_editor_core/mgl_selectable_text.dart" :as native]
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.model.delta :as delta]
             [rich-editor.model.selection :as sel]
             [rich-editor.config :as config]))
+
+;; Helper to detect mobile environment
+(defn is-mobile? []
+  (let [platform foundation/defaultTargetPlatform]
+    (or (= platform foundation.TargetPlatform/android)
+        (= platform foundation.TargetPlatform/iOS))))
 
 (defonce !block-text-keys (atom {}))
 
@@ -66,7 +72,6 @@
   [^String text offset]
   (let [len (count text)
         safe-off (max 0 (min offset len))]
-    ;; if click landed on a separator, do not expand
     (if (and (< safe-off len) (mgl-separator? text safe-off))
       [safe-off safe-off]
       (let [start (loop [i (dec safe-off)]
@@ -93,7 +98,6 @@
                         (<= (.-dx local-pos) (+ (.-width size) 30.0)))
                  (let [pos (native/MglSelectableText.getPositionAtOffset text-key global-offset)
                        content-len (count (get-in state [:blocks id :content] ""))
-                       ;; clamp offset to valid range
                        safe-off (max 0 (min (.-offset pos) content-len))]
                    (reduced {:id id :offset safe-off}))
                  acc))
@@ -117,15 +121,10 @@
             cmp-end (sel/compare-block-order state id end-id)
             content-len (count (get-in state [:blocks id :content] ""))]
         (cond
-          ;; entirely outside selection
           (or (< cmp-start 0) (> cmp-end 0)) nil
-          ;; start and end in same block
           (and (= cmp-start 0) (= cmp-end 0)) (m/TextSelection. .baseOffset start-off .extentOffset end-off)
-          ;; current block is head block
           (= cmp-start 0) (m/TextSelection. .baseOffset start-off .extentOffset content-len)
-          ;; current block is tail block
           (= cmp-end 0) (m/TextSelection. .baseOffset 0 .extentOffset end-off)
-          ;; fully wrapped in the middle
           :else (m/TextSelection. .baseOffset 0 .extentOffset content-len)))
       local-sel)))
 
@@ -151,25 +150,51 @@
                                  (:cursor-visible state)
                                  (nil? (:global-selection state))))
 
-            style (config/get-block-style cfg block-type)
+            ;; CORE: Calculate mobile drag handles visibility
+            is-mobile-env (boolean (is-mobile?))
+            has-valid-sel (boolean (and selection (not (.-isCollapsed selection))))
             
+            show-caret-handle (boolean (and is-mobile-env cursor-visible))
+            
+            show-start-handle (boolean (and is-mobile-env has-valid-sel
+                                            (or (nil? (:global-selection state))
+                                                (= id (get-in state [:global-selection :start :id])))))
+            
+            show-end-handle (boolean (and is-mobile-env has-valid-sel
+                                          (or (nil? (:global-selection state))
+                                              (= id (get-in state [:global-selection :end :id])))))
+
+            style (config/get-block-style cfg block-type)
             indent-level (get-in block [:attributes :indent] 0)
             indent-padding (* indent-level 32.0)]
 
         ;; mount global gestures
         (m/GestureDetector
-         ;; 🌟 CORE FIX 1: Ensure empty space catches the mouse events
          .behavior m.HitTestBehavior/translucent
-
-         ;; 🌟 CORE FIX 2: Zero-latency drag start for desktop mouse
          .dragStartBehavior g/DragStartBehavior.down
 
+         ;; 1. Native Tap: Place single caret
          .onTapDown
          (fn [^m/TapDownDetails details]
-           (swap! !state dissoc :global-selection) ;; clear cross-block selection
+           (swap! !state dissoc :global-selection) 
            (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
              (editor-cmd/focus-block !state id offset)))
 
+         ;; 🌟 NEW: 2. Native Long Press: Smart word selection
+         .onLongPressStart
+         (fn [^m/LongPressStartDetails details] 
+           (swap! !state dissoc :global-selection)
+           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
+                 text (get-in @!state [:blocks id :content] "")
+                 [start end] (get-word-boundaries text offset)]
+             ;; If word boundaries are identical (e.g. clicked on empty space), just place caret
+             (if (= start end)
+               (editor-cmd/focus-block !state id offset)
+               ;; Otherwise, select the word!
+               (swap! !state assoc :global-selection {:start {:id id :offset start}
+                                                      :end   {:id id :offset end}}))))
+
+         ;; 3. Pan gestures for free-form dragging
          .onPanStart
          (fn [^m/DragStartDetails details]
            (swap! !state dissoc :global-selection)
@@ -194,40 +219,60 @@
           .child
           (if-let [custom-render (get-in cfg [:custom-block-renderers block-type])]
             (custom-render id !state root-index block style cfg)
+            
             (cond
               (config/text-block-type? cfg block-type)
-              (if (= block-type :list-item)
-                (m/Column
-                 .crossAxisAlignment m.CrossAxisAlignment/start
-                 .children
-                 [(m/Padding
-                   .padding (m.EdgeInsets/only .top 4.0 .right 8.0)
-                   .child (m/Text (if-let [n (ordered-list-number state id root-index)]
-                                    (str n ". ")
-                                    "• ")
-                                  .style (m/TextStyle. .fontSize 20.0 .height 2.0 .color m.Colors/white)))
-                  (native/MglSelectableText.
-                   .textKey text-key
-                   .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
-                   .selection selection
-                   .isFocused is-active
-                   .showCursor cursor-visible
-                   .showLineDivider true)])
-                (let [text-widget (native/MglSelectableText.
-                                   .textKey text-key
-                                   .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
-                                   .selection selection
-                                   .isFocused is-active
-                                   .showCursor cursor-visible
-                                   .showLineDivider true)]
-                  (if (= block-type :blockquote)
-                    (m/Container
-                     .padding (m.EdgeInsets/only .left 12.0)
-                     .decoration (m/BoxDecoration.
-                                  .border (m/Border. .left (m/BorderSide. .width 4.0 .color m.Colors/grey)))
-                     .child text-widget)
-                    text-widget)))
+              (let [text-widget (native/MglSelectableText.
+                                 .textKey text-key
+                                 .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
+                                 .selection selection
+                                 .isFocused is-active
+                                 .showCursor cursor-visible
+                                 .showLineDivider true
+                                 
+                                 .showCaretHandle show-caret-handle
+                                 .showStartHandle show-start-handle
+                                 .showEndHandle show-end-handle
+                                 
+                                 .onSelectionChanged 
+                                 (fn [^m/TextSelection new-selection]
+                                   (if (:global-selection @!state)
+                                     (let [start-id (get-in @!state [:global-selection :start :id])
+                                           end-id (get-in @!state [:global-selection :end :id])]
+                                       (if (= id start-id)
+                                         (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection))
+                                         (when (= id end-id)
+                                           (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection)))))
+                                     (do
+                                       (swap! !state assoc-in [:blocks id :selection] new-selection)
+                                       (when (not is-active)
+                                         (editor-cmd/focus-block !state id (.-extentOffset new-selection)))))))]
+                
+                (cond
+                  (= block-type :list-item)
+                  (m/Column
+                   .crossAxisAlignment m.CrossAxisAlignment/start
+                   .children
+                   [(m/Padding
+                     .padding (m.EdgeInsets/only .top 4.0 .right 8.0)
+                     .child (m/Text (if-let [n (ordered-list-number state id root-index)]
+                                      (str n ". ")
+                                      "• ")
+                                    .style (m/TextStyle. .fontSize 20.0 .height 2.0 .color m.Colors/white)))
+                    text-widget])
+
+                  (= block-type :blockquote)
+                  (m/Container
+                   .padding (m.EdgeInsets/only .left 12.0)
+                   .decoration (m/BoxDecoration.
+                                .border (m/Border. .left (m/BorderSide. .width 4.0 .color m.Colors/grey)))
+                   .child text-widget)
+
+                  :else
+                  text-widget))
+
               (= block-type :image)
               (m/Image.network (get-in block [:data :url] ""))
+              
               :else
               (m/SizedBox.shrink))))))))))

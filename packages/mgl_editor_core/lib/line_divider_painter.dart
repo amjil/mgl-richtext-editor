@@ -4,7 +4,8 @@ import 'package:flutter/rendering.dart';
 import 'm_render_paragraph.dart';
 
 class LineDividerPainter extends CustomPainter {
-  final MongolRenderParagraph? renderBox; // Pass RenderObject directly to avoid GlobalKey lookup
+  final MongolRenderParagraph?
+      renderBox; // Pass RenderObject directly to avoid GlobalKey lookup
   final String text;
   final bool extendToLineEnd;
   final Color dividerColor;
@@ -21,10 +22,6 @@ class LineDividerPainter extends CustomPainter {
     final rb = renderBox;
     if (rb == null || !rb.hasSize || text.isEmpty) return;
 
-    // TextPainter is the source of truth
-    final textPainter = rb.textPainter;
-    
-    // Use Path for batched drawing
     final path = Path();
     final paint = Paint()
       ..color = dividerColor
@@ -34,37 +31,49 @@ class LineDividerPainter extends CustomPainter {
     const dashHeight = 5.0;
     const dashSpace = 3.0;
 
-    // Mongol layout: each line is a column; traverse lines via getLineBoundary
-    int currentOffset = 0;
-    while (currentOffset < text.length) {
-      final lineRange = rb.getLineBoundary(TextPosition(offset: currentOffset));
-      if (lineRange.start == lineRange.end) break;
+    // 🌟 THE ULTIMATE FIX: Geometry Clustering Approach
+    // Instead of relying on buggy getLineBoundary(), we extract the physical
+    // bounding boxes of ALL characters in the text at once.
+    final selection = TextSelection(baseOffset: 0, extentOffset: text.length);
+    final boxes = rb.getBoxesForSelection(selection);
 
-      // Logical box for current line
-      final selection = TextSelection(baseOffset: lineRange.start, extentOffset: lineRange.end);
-      final boxes = rb.getBoxesForSelection(selection);
-      
-      if (boxes.isNotEmpty) {
-        // In Mongol vertical layout, Rect.right is the divider; use max right of line boxes
-        double maxRight = boxes.fold(0.0, (m, b) => math.max(m, b.right));
-        double minY = boxes.fold(double.infinity, (m, b) => math.min(m, b.top));
-        double maxY = boxes.fold(0.0, (m, b) => math.max(m, b.bottom));
+    if (boxes.isEmpty) return;
 
-        final startY = extendToLineEnd ? 0.0 : minY;
-        final endY = extendToLineEnd ? size.height : maxY;
+    // Group the boxes by their right edges to determine distinct vertical columns.
+    final Set<int> uniqueRightEdges = {};
+    double minY = double.infinity;
+    double maxY = 0.0;
 
-        // Draw dashed path
-        double y = startY;
-        while (y < endY) {
-          path.moveTo(maxRight, y);
-          y += dashHeight;
-          path.lineTo(maxRight, math.min(y, endY));
-          y += dashSpace;
-        }
+    for (final box in boxes) {
+      // Find global top and bottom bounds of the text
+      if (box.top < minY) minY = box.top;
+      if (box.bottom > maxY) maxY = box.bottom;
+
+      // Multiply by 10 and round to cluster close floating-point values together
+      // This prevents drawing multiple lines for the same column due to sub-pixel differences
+      uniqueRightEdges.add((box.right * 10).round());
+    }
+
+    // Sort the discovered column right-edges from left to right
+    final List<double> columnsRightEdges =
+        uniqueRightEdges.map((e) => e / 10.0).toList()..sort();
+
+    final startY = extendToLineEnd ? 0.0 : minY;
+    final endY = extendToLineEnd ? size.height : maxY;
+
+    // Draw a dashed divider at the right edge of each column,
+    // EXCEPT the very last one (which is the right-most boundary of the whole block).
+    for (int i = 0; i < columnsRightEdges.length - 1; i++) {
+      double maxRight = columnsRightEdges[i];
+
+      // Draw dashed path for the current column
+      double y = startY;
+      while (y < endY) {
+        path.moveTo(maxRight, y);
+        y += dashHeight;
+        path.lineTo(maxRight, math.min(y, endY));
+        y += dashSpace;
       }
-
-      if (lineRange.end <= currentOffset) break; // prevent infinite loop
-      currentOffset = lineRange.end;
     }
 
     canvas.drawPath(path, paint);
@@ -72,9 +81,9 @@ class LineDividerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant LineDividerPainter old) {
-    // Repaint only when renderBox or text changes
-    return old.renderBox != renderBox || 
-           old.text != text || 
-           old.extendToLineEnd != extendToLineEnd;
+    // Repaint only when renderBox, text, or flags change
+    return old.renderBox != renderBox ||
+        old.text != text ||
+        old.extendToLineEnd != extendToLineEnd;
   }
 }

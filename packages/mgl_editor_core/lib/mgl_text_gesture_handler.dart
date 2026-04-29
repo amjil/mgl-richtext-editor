@@ -27,7 +27,7 @@ class MglTextGestureHandler {
   void handleTapDown(TapDownDetails details) {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
-    
+
     // Get position in vertical layout
     final TextPosition position = renderBox.getPositionForOffset(localOffset);
 
@@ -40,10 +40,10 @@ class MglTextGestureHandler {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
     final position = renderBox.getPositionForOffset(localOffset);
-    
+
     // Word boundary
     final TextRange wordRange = renderBox.getWordBoundary(position);
-    
+
     if (wordRange.isValid) {
       onSelectionChanged(
         TextSelection(
@@ -91,5 +91,54 @@ class MglTextGestureHandler {
   /// 5. Pan end
   void handlePanEnd(DragEndDetails details) {
     _dragStartOffset = null;
+  }
+
+  // ====================================================================
+  // 🌟 MOBILE DRAG HANDLES LOGIC (Single Caret & Range Pins)
+  // ====================================================================
+
+  /// 6. Caret Pan Update: Handles dragging the single cursor handle on mobile
+  void handleCaretPanUpdate(DragUpdateDetails details) {
+    final renderBox = getRenderParagraph();
+    final localOffset = _getLocalOffset(details.globalPosition);
+    final position = renderBox.getPositionForOffset(localOffset);
+
+    // Forces a collapsed selection (single blinking cursor) at the exact finger offset
+    onSelectionChanged(TextSelection.collapsed(offset: position.offset));
+  }
+
+  /// 7. Range Handle Pan Update: Handles dragging the start/end selection boundary pins
+  void handleHandlePanUpdate(DragUpdateDetails details, bool isStartHandle) {
+    if (currentSelection == null) return;
+
+    final renderBox = getRenderParagraph();
+    final localOffset = _getLocalOffset(details.globalPosition);
+    final position = renderBox.getPositionForOffset(localOffset);
+
+    // Normalize current selection to ensure start is always <= end
+    int actualStart = currentSelection!.start;
+    int actualEnd = currentSelection!.end;
+
+    if (isStartHandle) {
+      actualStart = position.offset;
+      // Prevent the start handle from crossing over the end handle
+      if (actualStart >= actualEnd) {
+        actualStart = actualEnd - 1;
+      }
+    } else {
+      actualEnd = position.offset;
+      // Prevent the end handle from crossing over the start handle
+      if (actualEnd <= actualStart) {
+        actualEnd = actualStart + 1;
+      }
+    }
+
+    // Safety bounds check (prevent negative index crash)
+    if (actualStart < 0) actualStart = 0;
+
+    // Dispatch the updated selection back to the state manager
+    onSelectionChanged(
+      TextSelection(baseOffset: actualStart, extentOffset: actualEnd),
+    );
   }
 }

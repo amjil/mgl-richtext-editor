@@ -47,20 +47,17 @@
 
       :leading-widget
       (m/Padding
-       .padding (m/EdgeInsets.only .left 20.0 .right 20.0 .top 20.0)
+       .padding (m/EdgeInsets.only .left 20.0 .right 0.0 .top 20.0)
        .child
-       (m/SizedBox
-        .width 60.0
-        .child
-        (custom-tf/text-field
-         !editor-state
-         {:controller title-controller
-          :focus-node title-focus-node
-          :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
-          :on-submitted (fn [text]
-                          (dart:core/print (str "Title input completed: " text)))
+       (custom-tf/text-field
+        !editor-state
+        {:controller title-controller
+         :focus-node title-focus-node
+         :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
+         :on-submitted (fn [text]
+                         (dart:core/print (str "Title input completed: " text)))
 
-          :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)}))))))))
+         :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)})))))))
 
 ;; =============================================================
 ;; 3. App Entry and Initialization
