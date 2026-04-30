@@ -13,17 +13,12 @@ import 'mgl_drag_handle.dart';
 
 const double _kBlockLineHeight = 2.0;
 const double _kCaretWidth = 2.0;
-
-// 🌟 Added a visual correction constant to push the handle perfectly to the right edge.
 const double _kHandleVisualShift = 3.0;
 
-/// Ensures the TextSpan uses the proper line height required for Mongolian vertical layout.
 TextSpan _ensureLineHeight(TextSpan span) {
   final baseStyle = span.style ?? const TextStyle();
   final mergedStyle = baseStyle.copyWith(
     height: _kBlockLineHeight,
-    // Forces the extra line-height space to be distributed equally
-    // to perfectly center the text inside its physical column box.
     leadingDistribution: TextLeadingDistribution.even,
   );
 
@@ -67,7 +62,6 @@ class MglSelectableText extends StatefulWidget {
     super.key,
   });
 
-  /// Safely retrieves the Mongolian render object from the GlobalKey.
   static MongolRenderParagraph? _safeRenderParagraph(GlobalKey key) {
     try {
       final ctx = key.currentContext;
@@ -80,7 +74,6 @@ class MglSelectableText extends StatefulWidget {
     }
   }
 
-  /// Calculates text position based on global screen coordinates.
   static TextPosition getPositionAtOffset(GlobalKey key, Offset globalOffset) {
     final renderBox = _safeRenderParagraph(key);
     if (renderBox == null) return const TextPosition(offset: 0);
@@ -88,7 +81,6 @@ class MglSelectableText extends StatefulWidget {
     return renderBox.getPositionForOffset(localOffset);
   }
 
-  /// Calculates global offset for a specific character caret position.
   static Offset? getGlobalOffsetForCaret(GlobalKey key, int caretOffset) {
     final renderBox = _safeRenderParagraph(key);
     if (renderBox == null || !renderBox.hasSize) return null;
@@ -137,12 +129,11 @@ class _MglSelectableTextState extends State<MglSelectableText>
         if (rb == null) throw Exception("RenderBox not ready");
         return rb;
       },
-      currentSelection: widget.selection,
+      getSelection: () => widget.selection,
       onSelectionChanged: widget.onSelectionChanged ?? (_) {},
     );
   }
 
-  /// Handles touch down events to track double taps or range selection visibility.
   void _handlePointerDown(PointerDownEvent event) {
     _tapCount++;
     _tapResetTimer?.cancel();
@@ -156,7 +147,6 @@ class _MglSelectableTextState extends State<MglSelectableText>
     }
   }
 
-  /// Creates an OverlayEntry to host the draggable selection handles.
   OverlayEntry _createOverlayEntry() {
     return OverlayEntry(builder: (context) {
       final renderBox = MglSelectableText._safeRenderParagraph(widget.textKey);
@@ -166,37 +156,35 @@ class _MglSelectableTextState extends State<MglSelectableText>
       List<Widget> handles = [];
       const double touchExtension = 48.0;
 
-      // Mathematical centering metrics
       final double fontSize = widget.textSpan.style?.fontSize ?? 20.0;
       final double heightMultiplier =
           widget.textSpan.style?.height ?? _kBlockLineHeight;
       final double columnWidth = fontSize * heightMultiplier;
       final double paddingLeft = (columnWidth - fontSize) / 2.0;
 
-      // 1. Handle Caret Placement (Single Handle)
       if (widget.showCaretHandle && widget.selection!.isCollapsed) {
         final int offset = widget.selection!.baseOffset;
         final caretOffsetLocal = renderBox.getOffsetForCaret(
             TextPosition(offset: offset), Rect.zero);
 
-        // 🌟 Added visual shift to push the handle absolutely to the right side of the caret
         final double targetX = caretOffsetLocal.dx +
             paddingLeft +
             fontSize +
             _kCaretWidth +
             _kHandleVisualShift;
-
         final handlePos = Offset(
             targetX + touchExtension, caretOffsetLocal.dy + touchExtension);
 
         handles.add(MglDragHandle(
           key: const ValueKey('mgl_caret_handle'),
           center: handlePos,
+          onPanStart: _gestureHandler.handleCaretPanStart,
           onPanUpdate: _gestureHandler.handleCaretPanUpdate,
+          onPanEnd: _gestureHandler.handleHandlePanEnd,
+          onPanCancel: _gestureHandler.handleHandlePanCancel,
         ));
       }
 
-      // 2. Handle Range Selection (Start and End Handles)
       if (!widget.selection!.isCollapsed &&
           (widget.showStartHandle || widget.showEndHandle)) {
         final boxes = renderBox.getBoxesForSelection(widget.selection!);
@@ -208,16 +196,21 @@ class _MglSelectableTextState extends State<MglSelectableText>
                 fontSize +
                 _kCaretWidth +
                 _kHandleVisualShift;
-
             final startPos =
                 Offset(startX + touchExtension, firstBox.top + touchExtension);
+
             handles.add(MglDragHandle(
               key: const ValueKey('mgl_start_handle'),
               center: startPos,
+              onPanStart: (details) =>
+                  _gestureHandler.handleHandlePanStart(details, true),
               onPanUpdate: (details) =>
                   _gestureHandler.handleHandlePanUpdate(details, true),
+              onPanEnd: _gestureHandler.handleHandlePanEnd,
+              onPanCancel: _gestureHandler.handleHandlePanCancel,
             ));
           }
+
           if (widget.showEndHandle) {
             final lastBox = boxes.last;
             final double endX = lastBox.left +
@@ -225,14 +218,18 @@ class _MglSelectableTextState extends State<MglSelectableText>
                 fontSize +
                 _kCaretWidth +
                 _kHandleVisualShift;
-
             final endPos =
                 Offset(endX + touchExtension, lastBox.bottom + touchExtension);
+
             handles.add(MglDragHandle(
               key: const ValueKey('mgl_end_handle'),
               center: endPos,
+              onPanStart: (details) =>
+                  _gestureHandler.handleHandlePanStart(details, false),
               onPanUpdate: (details) =>
                   _gestureHandler.handleHandlePanUpdate(details, false),
+              onPanEnd: _gestureHandler.handleHandlePanEnd,
+              onPanCancel: _gestureHandler.handleHandlePanCancel,
             ));
           }
         }
@@ -253,7 +250,6 @@ class _MglSelectableTextState extends State<MglSelectableText>
     });
   }
 
-  /// Displays or refreshes the persistent handles overlay.
   void _showHandle() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -266,7 +262,6 @@ class _MglSelectableTextState extends State<MglSelectableText>
     });
   }
 
-  /// Removes the handles overlay from view.
   void _hideHandle() {
     if (_handleOverlayEntry != null) {
       _handleOverlayEntry!.remove();
@@ -277,9 +272,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
   @override
   void didUpdateWidget(covariant MglSelectableText oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _initGestureHandler();
 
-    // 1. Handle Overlay lifecycle
     if (widget.textSpan != oldWidget.textSpan) {
       _hideHandle();
     } else if (widget.selection != oldWidget.selection) {
@@ -290,7 +283,6 @@ class _MglSelectableTextState extends State<MglSelectableText>
       });
     }
 
-    // 2. Accurately control caret blinking state
     final bool wasBlinking = oldWidget.isFocused &&
         oldWidget.showCursor &&
         (oldWidget.selection?.isCollapsed == true);

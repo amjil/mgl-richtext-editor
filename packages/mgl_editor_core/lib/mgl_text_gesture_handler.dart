@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'm_render_paragraph.dart';
@@ -5,140 +6,194 @@ import 'm_render_paragraph.dart';
 /// Gesture handler for Mongol vertical text selection
 class MglTextGestureHandler {
   final MongolRenderParagraph Function() getRenderParagraph;
-  final TextSelection? currentSelection;
+  final TextSelection? Function() getSelection;
   final ValueChanged<TextSelection> onSelectionChanged;
 
-  // Drag start offset so baseOffset stays fixed during drag
   int? _dragStartOffset;
+
+  // Virtual tracking point to bypass physical engine boundaries
+  Offset? _virtualDragPos;
+
+  // Local State Accumulators:
+  // Prevents state reset bugs caused by asynchronous widget rebuilding
+  int? _activeDragStart;
+  int? _activeDragEnd;
 
   MglTextGestureHandler({
     required this.getRenderParagraph,
-    required this.currentSelection,
+    required this.getSelection,
     required this.onSelectionChanged,
   });
 
-  /// Global to local offset in RenderBox
   Offset _getLocalOffset(Offset globalPosition) {
     final RenderBox renderBox = getRenderParagraph();
     return renderBox.globalToLocal(globalPosition);
   }
 
-  /// 1. Tap: place caret
+  // ====================================================================
+  // Standard Tap & Swipe Selection
+  // ====================================================================
+
   void handleTapDown(TapDownDetails details) {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
-
-    // Get position in vertical layout
-    final TextPosition position = renderBox.getPositionForOffset(localOffset);
-
-    // Collapsed selection (caret)
+    final position = renderBox.getPositionForOffset(localOffset);
     onSelectionChanged(TextSelection.fromPosition(position));
   }
 
-  /// 2. Double-tap: select word
   void handleDoubleTapDown(TapDownDetails details) {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
     final position = renderBox.getPositionForOffset(localOffset);
-
-    // Word boundary
     final TextRange wordRange = renderBox.getWordBoundary(position);
 
     if (wordRange.isValid) {
-      onSelectionChanged(
-        TextSelection(
-          baseOffset: wordRange.start,
-          extentOffset: wordRange.end,
-        ),
-      );
+      onSelectionChanged(TextSelection(
+          baseOffset: wordRange.start, extentOffset: wordRange.end));
     }
   }
 
-  /// 3. Pan start: begin drag selection
   void handlePanStart(DragStartDetails details) {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
     final position = renderBox.getPositionForOffset(localOffset);
-
-    // Store start offset
     _dragStartOffset = position.offset;
-
-    onSelectionChanged(
-      TextSelection(
-        baseOffset: _dragStartOffset!,
-        extentOffset: _dragStartOffset!,
-      ),
-    );
+    onSelectionChanged(TextSelection(
+        baseOffset: _dragStartOffset!, extentOffset: _dragStartOffset!));
   }
 
-  /// 4. Pan update: extend selection
   void handlePanUpdate(DragUpdateDetails details) {
     if (_dragStartOffset == null) return;
-
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
     final position = renderBox.getPositionForOffset(localOffset);
-
-    // Update extentOffset, keep baseOffset
-    onSelectionChanged(
-      TextSelection(
-        baseOffset: _dragStartOffset!,
-        extentOffset: position.offset,
-      ),
-    );
+    onSelectionChanged(TextSelection(
+        baseOffset: _dragStartOffset!, extentOffset: position.offset));
   }
 
-  /// 5. Pan end
   void handlePanEnd(DragEndDetails details) {
     _dragStartOffset = null;
   }
 
   // ====================================================================
-  // 🌟 MOBILE DRAG HANDLES LOGIC (Single Caret & Range Pins)
+  // Handle Drag Logic (Virtual Delta Tracking + Dead-Zone Filter)
   // ====================================================================
 
-  /// 6. Caret Pan Update: Handles dragging the single cursor handle on mobile
-  void handleCaretPanUpdate(DragUpdateDetails details) {
+  void handleCaretPanStart(DragStartDetails details) {
+    final currentSelection = getSelection();
+    if (currentSelection == null) return;
     final renderBox = getRenderParagraph();
-    final localOffset = _getLocalOffset(details.globalPosition);
-    final position = renderBox.getPositionForOffset(localOffset);
 
-    // Forces a collapsed selection (single blinking cursor) at the exact finger offset
-    onSelectionChanged(TextSelection.collapsed(offset: position.offset));
+    final caretOffsetLocal = renderBox.getOffsetForCaret(
+        TextPosition(offset: currentSelection.baseOffset), Rect.zero);
+
+    _virtualDragPos =
+        Offset(caretOffsetLocal.dx + 5.0, caretOffsetLocal.dy + 5.0);
   }
 
-  /// 7. Range Handle Pan Update: Handles dragging the start/end selection boundary pins
-  void handleHandlePanUpdate(DragUpdateDetails details, bool isStartHandle) {
-    if (currentSelection == null) return;
-
+  void handleCaretPanUpdate(DragUpdateDetails details) {
+    if (_virtualDragPos == null) return;
     final renderBox = getRenderParagraph();
-    final localOffset = _getLocalOffset(details.globalPosition);
-    final position = renderBox.getPositionForOffset(localOffset);
 
-    // Normalize current selection to ensure start is always <= end
-    int actualStart = currentSelection!.start;
-    int actualEnd = currentSelection!.end;
+    _virtualDragPos = _virtualDragPos! + details.delta;
 
-    if (isStartHandle) {
-      actualStart = position.offset;
-      // Prevent the start handle from crossing over the end handle
-      if (actualStart >= actualEnd) {
-        actualStart = actualEnd - 1;
-      }
-    } else {
-      actualEnd = position.offset;
-      // Prevent the end handle from crossing over the start handle
-      if (actualEnd <= actualStart) {
-        actualEnd = actualStart + 1;
+    final double clampedX =
+        _virtualDragPos!.dx.clamp(0.0, renderBox.size.width);
+    final double clampedY = _virtualDragPos!.dy
+        .clamp(0.0, math.max(0.0, renderBox.size.height - 0.1));
+
+    final position = renderBox.getPositionForOffset(Offset(clampedX, clampedY));
+    int newOffset = position.offset;
+
+    // ENGINE DEAD-ZONE BUGFIX (Newline Handling)
+    final currentSelection = getSelection();
+    if (newOffset == 0 &&
+        (_virtualDragPos!.dx > 20.0 || _virtualDragPos!.dy > 20.0)) {
+      if (currentSelection != null) {
+        newOffset = currentSelection.baseOffset;
       }
     }
 
-    // Safety bounds check (prevent negative index crash)
-    if (actualStart < 0) actualStart = 0;
+    onSelectionChanged(TextSelection.collapsed(offset: newOffset));
+  }
 
-    // Dispatch the updated selection back to the state manager
+  void handleHandlePanStart(DragStartDetails details, bool isStartHandle) {
+    final currentSelection = getSelection();
+    if (currentSelection == null) return;
+
+    final renderBox = getRenderParagraph();
+    final boxes = renderBox.getBoxesForSelection(currentSelection);
+    if (boxes.isEmpty) return;
+
+    // 1. Save the current stable selection state to internal variables
+    _activeDragStart = currentSelection.start;
+    _activeDragEnd = currentSelection.end;
+
+    // 2. Initialize virtual tracking point
+    if (isStartHandle) {
+      final box = boxes.first;
+      _virtualDragPos = Offset(box.left + (box.width / 2.0), box.top + 1.0);
+    } else {
+      final box = boxes.last;
+      _virtualDragPos = Offset(box.left + (box.width / 2.0), box.bottom - 1.0);
+    }
+  }
+
+  void handleHandlePanUpdate(DragUpdateDetails details, bool isStartHandle) {
+    if (_virtualDragPos == null ||
+        _activeDragStart == null ||
+        _activeDragEnd == null) return;
+
+    final renderBox = getRenderParagraph();
+    _virtualDragPos = _virtualDragPos! + details.delta;
+
+    final double clampedX =
+        _virtualDragPos!.dx.clamp(0.0, renderBox.size.width);
+    final double clampedY = _virtualDragPos!.dy
+        .clamp(0.0, math.max(0.0, renderBox.size.height - 0.1));
+
+    final position = renderBox.getPositionForOffset(Offset(clampedX, clampedY));
+    int newOffset = position.offset;
+
+    // ENGINE DEAD-ZONE BUGFIX (Newline Handling)
+    if (newOffset == 0 &&
+        (_virtualDragPos!.dx > 20.0 || _virtualDragPos!.dy > 20.0)) {
+      newOffset = isStartHandle ? _activeDragStart! : _activeDragEnd!;
+    }
+
+    int finalStart = _activeDragStart!;
+    int finalEnd = _activeDragEnd!;
+
+    if (isStartHandle) {
+      finalStart = newOffset;
+    } else {
+      finalEnd = newOffset;
+    }
+
+    // THE FINAL FIX: Absolute Swap Instead of Compression
+    if (finalStart > finalEnd) {
+      final temp = finalStart;
+      finalStart = finalEnd;
+      finalEnd = temp;
+    }
+
+    // Update active state so it persists across frames
+    _activeDragStart = finalStart;
+    _activeDragEnd = finalEnd;
+
     onSelectionChanged(
-      TextSelection(baseOffset: actualStart, extentOffset: actualEnd),
-    );
+        TextSelection(baseOffset: finalStart, extentOffset: finalEnd));
+  }
+
+  void handleHandlePanEnd([DragEndDetails? details]) {
+    _virtualDragPos = null;
+    _activeDragStart = null;
+    _activeDragEnd = null;
+  }
+
+  void handleHandlePanCancel() {
+    _virtualDragPos = null;
+    _activeDragStart = null;
+    _activeDragEnd = null;
   }
 }

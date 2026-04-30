@@ -106,7 +106,6 @@
          acc))
      nil
      root)))
-         
 
 (defn- compute-selection [state id]
   (let [g-sel (:global-selection state)
@@ -138,28 +137,21 @@
       :watch [state !state]
       (let [block (get-in state [:blocks id])
             block-type (:type block)
-
             selection (compute-selection state id)
-
             is-active (boolean
                        (or (= (:active-block-id state) id)
                            (and (:global-selection state) selection (not (.-isCollapsed selection)))))
-
             cursor-visible (boolean
                             (and (= (:active-block-id state) id)
                                  (:cursor-visible state)
                                  (nil? (:global-selection state))))
-
-            ;; CORE: Calculate mobile drag handles visibility
             is-mobile-env (boolean (is-mobile?))
             has-valid-sel (boolean (and selection (not (.-isCollapsed selection))))
             
             show-caret-handle (boolean (and is-mobile-env cursor-visible))
-            
             show-start-handle (boolean (and is-mobile-env has-valid-sel
                                             (or (nil? (:global-selection state))
                                                 (= id (get-in state [:global-selection :start :id])))))
-            
             show-end-handle (boolean (and is-mobile-env has-valid-sel
                                           (or (nil? (:global-selection state))
                                               (= id (get-in state [:global-selection :end :id])))))
@@ -173,24 +165,22 @@
          .behavior m.HitTestBehavior/translucent
          .dragStartBehavior g/DragStartBehavior.down
 
-         ;; 1. Native Tap: Place single caret
-         .onTapDown
-         (fn [^m/TapDownDetails details]
+         ;; 🌟 FIX 1: Changed .onTapDown to .onTapUp to avoid destroying selection on handle press
+         .onTapUp
+         (fn [^m/TapUpDetails details]
            (swap! !state dissoc :global-selection) 
            (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
              (editor-cmd/focus-block !state id offset)))
 
-         ;; 🌟 NEW: 2. Native Long Press: Smart word selection
+         ;; 2. Native Long Press: Smart word selection
          .onLongPressStart
          (fn [^m/LongPressStartDetails details] 
            (swap! !state dissoc :global-selection)
            (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
                  text (get-in @!state [:blocks id :content] "")
                  [start end] (get-word-boundaries text offset)]
-             ;; If word boundaries are identical (e.g. clicked on empty space), just place caret
              (if (= start end)
                (editor-cmd/focus-block !state id offset)
-               ;; Otherwise, select the word!
                (swap! !state assoc :global-selection {:start {:id id :offset start}
                                                       :end   {:id id :offset end}}))))
 
@@ -229,7 +219,6 @@
                                  .isFocused is-active
                                  .showCursor cursor-visible
                                  .showLineDivider true
-                                 
                                  .showCaretHandle show-caret-handle
                                  .showStartHandle show-start-handle
                                  .showEndHandle show-end-handle
@@ -239,10 +228,12 @@
                                    (if (:global-selection @!state)
                                      (let [start-id (get-in @!state [:global-selection :start :id])
                                            end-id (get-in @!state [:global-selection :end :id])]
-                                       (if (= id start-id)
-                                         (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection))
-                                         (when (= id end-id)
-                                           (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection)))))
+                                       ;; 🌟 FIX 2: Replace if/else with independent 'when' statements!
+                                       ;; Both start and end need to update when in the same block.
+                                       (when (= id start-id)
+                                         (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection)))
+                                       (when (= id end-id)
+                                         (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))
                                      (do
                                        (swap! !state assoc-in [:blocks id :selection] new-selection)
                                        (when (not is-active)
