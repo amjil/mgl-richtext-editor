@@ -6,7 +6,7 @@
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.commands.text-commands :as text-cmd]
             [rich-editor.services.ime-service :as ime]
-            [rich-editor.services.clipboard-service :as clipboard] ;; 🌟 REQUIRED: Our shiny new clipboard service!
+            [rich-editor.services.clipboard-service :as clipboard]
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
             [rich-editor.components.node-view :as node-view]
@@ -29,7 +29,7 @@
       (let [logical-key (.-logicalKey event)
             is-down? (dart/is? event s/KeyDownEvent)
             
-            ;; 🌟 Detect Ctrl (Win/Linux) or Cmd (Mac) modifier keys
+            ;; Detect Ctrl (Win/Linux) or Cmd (Mac) modifier keys
             hw-kb (.-instance s/HardwareKeyboard)
             is-ctrl? (or (.-isControlPressed hw-kb) (.-isMetaPressed hw-kb))
             
@@ -39,19 +39,17 @@
             is-right? (= logical-key s.LogicalKeyboardKey/arrowRight)
             is-arrow? (or is-up? is-down-arrow? is-left? is-right?)]
         (cond
-          ;; 🌟 CLIPBOARD SHORTCUTS: Ctrl+C / Cmd+C (Copy)
+          ;; CLIPBOARD SHORTCUTS
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyC))
           (do
             (clipboard/copy! @!state)
             m.KeyEventResult/handled)
 
-          ;; 🌟 CLIPBOARD SHORTCUTS: Ctrl+V / Cmd+V (Paste)
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyV))
           (do
             (clipboard/paste! !state)
             m.KeyEventResult/handled)
 
-          ;; 🌟 CLIPBOARD SHORTCUTS: Ctrl+X / Cmd+X (Cut)
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyX))
           (do
             (clipboard/cut! !state editor-cmd/delete-global-selection!)
@@ -61,6 +59,7 @@
           (= logical-key s.LogicalKeyboardKey/escape)
           m.KeyEventResult/handled
 
+          ;; 🌟 Handle Backspace (Physical Keyboard)
           (= logical-key s.LogicalKeyboardKey/backspace)
           (if is-down?
             (let [state @!state
@@ -70,7 +69,6 @@
                 ;; Case 1: Cross-block global selection exists
                 global-sel
                 (do
-                  ;; 🌟 REPLACED TODO: Execute the cross-block deletion!
                   (editor-cmd/delete-global-selection! !state)
                   m.KeyEventResult/handled)
 
@@ -82,33 +80,28 @@
                     (let [start (min (.-baseOffset sel) (.-extentOffset sel))
                           end (max (.-baseOffset sel) (.-extentOffset sel))]
                       (cond
-                        ;; Sub-case 2A: Range selection exists -> Delete the highlighted range
+                        ;; Sub-case 2A: Range selection exists
                         (not= start end)
-                        (text-cmd/delete-range !state active-id start (- end start))
+                        (do
+                          (text-cmd/delete-range !state active-id start (- end start))
+                          ;; 🌟 FIX: Force collapse caret after range deletion
+                          (editor-cmd/focus-block !state active-id start))
 
-                        ;; Sub-case 2B: Cursor is strictly inside the text -> Delete 1 char backwards
+                        ;; Sub-case 2B: Delete 1 char backwards
                         (> start 0)
                         (text-cmd/delete-range !state active-id (dec start) 1)
 
-                        ;; Sub-case 2C: Cursor is at index 0 (Line start) -> Merge with previous block
+                        ;; Sub-case 2C: Cursor at line start
                         (= start 0)
-                        (do
-                          ;; Note: Backspacing at the start of a block should merge it with the previous block.
-                          ;; Call your structural command here, for example:
-                          ;; (editor-cmd/merge-with-previous-block !state active-id)
-                          (dart:core/print "TODO: Merge block with previous block (Cursor at 0)"))))
+                        (dart:core/print "TODO: Merge block with previous block (Cursor at 0)")))
                     
-                    ;; If no selection is found in the active block, ignore
                     m.KeyEventResult/ignored)
                   m.KeyEventResult/handled)
 
-                ;; Case 3: Fallback if no block is active
                 :else m.KeyEventResult/ignored))
-            
-            ;; If it's a key-up event for backspace, mark as handled so it doesn't double-fire
             m.KeyEventResult/handled)
 
-          ;; Handle Tab / Shift+Tab for indentation
+          ;; Handle Tab / Shift+Tab
           (= logical-key s.LogicalKeyboardKey/tab)
           (if is-down?
             (do
@@ -118,7 +111,7 @@
               m.KeyEventResult/handled)
             m.KeyEventResult/handled)
 
-          ;; Handle Arrow keys for cross-block navigation
+          ;; Handle Arrow keys
           is-arrow?
           (if is-down?
             (let [active-id (:active-block-id @!state)]
@@ -176,8 +169,7 @@
           :else m.KeyEventResult/ignored)))))
 
 (defn mongol-editor
-  "Highly encapsulated Mongolian rich text editor.
-   Supports slot injection for externally managed input fields."
+  "Highly encapsulated Mongolian rich text editor."
   [!state editor-config & {:keys [leading-widget]}]
   (let [cfg (config/merge-config defaults/full-default-config editor-config)]
     (f/widget
@@ -222,7 +214,6 @@
                                     (ime/attach! !state active-id)))
                                 (do
                                   (ime/detach!)
-                                  ;; Pure state update. No unregister-client! here.
                                   (swap! !state assoc :active-block-id nil :cursor-visible false))))
                             .onKeyEvent (fn [node event] (handle-key-event cfg !state node event))
                             .child clickable-content)
@@ -272,25 +263,34 @@
 
                      :else nil))
 
+                 ;; 🌟 FIX: Mobile Virtual Keyboard Backspace
                  :on-backspace
                  (fn []
-                   (let [candidates (:keyboard/candidates-list @vk-state/state)]
+                   (let [state-val @!state
+                         candidates (:keyboard/candidates-list @vk-state/state)]
                      (if (seq candidates)
                        (vk-action/clear-candidates)
                        (cond
-                         (:active-block-id @!state)
-                         (let [active-id (:active-block-id @!state)
-                               block (get-in @!state [:blocks active-id])
+                         ;; 🌟 NEW: Check global selection first!
+                         (:global-selection state-val)
+                         (editor-cmd/delete-global-selection! !state)
+
+                         (:active-block-id state-val)
+                         (let [active-id (:active-block-id state-val)
+                               block (get-in state-val [:blocks active-id])
                                sel (:selection block)
                                start (if sel (.-baseOffset sel) 0)
                                end (if sel (.-extentOffset sel) 0)]
                            (if (not= start end)
-                             (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
+                             (do
+                               (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
+                               ;; 🌟 FIX: Force collapse caret after range deletion
+                               (editor-cmd/focus-block !state active-id (min start end)))
                              (when (> start 0)
                                (text-cmd/delete-range !state active-id (dec start) 1))))
 
-                         (:external-keyboard-delegate @!state)
-                         (when-let [on-backspace-fn (:on-backspace (:external-keyboard-delegate @!state))]
+                         (:external-keyboard-delegate state-val)
+                         (when-let [on-backspace-fn (:on-backspace (:external-keyboard-delegate state-val))]
                            (on-backspace-fn))
 
                          :else nil))))}})
