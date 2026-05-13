@@ -60,15 +60,13 @@
 
 (defn- mgl-separator? [^String s idx]
   (let [code (.codeUnitAt s idx)]
-    (or (<= code 31)         ; space, newline, tab
-        (== code 0x202E)     ; NNBSP (Mongolian control char)
-        (== code 0x180D)     ; MVS (Mongolian control char)
-        ;; common punctuation
+    (or (<= code 31)
+        (== code 0x202E)
+        (== code 0x180D)
         (contains? #{"." "," "!" "?" "：" "；" "“" "”" "（" "）" "(" ")" "《" "》" "〈" "〉" "、"} 
                    (subs s idx (inc idx))))))
 
 (defn- get-word-boundaries 
-  "Given an offset, explore left and right, return [start, end] indices of the word."
   [^String text offset]
   (let [len (count text)
         safe-off (max 0 (min offset len))]
@@ -84,7 +82,8 @@
                     (recur (inc i))))]
         [start end]))))
 
-(defn- find-block-at-offset [state global-offset]
+;; 🌟 FIX: Updated to handle custom Atomic blocks bounding boxes during drag
+(defn- find-block-at-offset [state global-offset cfg]
   (let [root (:root state)]
     (reduce
      (fn [acc id]
@@ -96,10 +95,18 @@
                    size (.-size rb)]
                (if (and (>= (.-dx local-pos) -30.0)
                         (<= (.-dx local-pos) (+ (.-width size) 30.0)))
-                 (let [pos (native/MglSelectableText.getPositionAtOffset text-key global-offset)
-                       content-len (count (get-in state [:blocks id :content] ""))
-                       safe-off (max 0 (min (.-offset pos) content-len))]
-                   (reduced {:id id :offset safe-off}))
+                 (let [block-type (:type (get-in state [:blocks id]))
+                       is-text? (config/text-block-type? cfg block-type)]
+                   (if is-text?
+                     (let [pos (native/MglSelectableText.getPositionAtOffset text-key global-offset)
+                           content-len (count (get-in state [:blocks id :content] ""))
+                           safe-off (max 0 (min (.-offset pos) content-len))]
+                       (reduced {:id id :offset safe-off}))
+                     ;; Atomic Block drag logic
+                     (let [local-y (.-dy local-pos)
+                           height (.-height size)
+                           safe-off (if (< local-y (/ height 2.0)) 0 1)]
+                       (reduced {:id id :offset safe-off}))))
                  acc))
              (catch Exception _ acc))
            acc)
@@ -107,7 +114,8 @@
      nil
      root)))
 
-(defn- compute-selection [state id]
+;; 🌟 FIX: Support atomic block virtual lengths in selection highlighting
+(defn- compute-selection [state id cfg]
   (let [g-sel (:global-selection state)
         local-sel (get-in state [:blocks id :selection])]
     (if (and g-sel (:start g-sel) (:end g-sel))
@@ -118,7 +126,9 @@
             end-off (get-in n-sel [:end :offset])
             cmp-start (sel/compare-block-order state id start-id)
             cmp-end (sel/compare-block-order state id end-id)
-            content-len (count (get-in state [:blocks id :content] ""))]
+            content-len (if (config/text-block-type? cfg (:type (get-in state [:blocks id])))
+                          (count (get-in state [:blocks id :content] ""))
+                          1)] ;; Atomic blocks conceptually have length 1
         (cond
           (or (< cmp-start 0) (> cmp-end 0)) nil
           (and (= cmp-start 0) (= cmp-end 0)) (m/TextSelection. .baseOffset start-off .extentOffset end-off)
@@ -137,7 +147,9 @@
       :watch [state !state]
       (let [block (get-in state [:blocks id])
             block-type (:type block)
-            selection (compute-selection state id)
+            is-text? (config/text-block-type? cfg block-type)
+            selection (compute-selection state id cfg)
+            
             is-active (boolean
                        (or (= (:active-block-id state) id)
                            (and (:global-selection state) selection (not (.-isCollapsed selection)))))
@@ -145,6 +157,7 @@
                             (and (= (:active-block-id state) id)
                                  (:cursor-visible state)
                                  (nil? (:global-selection state))))
+            
             is-mobile-env (boolean (is-mobile?))
             has-valid-sel (boolean (and selection (not (.-isCollapsed selection))))
             
@@ -160,84 +173,75 @@
             indent-level (get-in block [:attributes :indent] 0)
             indent-padding (* indent-level 32.0)]
 
-        ;; mount global gestures
-        (m/GestureDetector
-         .behavior m.HitTestBehavior/translucent
-         .dragStartBehavior g/DragStartBehavior.down
+        (if is-text?
+          ;; ==========================================
+          ;; 1. TEXT BLOCKS (Paragraphs, Headings, etc.)
+          ;; ==========================================
+          (m/GestureDetector
+           .behavior m.HitTestBehavior/translucent
+           .dragStartBehavior g/DragStartBehavior.down
 
-         ;; 🌟 FIX 1: Changed .onTapDown to .onTapUp to avoid destroying selection on handle press
-         .onTapUp
-         (fn [^m/TapUpDetails details]
-           (swap! !state dissoc :global-selection) 
-           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
-             (editor-cmd/focus-block !state id offset)))
+           .onTapUp
+           (fn [^m/TapUpDetails details]
+             (swap! !state dissoc :global-selection) 
+             (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
+               (editor-cmd/focus-block !state id offset)))
 
-         ;; 2. Native Long Press: Smart word selection
-         .onLongPressStart
-         (fn [^m/LongPressStartDetails details] 
-           (swap! !state dissoc :global-selection)
-           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
-                 text (get-in @!state [:blocks id :content] "")
-                 [start end] (get-word-boundaries text offset)]
-             (if (= start end)
-               (editor-cmd/focus-block !state id offset)
-               (swap! !state assoc :global-selection {:start {:id id :offset start}
-                                                      :end   {:id id :offset end}}))))
+           .onLongPressStart
+           (fn [^m/LongPressStartDetails details] 
+             (swap! !state dissoc :global-selection)
+             (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
+                   text (get-in @!state [:blocks id :content] "")
+                   [start end] (get-word-boundaries text offset)]
+               (if (= start end)
+                 (editor-cmd/focus-block !state id offset)
+                 (swap! !state assoc :global-selection {:start {:id id :offset start}
+                                                        :end   {:id id :offset end}}))))
 
-         ;; 3. Pan gestures for free-form dragging
-         .onPanStart
-         (fn [^m/DragStartDetails details]
-           (swap! !state dissoc :global-selection)
-           (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
-             (swap! !state assoc :global-selection {:start {:id id :offset offset}
-                                                    :end   {:id id :offset offset}})))
+           .onPanStart
+           (fn [^m/DragStartDetails details]
+             (swap! !state dissoc :global-selection)
+             (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
+               (swap! !state assoc :global-selection {:start {:id id :offset offset}
+                                                      :end   {:id id :offset offset}})))
 
-         .onPanUpdate
-         (fn [^m/DragUpdateDetails details]
-           (when-let [target (find-block-at-offset @!state (.globalPosition details))]
-             (let [target-id (:id target)
-                   target-off (:offset target)]
-               (swap! !state assoc-in [:global-selection :end]
-                      {:id target-id :offset target-off}))))
+           .onPanUpdate
+           (fn [^m/DragUpdateDetails details]
+             (when-let [target (find-block-at-offset @!state (.globalPosition details) cfg)]
+               (swap! !state assoc-in [:global-selection :end] target)))
 
-         .child
-         (m/Padding
-          .padding (m.EdgeInsets/only .top (+ 4.0 indent-padding)
-                                      .left 4.0
-                                      .right 4.0
-                                      .bottom 4.0)
-          .child
-          (if-let [custom-render (get-in cfg [:custom-block-renderers block-type])]
-            (custom-render id !state root-index block style cfg)
-            
-            (cond
-              (config/text-block-type? cfg block-type)
-              (let [text-widget (native/MglSelectableText.
-                                 .textKey text-key
-                                 .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
-                                 .selection selection
-                                 .isFocused is-active
-                                 .showCursor cursor-visible
-                                 .showLineDivider true
-                                 .showCaretHandle show-caret-handle
-                                 .showStartHandle show-start-handle
-                                 .showEndHandle show-end-handle
-                                 
-                                 .onSelectionChanged 
-                                 (fn [^m/TextSelection new-selection]
-                                   (if (:global-selection @!state)
-                                     (let [start-id (get-in @!state [:global-selection :start :id])
-                                           end-id (get-in @!state [:global-selection :end :id])]
-                                       ;; 🌟 FIX 2: Replace if/else with independent 'when' statements!
-                                       ;; Both start and end need to update when in the same block.
-                                       (when (= id start-id)
-                                         (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection)))
-                                       (when (= id end-id)
-                                         (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))
-                                     (do
-                                       (swap! !state assoc-in [:blocks id :selection] new-selection)
-                                       (when (not is-active)
-                                         (editor-cmd/focus-block !state id (.-extentOffset new-selection)))))))]
+           .child
+           (m/Padding
+            .padding (m.EdgeInsets/only .top (+ 4.0 indent-padding) .left 4.0 .right 4.0 .bottom 4.0)
+            .child
+            (let [text-widget (native/MglSelectableText.
+                               .textKey text-key
+                               .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
+                               .selection selection
+                               .isFocused is-active
+                               .showCursor cursor-visible
+                               .showLineDivider true
+                               .showCaretHandle show-caret-handle
+                               .showStartHandle show-start-handle
+                               .showEndHandle show-end-handle
+                               
+                               .onSelectionChanged 
+                               (fn [^m/TextSelection new-selection]
+                                 (if (:global-selection @!state)
+                                   (let [start-id (get-in @!state [:global-selection :start :id])
+                                         end-id (get-in @!state [:global-selection :end :id])]
+                                     (when (= id start-id)
+                                       (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection)))
+                                     (when (= id end-id)
+                                       (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))
+                                   (do
+                                     (swap! !state assoc-in [:blocks id :selection] new-selection)
+                                     (when (not is-active)
+                                       (editor-cmd/focus-block !state id (.-extentOffset new-selection)))))))]
+              
+              ;; TEXT BLOCK WRAPPERS (for warning boxes, quote blocks etc)
+              (if-let [wrapper-fn (get-in cfg [:text-block-wrappers block-type])]
+                (wrapper-fn text-widget id !state root-index block style cfg)
                 
                 (cond
                   (= block-type :list-item)
@@ -260,10 +264,68 @@
                    .child text-widget)
 
                   :else
-                  text-widget))
+                  text-widget)))))
 
-              (= block-type :image)
-              (m/Image.network (get-in block [:data :url] ""))
-              
-              :else
-              (m/SizedBox.shrink))))))))))
+          ;; ==========================================
+          ;; 2. ATOMIC BLOCKS (Images, Custom Widgets)
+          ;; ==========================================
+          (let [atomic-content (if-let [custom-render (get-in cfg [:custom-block-renderers block-type])]
+                                 (custom-render id !state root-index block style cfg)
+                                 (if (= block-type :image)
+                                   (m/Image.network (get-in block [:data :url] ""))
+                                   (m/SizedBox.shrink)))
+                sel-offset (if selection (.-extentOffset selection) 0)]
+            (m/GestureDetector
+             .behavior m.HitTestBehavior/translucent
+             
+             ;; Calculate if user tapped top half (offset 0) or bottom half (offset 1)
+             .onTapUp
+             (fn [^m/TapUpDetails details]
+               (swap! !state dissoc :global-selection)
+               (try
+                 (let [box ^m/RenderBox (.findRenderObject (.-currentContext text-key))
+                       local-y (.-dy (.globalToLocal box (.globalPosition details)))
+                       height (.-height (.-size box))
+                       new-offset (if (< local-y (/ height 2.0)) 0 1)]
+                   (editor-cmd/focus-block !state id new-offset))
+                 (catch Exception _)))
+
+             .onPanStart
+             (fn [^m/DragStartDetails details]
+               (swap! !state dissoc :global-selection)
+               (try
+                 (let [box ^m/RenderBox (.findRenderObject (.-currentContext text-key))
+                       local-y (.-dy (.globalToLocal box (.globalPosition details)))
+                       height (.-height (.-size box))
+                       new-offset (if (< local-y (/ height 2.0)) 0 1)]
+                   (swap! !state assoc :global-selection {:start {:id id :offset new-offset}
+                                                          :end   {:id id :offset new-offset}}))
+                 (catch Exception _)))
+
+             .onPanUpdate
+             (fn [^m/DragUpdateDetails details]
+               (when-let [target (find-block-at-offset @!state (.globalPosition details) cfg)]
+                 (swap! !state assoc-in [:global-selection :end] target)))
+
+             .child
+             (m/Padding
+              .padding (m.EdgeInsets/only .top (+ 4.0 indent-padding) .left 4.0 .right 4.0 .bottom 4.0)
+              .child
+              (m/Container
+               .key text-key ;; Bind text-key so we can measure the atomic block
+               .decoration (if (and is-active has-valid-sel) 
+                             (m/BoxDecoration. .border (m/Border.all .color m.Colors/blue .width 2.0))
+                             nil)
+               .child
+               (m/Stack
+                .clipBehavior m.Clip/none
+                .children
+                [atomic-content
+                 ;; Render the horizontal line caret for Atomic blocks
+                 (if (and is-active cursor-visible)
+                   (m/Positioned
+                    .left 0.0 .right 0.0
+                    .top (if (== sel-offset 0) -2.0 nil)
+                    .bottom (if (> sel-offset 0) -2.0 nil)
+                    .child (m/Container .height 2.0 .color m.Colors/blue))
+                   (m/SizedBox.shrink))])))))))))))

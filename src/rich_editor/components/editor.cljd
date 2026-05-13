@@ -22,6 +22,116 @@
     (or (= platform foundation.TargetPlatform/android)
         (= platform foundation.TargetPlatform/iOS))))
 
+;; 🌟 THE CORE ENGINE FOR BACKSPACE
+(defn- handle-backspace-action [!state cfg]
+  (let [state-val @!state
+        global-sel (:global-selection state-val)
+        active-id (:active-block-id state-val)]
+    (cond
+      global-sel
+      (editor-cmd/delete-global-selection! !state)
+
+      active-id
+      (let [block (get-in state-val [:blocks active-id])
+            block-type (:type block)
+            is-text? (config/text-block-type? cfg block-type)
+            sel (:selection block)
+            start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) 0)
+            end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) 0)]
+        (if is-text?
+          ;; ==========================================
+          ;; Text Block Backspace Logic
+          ;; ==========================================
+          (if (not= start end)
+            ;; 1. Range Deletion
+            (do
+              (text-cmd/delete-range !state active-id start (- end start))
+              (editor-cmd/focus-block !state active-id start))
+            (if (> start 0)
+              ;; 2. Normal Backspace (Delete 1 char)
+              (text-cmd/delete-range !state active-id (dec start) 1)
+              
+              ;; 🌟 3. FIX: Cursor at Offset 0! Merge with or delete previous line.
+              (let [root (:root state-val)
+                    idx (.indexOf root active-id)]
+                (when (> idx 0)
+                  (let [prev-id (nth root (dec idx))
+                        prev-block (get-in state-val [:blocks prev-id])
+                        prev-is-text? (config/text-block-type? cfg (:type prev-block))
+                        curr-content (:content block "")]
+                    (if prev-is-text?
+                      ;; 3A: Merge into previous text block (Deletes empty line inherently)
+                      (let [prev-content (:content prev-block "")
+                            prev-len (count prev-content)]
+                        (swap! !state
+                               (fn [s]
+                                 (-> s
+                                     (assoc-in [:blocks prev-id :content] (str prev-content curr-content))
+                                     (update :root #(vec (remove #{active-id} %)))
+                                     (update :blocks dissoc active-id)
+                                     (assoc :active-block-id prev-id)
+                                     (assoc-in [:blocks prev-id :selection] (m/TextSelection.collapsed .offset prev-len))))))
+                      
+                      ;; 3B: Previous is Atomic Block -> Move focus to its end (Offset 1)
+                      (editor-cmd/focus-block !state prev-id 1)))))))
+          
+          ;; ==========================================
+          ;; Atomic Block Backspace Logic
+          ;; ==========================================
+          (if (> start 0)
+            ;; Cursor is AFTER the block (offset 1) -> DELETE THE ENTIRE BLOCK
+            (let [root (:root state-val)
+                  idx (.indexOf root active-id)
+                  prev-id (if (> idx 0) (nth root (dec idx)) nil)]
+              (swap! !state (fn [s]
+                              (let [s-new (-> s
+                                              (update :root #(vec (remove #{active-id} %)))
+                                              (update :blocks dissoc active-id)
+                                              (assoc :active-block-id prev-id))]
+                                (if prev-id
+                                  (assoc-in s-new [:blocks prev-id :selection] 
+                                            (m/TextSelection.collapsed .offset (count (get-in s [:blocks prev-id :content] ""))))
+                                  s-new)))))
+            ;; Cursor is BEFORE the block (offset 0) -> Just move focus to prev block
+            (let [root (:root state-val)
+                  idx (.indexOf root active-id)]
+              (when (> idx 0)
+                (let [prev-id (nth root (dec idx))]
+                  (editor-cmd/focus-block !state prev-id (count (get-in state-val [:blocks prev-id :content] "")))))))))
+      :else nil)))
+
+;; 🌟 THE CORE ENGINE FOR ENTER / RETURN
+(defn- handle-enter-action [!state cfg]
+  (let [state-val @!state
+        active-id (:active-block-id state-val)]
+    (when active-id
+      (let [block (get-in state-val [:blocks active-id])
+            block-type (:type block)
+            is-text? (config/text-block-type? cfg block-type)
+            sel (:selection block)
+            offset (if sel (.-extentOffset sel) 0)]
+        (if is-text?
+          ;; Standard Text Block
+          (do
+            (editor-cmd/focus-block !state active-id offset)
+            (text-cmd/insert-string !state active-id offset "\n"))
+          
+          ;; Atomic Block Escape
+          (let [new-id (str (random-uuid))]
+            (swap! !state
+                   (fn [s]
+                     (let [root (:root s)
+                           idx (.indexOf root active-id)
+                           insert-idx (if (>= offset 1) (inc idx) idx)
+                           new-root (vec (concat (subvec root 0 insert-idx)
+                                                 [new-id]
+                                                 (subvec root insert-idx)))]
+                       (-> s
+                           (assoc :root new-root)
+                           (assoc-in [:blocks new-id] {:id new-id :type :paragraph :content "" :attributes {}})
+                           (assoc :active-block-id new-id)
+                           (assoc-in [:blocks new-id :selection] (m/TextSelection.collapsed .offset 0))))))))))))
+
 (defn- handle-key-event [cfg* !state _node event]
   (let [ime-res (ime-ctrl/handle-key-event event)]
     (if (= ime-res m.KeyEventResult/handled)
@@ -29,7 +139,6 @@
       (let [logical-key (.-logicalKey event)
             is-down? (dart/is? event s/KeyDownEvent)
             
-            ;; Detect Ctrl (Win/Linux) or Cmd (Mac) modifier keys
             hw-kb (.-instance s/HardwareKeyboard)
             is-ctrl? (or (.-isControlPressed hw-kb) (.-isMetaPressed hw-kb))
             
@@ -39,69 +148,34 @@
             is-right? (= logical-key s.LogicalKeyboardKey/arrowRight)
             is-arrow? (or is-up? is-down-arrow? is-left? is-right?)]
         (cond
-          ;; CLIPBOARD SHORTCUTS
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyC))
-          (do
-            (clipboard/copy! @!state)
-            m.KeyEventResult/handled)
+          (do (clipboard/copy! @!state) m.KeyEventResult/handled)
 
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyV))
-          (do
-            (clipboard/paste! !state)
-            m.KeyEventResult/handled)
+          (do (clipboard/paste! !state) m.KeyEventResult/handled)
 
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyX))
-          (do
-            (clipboard/cut! !state editor-cmd/delete-global-selection!)
-            m.KeyEventResult/handled)
+          (do (clipboard/cut! !state editor-cmd/delete-global-selection!) m.KeyEventResult/handled)
 
-          ;; Handle Escape
           (= logical-key s.LogicalKeyboardKey/escape)
           m.KeyEventResult/handled
 
-          ;; 🌟 Handle Backspace (Physical Keyboard)
+          ;; Physical Keyboard Backspace
           (= logical-key s.LogicalKeyboardKey/backspace)
           (if is-down?
-            (let [state @!state
-                  global-sel (:global-selection state)
-                  active-id (:active-block-id state)]
-              (cond
-                ;; Case 1: Cross-block global selection exists
-                global-sel
-                (do
-                  (editor-cmd/delete-global-selection! !state)
-                  m.KeyEventResult/handled)
-
-                ;; Case 2: Local block is active
-                active-id
-                (let [block (get-in state [:blocks active-id])
-                      sel (:selection block)]
-                  (if sel
-                    (let [start (min (.-baseOffset sel) (.-extentOffset sel))
-                          end (max (.-baseOffset sel) (.-extentOffset sel))]
-                      (cond
-                        ;; Sub-case 2A: Range selection exists
-                        (not= start end)
-                        (do
-                          (text-cmd/delete-range !state active-id start (- end start))
-                          ;; 🌟 FIX: Force collapse caret after range deletion
-                          (editor-cmd/focus-block !state active-id start))
-
-                        ;; Sub-case 2B: Delete 1 char backwards
-                        (> start 0)
-                        (text-cmd/delete-range !state active-id (dec start) 1)
-
-                        ;; Sub-case 2C: Cursor at line start
-                        (= start 0)
-                        (dart:core/print "TODO: Merge block with previous block (Cursor at 0)")))
-                    
-                    m.KeyEventResult/ignored)
-                  m.KeyEventResult/handled)
-
-                :else m.KeyEventResult/ignored))
+            (do
+              (handle-backspace-action !state cfg*)
+              m.KeyEventResult/handled)
             m.KeyEventResult/handled)
 
-          ;; Handle Tab / Shift+Tab
+          ;; Physical Keyboard Enter
+          (= logical-key s.LogicalKeyboardKey/enter)
+          (if is-down?
+            (do
+              (handle-enter-action !state cfg*)
+              m.KeyEventResult/handled)
+            m.KeyEventResult/handled)
+
           (= logical-key s.LogicalKeyboardKey/tab)
           (if is-down?
             (do
@@ -111,7 +185,7 @@
               m.KeyEventResult/handled)
             m.KeyEventResult/handled)
 
-          ;; Handle Arrow keys
+          ;; Arrow keys navigation
           is-arrow?
           (if is-down?
             (let [active-id (:active-block-id @!state)]
@@ -119,7 +193,9 @@
                 (let [block (get-in @!state [:blocks active-id])
                       sel (:selection block)
                       offset (if sel (.-extentOffset sel) 0)
-                      content-len (count (:content block ""))
+                      content-len (if (config/text-block-type? cfg* (:type block))
+                                    (count (:content block ""))
+                                    1)
                       root (:root @!state)
                       idx (.indexOf root active-id)]
                   (cond
@@ -249,51 +325,25 @@
                 {:on-return
                  (fn []
                    (cond
-                     (:active-block-id @!state)
-                     (let [active-id (:active-block-id @!state)
-                           block (get-in @!state [:blocks active-id])
-                           sel (:selection block)
-                           offset (if sel (.-extentOffset sel) 0)]
-                       (editor-cmd/focus-block !state active-id offset)
-                       (text-cmd/insert-string !state active-id offset "\n"))
-
                      (:external-keyboard-delegate @!state)
                      (when-let [on-return-fn (:on-return (:external-keyboard-delegate @!state))]
                        (on-return-fn))
 
-                     :else nil))
+                     :else
+                     (handle-enter-action !state cfg)))
 
-                 ;; 🌟 FIX: Mobile Virtual Keyboard Backspace
                  :on-backspace
                  (fn []
-                   (let [state-val @!state
-                         candidates (:keyboard/candidates-list @vk-state/state)]
+                   (let [candidates (:keyboard/candidates-list @vk-state/state)]
                      (if (seq candidates)
                        (vk-action/clear-candidates)
                        (cond
-                         ;; 🌟 NEW: Check global selection first!
-                         (:global-selection state-val)
-                         (editor-cmd/delete-global-selection! !state)
-
-                         (:active-block-id state-val)
-                         (let [active-id (:active-block-id state-val)
-                               block (get-in state-val [:blocks active-id])
-                               sel (:selection block)
-                               start (if sel (.-baseOffset sel) 0)
-                               end (if sel (.-extentOffset sel) 0)]
-                           (if (not= start end)
-                             (do
-                               (text-cmd/delete-range !state active-id (min start end) (- (max start end) (min start end)))
-                               ;; 🌟 FIX: Force collapse caret after range deletion
-                               (editor-cmd/focus-block !state active-id (min start end)))
-                             (when (> start 0)
-                               (text-cmd/delete-range !state active-id (dec start) 1))))
-
-                         (:external-keyboard-delegate state-val)
-                         (when-let [on-backspace-fn (:on-backspace (:external-keyboard-delegate state-val))]
+                         (:external-keyboard-delegate @!state)
+                         (when-let [on-backspace-fn (:on-backspace (:external-keyboard-delegate @!state))]
                            (on-backspace-fn))
-
-                         :else nil))))}})
+                         
+                         :else
+                         (handle-backspace-action !state cfg)))))}})
               (m/SizedBox.shrink))]))
 
          (overlay/ime-global-wrapper
