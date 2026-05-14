@@ -22,7 +22,9 @@
     (or (= platform foundation.TargetPlatform/android)
         (= platform foundation.TargetPlatform/iOS))))
 
-;; 🌟 THE CORE ENGINE FOR BACKSPACE
+;; =============================================================================
+;; THE CORE ENGINE FOR BACKSPACE
+;; =============================================================================
 (defn- handle-backspace-action [!state cfg]
   (let [state-val @!state
         global-sel (:global-selection state-val)
@@ -51,7 +53,7 @@
               ;; 2. Normal Backspace (Delete 1 char)
               (text-cmd/delete-range !state active-id (dec start) 1)
               
-              ;; 🌟 3. FIX: Cursor at Offset 0! Merge with or delete previous line.
+              ;; 3. Cursor at Offset 0! Merge with or delete previous line.
               (let [root (:root state-val)
                     idx (.indexOf root active-id)]
                 (when (> idx 0)
@@ -100,7 +102,9 @@
                   (editor-cmd/focus-block !state prev-id (count (get-in state-val [:blocks prev-id :content] "")))))))))
       :else nil)))
 
-;; 🌟 THE CORE ENGINE FOR ENTER / RETURN
+;; =============================================================================
+;; THE CORE ENGINE FOR ENTER / RETURN
+;; =============================================================================
 (defn- handle-enter-action [!state cfg]
   (let [state-val @!state
         active-id (:active-block-id state-val)]
@@ -111,12 +115,19 @@
             sel (:selection block)
             offset (if sel (.-extentOffset sel) 0)]
         (if is-text?
-          ;; Standard Text Block
+          ;; ==========================================
+          ;; Standard Text Block: SPLIT instead of \n
+          ;; ==========================================
           (do
-            (editor-cmd/focus-block !state active-id offset)
-            (text-cmd/insert-string !state active-id offset "\n"))
+            ;; 1. Execute the split block transaction
+            (text-cmd/split-block! !state active-id offset)
+            ;; 2. Move cursor focus to the very beginning (offset 0) of the newly created block
+            (let [new-active-id (:active-block-id @!state)]
+              (editor-cmd/focus-block !state new-active-id 0)))
           
-          ;; Atomic Block Escape
+          ;; ==========================================
+          ;; Atomic Block Escape (e.g. Images, References)
+          ;; ==========================================
           (let [new-id (str (random-uuid))]
             (swap! !state
                    (fn [s]
@@ -132,6 +143,9 @@
                            (assoc :active-block-id new-id)
                            (assoc-in [:blocks new-id :selection] (m/TextSelection.collapsed .offset 0))))))))))))
 
+;; =============================================================================
+;; KEYBOARD EVENT INTERCEPTOR
+;; =============================================================================
 (defn- handle-key-event [cfg* !state _node event]
   (let [ime-res (ime-ctrl/handle-key-event event)]
     (if (= ime-res m.KeyEventResult/handled)
@@ -244,6 +258,9 @@
 
           :else m.KeyEventResult/ignored)))))
 
+;; =============================================================================
+;; MAIN EDITOR WIDGET
+;; =============================================================================
 (defn mongol-editor
   "Highly encapsulated Mongolian rich text editor."
   [!state editor-config & {:keys [leading-widget]}]
@@ -259,9 +276,7 @@
                                            (let [id (nth (:root state) i)]
                                              (m/KeyedSubtree
                                               .key (m/ValueKey. id)
-                                              .child (m/Padding
-                                                      .padding (m.EdgeInsets/only .right 12.0)
-                                                      .child (node-view/block-node id !state i cfg)))))
+                                              .child (node-view/block-node id !state i cfg))))
                                          (range (count (:root state)))))
            
            clickable-content (m/Listener

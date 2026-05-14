@@ -85,26 +85,26 @@
    User can override :block-style :inline-format-applier :commands :shortcuts :text-block-types :default-block-type :custom-block-renderers."
   ([base user-config]
    (let [base (or base default-config)
-        block-style (or (:block-style user-config) (:block-style base))
-        ;; if block-style is a map, wrap as fn
-        block-style-fn (if (fn? block-style)
-                        block-style
-                        (fn [t] (get block-style t (default-block-style t))))
-        inline (or (:inline-format-applier user-config) (:inline-format-applier base))
-        cmd-default (:commands base)
-        cmd-user (:commands user-config)
-        commands (if (empty? cmd-user) cmd-default (merge cmd-default cmd-user))
-        shortcuts (or (:shortcuts user-config) (:shortcuts base))
-        text-types (or (:text-block-types user-config) (:text-block-types base))
-        default-type (or (:default-block-type user-config) (:default-block-type base))
-        custom-renderers (merge (:custom-block-renderers base) (:custom-block-renderers user-config {}))]
-    {:block-style block-style-fn
-     :inline-format-applier inline
-     :commands commands
-     :shortcuts shortcuts
-     :text-block-types text-types
-     :default-block-type default-type
-        :custom-block-renderers custom-renderers})))
+         block-style (or (:block-style user-config) (:block-style base))
+         ;; if block-style is a map, wrap as fn
+         block-style-fn (if (fn? block-style)
+                          block-style
+                          (fn [t] (get block-style t (default-block-style t))))
+         inline (or (:inline-format-applier user-config) (:inline-format-applier base))
+         cmd-default (:commands base)
+         cmd-user (:commands user-config)
+         commands (if (empty? cmd-user) cmd-default (merge cmd-default cmd-user))
+         shortcuts (or (:shortcuts user-config) (:shortcuts base))
+         text-types (or (:text-block-types user-config) (:text-block-types base))
+         default-type (or (:default-block-type user-config) (:default-block-type base))
+         custom-renderers (merge (:custom-block-renderers base) (:custom-block-renderers user-config {}))]
+     {:block-style block-style-fn
+      :inline-format-applier inline
+      :commands commands
+      :shortcuts shortcuts
+      :text-block-types text-types
+      :default-block-type default-type
+      :custom-block-renderers custom-renderers})))
 
 (defn get-block-style
   [config block-type]

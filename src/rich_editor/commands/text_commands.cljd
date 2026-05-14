@@ -1,9 +1,15 @@
 (ns rich-editor.commands.text-commands
+  "Handles text mutations, formatting, and block-level transformations for the rich text editor."
   (:require ["package:flutter/services.dart" :as s]
             ["package:flutter/material.dart" :as m]
+            ["dart:core" :as dc]
             [rich-editor.model.delta :as delta]
             [rich-editor.model.transaction :as tx]
             [rich-editor.model.selection :as sel]))
+
+;; =============================================================
+;; Helper
+;; =============================================================
 
 (defn- get-active-info [state]
   (let [block-id (:active-block-id state)
@@ -13,10 +19,14 @@
      :block block
      :selection selection}))
 
+;; =============================================================
+;; Basic Text Mutations (Insert, Delete, Replace)
+;; =============================================================
+
 (defn insert-string
   "Insert string at offset in block-id"
   [!state block-id offset text]
-  (dart:core/print (str "[input] insert-string entry block-id=" block-id " offset=" offset " text=" (pr-str text)))
+  (dc/print (str "[input] insert-string entry block-id=" block-id " offset=" offset " text=" (pr-str text)))
   (let [new-offset (+ offset (count text))
         ops [(tx/update-content-op 
                block-id 
@@ -29,7 +39,7 @@
         :ops ops
         :after-selection (m/TextSelection. .baseOffset new-offset .extentOffset new-offset))
       :merge? true)
-    (dart:core/print (str "[input] insert-string committed block-id=" block-id " new-offset=" new-offset))))
+    (dc/print (str "[input] insert-string committed block-id=" block-id " new-offset=" new-offset))))
 
 (defn delete-range
   "Delete a range of text in block-id"
@@ -93,15 +103,15 @@
   "Apply inline format across blocks (head: from start to end of content; middle: full; tail: from 0 to end-off).
    global-selection must be a map with :start and :end."
   [!state global-selection attr-key attr-val]
-  (let [state @!state
-        n-sel (sel/normalize state global-selection)
+  (let [state-val @!state
+        n-sel (sel/normalize state-val global-selection)
         start-pos (:start n-sel)
         end-pos (:end n-sel)
         start-id (:id start-pos)
         end-id (:id end-pos)
         start-off (or (:offset start-pos) 0)
         end-off (or (:offset end-pos) 0)
-        root (:root state)]
+        root (:root state-val)]
 
     (if (= start-id end-id)
       ;; not cross-block, fallback to single-block
@@ -111,7 +121,7 @@
             end-idx (.indexOf root end-id)
             
             ;; 1. head: from start-off to end of content
-            start-len (max 0 (- (count (:content (get-in state [:blocks start-id]) "")) start-off))
+            start-len (max 0 (- (count (:content (get-in state-val [:blocks start-id]) "")) start-off))
             op-start (tx/update-content-op start-id 
                        (delta/make-delta [(delta/retain start-off) 
                                           (delta/retain start-len {attr-key attr-val})]))
@@ -123,7 +133,7 @@
             ;; 3. body: full range for all middle blocks
             middle-ids (subvec root (inc start-idx) end-idx)
             middle-ops (map (fn [id]
-                              (let [len (count (:content (get-in state [:blocks id]) ""))]
+                              (let [len (count (:content (get-in state-val [:blocks id]) ""))]
                                 (tx/update-content-op id 
                                   (delta/make-delta [(delta/retain len {attr-key attr-val})]))))
                             middle-ids)
@@ -134,3 +144,90 @@
         (tx/commit-transaction! !state
           (tx/make-transaction :ops (vec ops) :after-selection nil)
           :merge? false)))))
+
+;; =============================================================================
+;; NEW: Block Splitting Engine (The "Enter" key core logic)
+;; =============================================================================
+
+(defn- split-spans-at 
+  "Splits an array of rich text spans at a specific cursor offset.
+   Returns a vector containing two arrays: [spans-before, spans-after]."
+  [spans offset]
+  (reduce (fn [[before after] span]
+            (let [{:keys [start end attrs]} span]
+              (cond
+                ;; Case 1: The span is completely to the left of the cursor -> stays in the old block
+                (<= end offset)
+                [(conj before span) after]
+
+                ;; Case 2: The span is completely to the right of the cursor -> moves to the new block
+                ;; The coordinates must be shifted by subtracting the offset.
+                (>= start offset)
+                [before (conj after {:start (- start offset)
+                                     :end (- end offset)
+                                     :attrs attrs})]
+
+                ;; Case 3: The cursor cuts exactly through the middle of the span -> split it into two!
+                :else
+                [(conj before {:start start :end offset :attrs attrs})
+                 (conj after {:start 0 :end (- end offset) :attrs attrs})])))
+          [[] []]
+          (or spans [])))
+
+(defn split-block!
+  "Splits the current block at the given offset. 
+   Creates a new database block record, redistributes text and styling spans, and moves the cursor."
+  [!state active-id offset]
+  (swap! !state
+         (fn [state]
+           (let [block (get-in state [:blocks active-id])
+                 content (:content block "")
+                 spans (:content-spans block [])
+                 b-type (:type block)
+                 
+                 ;; UX Detail: If the user presses Enter in an empty List or Blockquote,
+                 ;; exit the formatting instead of creating another empty list item.
+                 is-empty-format? (and (contains? #{:list-item :blockquote} b-type)
+                                       (empty? content))
+                 
+                 exit-format-state
+                 (when is-empty-format?
+                   (-> state (assoc-in [:blocks active-id :type] :paragraph)))]
+             
+             (if exit-format-state
+               exit-format-state
+               
+               ;; Proceed with the actual block split
+               (let [;; 1. Slice the text
+                     safe-offset (max 0 (min offset (count content)))
+                     text-before (subs content 0 safe-offset)
+                     text-after (subs content safe-offset)
+                     
+                     ;; 2. Slice the rich text styles
+                     [spans-before spans-after] (split-spans-at spans safe-offset)
+                     
+                     ;; 3. Generate the new Block ID
+                     new-id (str "block-" (.-millisecondsSinceEpoch (dc/DateTime.now)))
+                     
+                     ;; 4. Inherit type (if pressing enter in a list, keep making lists)
+                     new-type (if (contains? #{:list-item :blockquote} b-type) b-type :paragraph)
+                     
+                     ;; Build the new block
+                     new-block {:id new-id
+                                :type new-type
+                                :content text-after
+                                :content-spans spans-after
+                                :children []}
+                     
+                     ;; 5. Insert the new block ID into the root array immediately after the current one
+                     root (:root state)
+                     idx (inc (.indexOf root active-id))
+                     new-root (vec (concat (subvec root 0 idx) [new-id] (subvec root idx)))]
+                 
+                 ;; 6. Update the global state structurally
+                 (-> state
+                     (assoc-in [:blocks active-id :content] text-before)
+                     (assoc-in [:blocks active-id :content-spans] spans-before)
+                     (assoc-in [:blocks new-id] new-block)
+                     (assoc :root new-root)
+                     (assoc :active-block-id new-id))))))))
