@@ -364,4 +364,4 @@
          (overlay/ime-global-wrapper
           (m/CallbackShortcuts
            .bindings (config/shortcut-bindings cfg !state)
-           .child combined-input-area)))))))
+           .child combined-input-area) "main-page-ime-wrapper"))))))

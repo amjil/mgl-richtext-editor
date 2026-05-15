@@ -29,6 +29,9 @@
         default-line-height 1.2]
 
     (f/widget
+     ;; Explicitly assign an ObjectKey based on the controller to prevent GlobalKey collisions
+     :key (m/ObjectKey. controller)
+     
      :get {{{:flds [onSurface onSurfaceVariant]} .-colorScheme
             {:flds [bodyMedium]} .-textTheme} m/Theme}
      :watch [is-empty? is-empty]
@@ -101,7 +104,6 @@
                                    .selection (m/TextSelection.collapsed .offset (dec start))))))))}))
           
           (do
-            ;; 🌟 Pure state update. No Timer, No unregister-client! here.
             (swap! !shared-state assoc :external-keyboard-delegate nil))))
       
       .onKeyEvent 
@@ -151,8 +153,10 @@
                   
                   (= logical-key s.LogicalKeyboardKey/enter)
                   (do
-                    (when on-submitted (on-submitted (.-text controller)))
-                    (when focus-node (.unfocus focus-node))
+                    ;; 🌟 FIX: Mirror mobile behavior. Do NOT unfocus if on-submitted is provided!
+                    (if on-submitted 
+                      (on-submitted (.-text controller))
+                      (when focus-node (.unfocus focus-node)))
                     m.KeyEventResult/handled)
                   
                   :else m.KeyEventResult/ignored))
