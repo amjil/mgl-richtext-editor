@@ -1,0 +1,70 @@
+(ns rich-editor.rendering.text-renderer
+  (:require ["package:flutter/material.dart" :as m]
+            [rich-editor.config :as config]))
+
+(defn- hex-string->color [hex-str]
+  (try
+    (let [clean-hex (if (.startsWith hex-str "#") (subs hex-str 1) hex-str)
+          full-hex (if (= 6 (count clean-hex)) (str "FF" clean-hex) clean-hex)]
+      ;; Use Dart's native int.parse with base 16 instead of JVM's Long/parseLong
+      (m/Color (dart:core/int.parse full-hex .radix 16)))
+    (catch Exception _ nil)))
+
+(defn apply-inline-formats
+  [^m/TextStyle base-style attributes]
+  (if (empty? attributes)
+    base-style
+    (let [is-bold (:bold attributes)
+          is-italic (:italic attributes)
+          is-underline (:underline attributes)
+          is-strikethrough (:strikethrough attributes)
+          color-hex (:color attributes)
+
+          decorations (cond-> []
+                        is-underline (conj m.TextDecoration/underline)
+                        is-strikethrough (conj m.TextDecoration/lineThrough))
+          final-decoration (if (seq decorations)
+                             (m.TextDecoration/combine decorations)
+                             m.TextDecoration/none)
+
+          text-color (when color-hex (hex-string->color color-hex))]
+
+      (.copyWith base-style
+                 .fontWeight (if is-bold m.FontWeight/bold (.-fontWeight base-style))
+                 .fontStyle (if is-italic m.FontStyle/italic (.-fontStyle base-style))
+                 .decoration final-decoration
+                 .color (or text-color (.-color base-style))))))
+
+(defn- text+spans->segments
+  "Converts absolute ranges into continuous, non-overlapping segments."
+  [text spans]
+  (let [len (count text)
+        char-attrs (reduce (fn [acc {:keys [start end attrs]}]
+                             (reduce (fn [a i]
+                                       (if (and (>= i 0) (< i len))
+                                         (update a i merge attrs)
+                                         a))
+                                     acc
+                                     (range start end)))
+                           (vec (repeat len {}))
+                           spans)]
+    (if (empty? text)
+      []
+      (->> (map vector text char-attrs)
+           (partition-by second)
+           (map (fn [group]
+                  {:text (apply str (map first group))
+                   :attrs (second (first group))}))))))
+
+(defn build-rich-text-span
+  "Builds a Flutter TextSpan tree from content and span data."
+  [content spans base-style cfg]
+  (if (empty? content)
+    (m/TextSpan. .text "" .style base-style)
+    (let [segments (text+spans->segments content spans)
+          children (mapv (fn [{:keys [text attrs]}]
+                           (m/TextSpan.
+                            .text text
+                            .style (apply-inline-formats base-style attrs)))
+                         segments)]
+      (m/TextSpan. .style base-style .children children))))

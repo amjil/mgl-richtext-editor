@@ -4,6 +4,7 @@
             ["package:flutter/foundation.dart" :as foundation]
             [cljd.flutter :as f]
             ["package:mgl_editor_core/mgl_selectable_text.dart" :as native]
+            [rich-editor.rendering.text-renderer :as text-renderer]
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.model.delta :as delta]
             [rich-editor.model.selection :as sel]
@@ -43,20 +44,6 @@
   (get (swap! !block-text-keys
               (fn [m] (if (contains? m id) m (assoc m id (m/GlobalKey.)))))
        id))
-
-(defn- content->text-span [content content-spans base-style cfg]
-  (let [apply-inline (fn [base attrs] (config/apply-inline-formats cfg base attrs))
-        segments (delta/content+spans->segments content content-spans)]
-    (cond
-      (empty? segments) (m/TextSpan. .text "" .style base-style)
-      (and (= (count segments) 1) (empty? (:attrs (first segments))))
-      (m/TextSpan. .text (:text (first segments)) .style base-style)
-      :else (m/TextSpan.
-             .style base-style
-             .children (mapv (fn [seg]
-                               (m/TextSpan. .text (:text seg)
-                                            .style (apply-inline base-style (:attrs seg))))
-                             segments)))))
 
 (defn- mgl-separator? [^String s idx]
   (let [code (.codeUnitAt s idx)]
@@ -216,7 +203,7 @@
             .child
             (let [text-widget (native/MglSelectableText.
                                .textKey text-key
-                               .textSpan (content->text-span (:content block) (:content-spans block) style cfg)
+                               .textSpan (text-renderer/build-rich-text-span (:content block) (:content-spans block []) style cfg)
                                .selection selection
                                .isFocused is-active
                                .showCursor cursor-visible

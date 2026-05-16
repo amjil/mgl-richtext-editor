@@ -1,18 +1,23 @@
 (ns editor-test.main
   (:require
    ["package:flutter/material.dart" :as m]
+   ["package:flutter/foundation.dart" :as foundation :refer [kIsWeb]]
    [cljd.flutter :as f]
    [rich-editor.components.editor :as editor]
    [rich-editor.components.text-field :as custom-tf]
+   [rich-editor.components.toolbar :as toolbar]
    [rich-editor.defaults :as defaults]
 
-   ;; Dictionary and keyboard initialization dependencies
-   [virtual-keyboard.zip-utils :as zip-utils]
-   [virtual-keyboard.fst-reader :as vk-fst]
+   ;; Cross-platform IME Engine Dictionary Libraries
    [virtual-keyboard.input-control :as input-control]
-   [virtual-keyboard.keyboard-candidates :as kc]
-   [shared-ime.fst-reader :as fst]
-   [shared-ime.next :as next]))
+   [ime-core.remote-api :as remote]
+   [ime-core.fst-engine :as fst]
+   [ime-core.next-word :as next-word]))
+   
+(defn is-mobile? []
+  (let [platform foundation/defaultTargetPlatform]
+    (or (= platform foundation.TargetPlatform/android)
+        (= platform foundation.TargetPlatform/iOS))))
 
 ;; =============================================================
 ;; 1. Declare shared global state
@@ -41,38 +46,43 @@
     .body
     (m/SafeArea
      .child
-     (editor/mongol-editor
-      !editor-state
-      defaults/full-default-config
+     (m/Column
+      .children
+      [(m/Expanded
+        .child (editor/mongol-editor
+                !editor-state
+                defaults/full-default-config
 
-      :leading-widget
-      (m/Padding
-       .padding (m/EdgeInsets.only .left 20.0 .right 0.0 .top 20.0)
-       .child
-       (custom-tf/text-field
-        !editor-state
-        {:controller title-controller
-         :focus-node title-focus-node
-         :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
-         :on-submitted (fn [text]
-                         (dart:core/print (str "Title input completed: " text)))
+                :leading-widget
+                (m/Padding
+                 .padding (m/EdgeInsets.only .left 20.0 .right 0.0 .top 20.0)
+                 .child
+                 (custom-tf/text-field
+                  !editor-state
+                  {:controller title-controller
+                   :focus-node title-focus-node
+                   :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
+                   :on-submitted (fn [text]
+                                   (dart:core/print (str "Title input completed: " text)))
 
-         :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)})))))))
+                   :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)}))))
+       (toolbar/mongol-toolbar !editor-state)])))))
 
 ;; =============================================================
 ;; 3. App Entry and Initialization
 ;; =============================================================
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)
-
-  ;; 🌟 CORE FIX: Initialize core FST engines globally (for both Desktop and Mobile)
-  (fst/ensure-loaded)
-  (next/ensure-loaded)
-
-  ;; Mobile specific asset loading for virtual keyboard
-  (when (editor/is-mobile?)
-    (zip-utils/load-assets-parallel [[kc/next "assets/next.zip"]])
-    (vk-fst/ensure-loaded) ;; Note: Use .then if await is not supported in this context
+  
+  (remote/set-config! {:base-url "localhost:3003"
+                       :candidate-api-path "/api/next_word/candidates"
+                       :next-word-api-path "/api/next_word/list"})
+  
+  (when-not kIsWeb
+    (await (fst/ensure-loaded))
+    (await (next-word/ensure-loaded)))
+  
+  (when (is-mobile?)
     (input-control/set-control))
 
   (f/run

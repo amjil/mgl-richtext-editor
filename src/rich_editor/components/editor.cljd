@@ -64,11 +64,21 @@
                     (if prev-is-text?
                       ;; 3A: Merge into previous text block (Deletes empty line inherently)
                       (let [prev-content (:content prev-block "")
-                            prev-len (count prev-content)]
+                            prev-len (count prev-content)
+                            ;; 🌟 核心升级：合并段落时，同时合并并偏移 content-spans！
+                            prev-spans (:content-spans prev-block [])
+                            curr-spans (:content-spans block [])
+                            shifted-curr-spans (mapv (fn [span]
+                                                       (-> span
+                                                           (update :start + prev-len)
+                                                           (update :end + prev-len)))
+                                                     curr-spans)
+                            merged-spans (vec (concat prev-spans shifted-curr-spans))]
                         (swap! !state
                                (fn [s]
                                  (-> s
                                      (assoc-in [:blocks prev-id :content] (str prev-content curr-content))
+                                     (assoc-in [:blocks prev-id :content-spans] merged-spans) ;; 写入合并后的样式
                                      (update :root #(vec (remove #{active-id} %)))
                                      (update :blocks dissoc active-id)
                                      (assoc :active-block-id prev-id)
@@ -276,7 +286,9 @@
                                            (let [id (nth (:root state) i)]
                                              (m/KeyedSubtree
                                               .key (m/ValueKey. id)
-                                              .child (node-view/block-node id !state i cfg))))
+                                              .child (m/Padding
+                                                      .padding (m.EdgeInsets/only .right 12.0)
+                                                      .child (node-view/block-node id !state i cfg)))))
                                          (range (count (:root state)))))
            
            clickable-content (m/Listener

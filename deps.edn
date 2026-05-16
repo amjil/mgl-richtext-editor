@@ -4,16 +4,24 @@
          :sha "4ee792f3044589c96b019c2a86db9b23f1b283ab"}
 
         amjil/mgl-components
-        {:git/url "https://github.com/amjil/mgl-components.git"
-         :sha "86a24fa48e0b737a2ca2bac649c3991641982559"}
-
-        amjil/mongol-ime
-        {:git/url "https://github.com/amjil/mongol-ime.git"
-         :sha "5110cc95a51a9980f5f39599fdc94d85e9d77491"}
-
+        {;:git/url "https://github.com/amjil/mgl-components.git"
+         ;:sha "86a24fa48e0b737a2ca2bac649c3991641982559"
+         :local/root "../mgl-components"
+         }
+        
         amjil/mongol-virtual-keyboard
-        {:git/url "https://github.com/amjil/mongol-virtual-keyboard.git"
-         :sha "bb83ef01b9610053e8529c453b102db74a40b5a7"}}
-       
+        {:local/root "../m-v-k"}
+
+        amjil/mongol-desktop-ime
+        {:local/root "../m-h-k"}
+        
+        amjil/mgl-ime-core
+        {:local/root "../m-i-c"}
+        
+
+
+        }
+
+
  :aliases {:cljd {:main-opts ["-m" "cljd.build"]}}
- }
+}

@@ -8,226 +8,238 @@
             [rich-editor.model.selection :as sel]))
 
 ;; =============================================================
-;; Helper
+;; Helper: Absolute Splice & Formatting Engine
 ;; =============================================================
 
-(defn- get-active-info [state]
-  (let [block-id (:active-block-id state)
-        block (get-in state [:blocks block-id])
-        selection (:selection block)]
-    {:id block-id
-     :block block
-     :selection selection}))
+(defn get-formats-at-offset
+  "Accurately resolves overlapping spans to find the true format at the cursor."
+  [spans offset old-len]
+  (let [target (if (> old-len 0) offset (max 0 (dec offset)))]
+    (reduce (fn [acc {:keys [start end attrs]}]
+              (if (and (<= start target) (> end target))
+                (merge acc attrs)
+                acc))
+            {}
+            spans)))
+
+(defn- safe-subvec [v start end]
+  (let [s (max 0 (min start (count v)))
+        e (max s (min end (count v)))]
+    (subvec v s e)))
+
+(defn- splice-spans
+  "🌟 CORE ENGINE: Flattens spans into a character array, splices new formats, and regroups.
+   This guarantees ZERO overlapping spans and flawless typing-attributes overrides."
+  [content-len old-spans offset del-len ins-len active-attrs]
+  (let [safe-len (max 0 content-len)
+        ;; 1. Flatten old spans into per-character attributes
+        char-attrs (reduce (fn [acc {:keys [start end attrs]}]
+                             (reduce (fn [a i] (if (and (>= i 0) (< i safe-len)) (update a i merge attrs) a))
+                                     acc (range start end)))
+                           (vec (repeat safe-len {}))
+                           old-spans)
+        ;; 2. Delete characters range
+        after-del (vec (concat (safe-subvec char-attrs 0 offset)
+                               (safe-subvec char-attrs (+ offset del-len) (count char-attrs))))
+        ;; 3. Insert new characters with active attributes (punches a hole in surrounding formats)
+        after-ins (vec (concat (safe-subvec after-del 0 offset)
+                               (vec (repeat ins-len (or active-attrs {})))
+                               (safe-subvec after-del offset (count after-del))))]
+    ;; 4. Regroup continuous identical attributes into absolute spans
+    (->> (map-indexed vector after-ins)
+         (partition-by second)
+         (map (fn [group]
+                (let [gs (first (first group))
+                      ge (inc (first (last group)))
+                      at (second (first group))]
+                  (when (seq at) {:start gs :end ge :attrs at}))))
+         (remove nil?)
+         vec)))
+
+(defn- apply-format-to-spans
+  "Applies or removes a specific format in the [start, end) range seamlessly."
+  [content old-spans start end format-key format-val]
+  (let [len (count content)
+        char-attrs (reduce (fn [acc {:keys [start end attrs]}]
+                             (reduce (fn [a i] (if (and (>= i 0) (< i len)) (update a i merge attrs) a))
+                                     acc (range start end)))
+                           (vec (repeat len {})) old-spans)
+        updated-attrs (map-indexed (fn [idx attrs]
+                                     (if (and (>= idx start) (< idx end))
+                                       (if (nil? format-val) (dissoc attrs format-key) (assoc attrs format-key format-val))
+                                       attrs))
+                                   char-attrs)]
+    (if (empty? content) []
+        (->> (map-indexed vector updated-attrs)
+             (partition-by second)
+             (map (fn [group]
+                    (let [gs (first (first group))
+                          ge (inc (first (last group)))
+                          at (second (first group))]
+                      (when (seq at) {:start gs :end ge :attrs at}))))
+             (remove nil?) vec))))
 
 ;; =============================================================
 ;; Basic Text Mutations (Insert, Delete, Replace)
 ;; =============================================================
 
 (defn insert-string
-  "Insert string at offset in block-id"
+  "Insert string and precisely splice active formats."
   [!state block-id offset text]
-  (dc/print (str "[input] insert-string entry block-id=" block-id " offset=" offset " text=" (pr-str text)))
-  (let [new-offset (+ offset (count text))
-        ops [(tx/update-content-op 
-               block-id 
-               (delta/make-delta [(delta/retain offset) 
-                                  (delta/insert text)]))]
-        after-sel (sel/make-position block-id new-offset)]
-    
+  (let [state-val @!state
+        block (get-in state-val [:blocks block-id])
+        content-len (count (:content block ""))
+        spans (:content-spans block [])
+        inherited (get-formats-at-offset spans offset 0)
+        active-attrs (if (contains? state-val :typing-attributes) (:typing-attributes state-val) inherited)
+        text-len (count text)
+        new-offset (+ offset text-len)
+        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain offset) (delta/insert text)]))]]
+
     (tx/commit-transaction! !state
-      (tx/make-transaction
-        :ops ops
-        :after-selection (m/TextSelection. .baseOffset new-offset .extentOffset new-offset))
-      :merge? true)
-    (dc/print (str "[input] insert-string committed block-id=" block-id " new-offset=" new-offset))))
+                            (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset new-offset))
+                            :merge? true)
+
+    (swap! !state update-in [:blocks block-id]
+           (fn [b]
+             (assoc b :content-spans (splice-spans content-len (:content-spans b []) offset 0 text-len active-attrs))))))
 
 (defn delete-range
-  "Delete a range of text in block-id"
+  "Delete range and collapse spans."
   [!state block-id offset length]
   (when (> length 0)
-    (let [ops [(tx/update-content-op 
-                 block-id 
-                 (delta/make-delta [(delta/retain offset) 
-                                    (delta/delete length)]))]
-          after-sel (m/TextSelection. .baseOffset offset .extentOffset offset)]
-      
+    (let [content-len (count (get-in @!state [:blocks block-id :content] ""))
+          ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain offset) (delta/delete length)]))]]
       (tx/commit-transaction! !state
-        (tx/make-transaction
-          :ops ops
-          :after-selection after-sel)
-        :merge? true))))
+                              (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset offset))
+                              :merge? true)
+      (swap! !state update-in [:blocks block-id]
+             (fn [b]
+               (assoc b :content-spans (splice-spans content-len (:content-spans b []) offset length 0 nil)))))))
 
 (defn replace-text
-  "Replace text (e.g. IME candidate)"
+  "Replace text (IME) and precisely splice active formats."
   [!state block-id offset old-text new-text]
   (let [old-len (count old-text)
         new-len (count new-text)
-        ops [(tx/update-content-op 
-               block-id 
-               (delta/make-delta [(delta/retain offset) 
-                                  (delta/delete old-len) 
-                                  (delta/insert new-text)]))]
-        after-sel (m/TextSelection. .baseOffset (+ offset new-len) .extentOffset (+ offset new-len))]
-    
+        state-val @!state
+        block (get-in state-val [:blocks block-id])
+        content-len (count (:content block ""))
+        spans (:content-spans block [])
+        inherited (get-formats-at-offset spans offset old-len)
+        active-attrs (if (contains? state-val :typing-attributes) (:typing-attributes state-val) inherited)
+        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain offset) (delta/delete old-len) (delta/insert new-text)]))]]
+
     (tx/commit-transaction! !state
-      (tx/make-transaction
-        :ops ops
-        :after-selection after-sel)
-      :merge? true)))
+                            (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset (+ offset new-len)))
+                            :merge? true)
+
+    (swap! !state update-in [:blocks block-id]
+           (fn [b]
+             (assoc b :content-spans (splice-spans content-len (:content-spans b []) offset old-len new-len active-attrs))))))
 
 ;; =============================================================
-;; Single-block formatting
+;; Formatting Commands
 ;; =============================================================
 
 (defn apply-style
-  "Apply style to current selection (e.g. bold) within a single block"
-  [!state block-id selection-start selection-end attr-key attr-val]
-  (let [len (- selection-end selection-start)
-        ops [(tx/update-content-op 
-               block-id 
-               (delta/make-delta [(delta/retain selection-start) 
-                                  (delta/retain len {attr-key attr-val})]))]]
-    
+  "Apply style to selection."
+  [!state block-id start end attr-key attr-val]
+  (let [len (- end start)
+        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain start) (delta/retain len {attr-key attr-val})]))]]
     (tx/commit-transaction! !state
-      (tx/make-transaction
-        :ops ops
-        :after-selection (m/TextSelection. 
-                           .baseOffset selection-start 
-                           .extentOffset selection-end)))))
-
-;; =============================================================
-;; Cross-block formatting
-;; =============================================================
+                            (tx/make-transaction :ops ops :after-selection (m/TextSelection. .baseOffset start .extentOffset end)))
+    (swap! !state (fn [s]
+                    (let [content (get-in s [:blocks block-id :content] "")
+                          old (get-in s [:blocks block-id :content-spans] [])
+                          new-s (apply-format-to-spans content old start end attr-key attr-val)]
+                      (assoc-in s [:blocks block-id :content-spans] new-s))))))
 
 (defn apply-style-cross-block!
-  "Apply inline format across blocks (head: from start to end of content; middle: full; tail: from 0 to end-off).
-   global-selection must be a map with :start and :end."
-  [!state global-selection attr-key attr-val]
+  "Cross-block formatting."
+  [!state g-sel attr-key attr-val]
   (let [state-val @!state
-        n-sel (sel/normalize state-val global-selection)
-        start-pos (:start n-sel)
-        end-pos (:end n-sel)
-        start-id (:id start-pos)
-        end-id (:id end-pos)
-        start-off (or (:offset start-pos) 0)
-        end-off (or (:offset end-pos) 0)
+        n-sel (sel/normalize state-val g-sel)
+        sid (get-in n-sel [:start :id])
+        eid (get-in n-sel [:end :id])
+        soff (get-in n-sel [:start :offset] 0)
+        eoff (get-in n-sel [:end :offset] 0)
         root (:root state-val)]
+    (if (= sid eid) (apply-style !state sid soff eoff attr-key attr-val)
+        (let [sidx (.indexOf root sid)
+              eidx (.indexOf root eid)]
+          (tx/commit-transaction! !state (tx/make-transaction :ops [] :after-selection nil) :merge? false)
+          (swap! !state (fn [st]
+                          (reduce (fn [acc id]
+                                    (let [content (get-in acc [:blocks id :content] "")
+                                          old (get-in acc [:blocks id :content-spans] [])
+                                          bs (if (= id sid) soff 0)
+                                          be (if (= id eid) eoff (count content))]
+                                      (assoc-in acc [:blocks id :content-spans] (apply-format-to-spans content old bs be attr-key attr-val))))
+                                  st (subvec root sidx (inc eidx)))))))))
 
-    (if (= start-id end-id)
-      ;; not cross-block, fallback to single-block
-      (apply-style !state start-id start-off end-off attr-key attr-val)
-      
-      (let [start-idx (.indexOf root start-id)
-            end-idx (.indexOf root end-id)
-            
-            ;; 1. head: from start-off to end of content
-            start-len (max 0 (- (count (:content (get-in state-val [:blocks start-id]) "")) start-off))
-            op-start (tx/update-content-op start-id 
-                       (delta/make-delta [(delta/retain start-off) 
-                                          (delta/retain start-len {attr-key attr-val})]))
-            
-            ;; 2. tail: from 0 to end-off
-            op-end (tx/update-content-op end-id 
-                     (delta/make-delta [(delta/retain end-off {attr-key attr-val})]))
-            
-            ;; 3. body: full range for all middle blocks
-            middle-ids (subvec root (inc start-idx) end-idx)
-            middle-ops (map (fn [id]
-                              (let [len (count (:content (get-in state-val [:blocks id]) ""))]
-                                (tx/update-content-op id 
-                                  (delta/make-delta [(delta/retain len {attr-key attr-val})]))))
-                            middle-ids)
-            
-            ;; 4. combine and execute
-            ops (concat [op-start op-end] middle-ops)]
-            
-        (tx/commit-transaction! !state
-          (tx/make-transaction :ops (vec ops) :after-selection nil)
-          :merge? false)))))
+(defn toggle-style!
+  "Master toggle for formats. Prioritizes typing-attributes for precise control."
+  [!state attr-key]
+  (let [state-val @!state
+        g-sel (:global-selection state-val)
+        aid (:active-block-id state-val)]
+    (if g-sel
+      (let [ns (sel/normalize state-val g-sel)
+            sid (get-in ns [:start :id])
+            soff (get-in ns [:start :offset])
+            old (get-in state-val [:blocks sid :content-spans] [])
+            ;; Check if format exists dynamically via reduce
+            active? (get (get-formats-at-offset old (inc soff) 0) attr-key)]
+        (apply-style-cross-block! !state g-sel attr-key (if active? nil true)))
+      (when aid
+        (let [block (get-in state-val [:blocks aid])
+              sel (:selection block)]
+          (if (and sel (not (.-isCollapsed sel)))
+            (let [start (min (.-baseOffset sel) (.-extentOffset sel))
+                  end (max (.-baseOffset sel) (.-extentOffset sel))
+                  old (:content-spans block [])
+                  active? (get (get-formats-at-offset old (inc start) 0) attr-key)]
+              (apply-style !state aid start end attr-key (if active? nil true)))
+            ;; Collapsed: Control the pending state
+            (let [off (if sel (.-extentOffset sel) 0)
+                  inherited (get-formats-at-offset (:content-spans block []) off 0)
+                  current (if (contains? state-val :typing-attributes) (:typing-attributes state-val) inherited)
+                  active? (get current attr-key)
+                  new-attr (if active? (dissoc current attr-key) (assoc current attr-key true))]
+              (swap! !state assoc :typing-attributes new-attr))))))))
 
-;; =============================================================================
-;; NEW: Block Splitting Engine (The "Enter" key core logic)
-;; =============================================================================
+;; =============================================================
+;; Block Splitting Engine
+;; =============================================================
 
-(defn- split-spans-at 
-  "Splits an array of rich text spans at a specific cursor offset.
-   Returns a vector containing two arrays: [spans-before, spans-after]."
-  [spans offset]
+(defn- split-spans-at [spans offset]
   (reduce (fn [[before after] span]
             (let [{:keys [start end attrs]} span]
-              (cond
-                ;; Case 1: The span is completely to the left of the cursor -> stays in the old block
-                (<= end offset)
-                [(conj before span) after]
+              (cond (<= end offset) [(conj before span) after]
+                    (>= start offset) [before (conj after {:start (- start offset) :end (- end offset) :attrs attrs})]
+                    :else [(conj before {:start start :end offset :attrs attrs})
+                           (conj after {:start 0 :end (- end offset) :attrs attrs})])))
+          [[] []] (or spans [])))
 
-                ;; Case 2: The span is completely to the right of the cursor -> moves to the new block
-                ;; The coordinates must be shifted by subtracting the offset.
-                (>= start offset)
-                [before (conj after {:start (- start offset)
-                                     :end (- end offset)
-                                     :attrs attrs})]
-
-                ;; Case 3: The cursor cuts exactly through the middle of the span -> split it into two!
-                :else
-                [(conj before {:start start :end offset :attrs attrs})
-                 (conj after {:start 0 :end (- end offset) :attrs attrs})])))
-          [[] []]
-          (or spans [])))
-
-(defn split-block!
-  "Splits the current block at the given offset. 
-   Creates a new database block record, redistributes text and styling spans, and moves the cursor."
-  [!state active-id offset]
-  (swap! !state
-         (fn [state]
-           (let [block (get-in state [:blocks active-id])
-                 content (:content block "")
-                 spans (:content-spans block [])
-                 b-type (:type block)
-                 
-                 ;; UX Detail: If the user presses Enter in an empty List or Blockquote,
-                 ;; exit the formatting instead of creating another empty list item.
-                 is-empty-format? (and (contains? #{:list-item :blockquote} b-type)
-                                       (empty? content))
-                 
-                 exit-format-state
-                 (when is-empty-format?
-                   (-> state (assoc-in [:blocks active-id :type] :paragraph)))]
-             
-             (if exit-format-state
-               exit-format-state
-               
-               ;; Proceed with the actual block split
-               (let [;; 1. Slice the text
-                     safe-offset (max 0 (min offset (count content)))
-                     text-before (subs content 0 safe-offset)
-                     text-after (subs content safe-offset)
-                     
-                     ;; 2. Slice the rich text styles
-                     [spans-before spans-after] (split-spans-at spans safe-offset)
-                     
-                     ;; 3. Generate the new Block ID
-                     new-id (str "block-" (.-millisecondsSinceEpoch (dc/DateTime.now)))
-                     
-                     ;; 4. Inherit type (if pressing enter in a list, keep making lists)
-                     new-type (if (contains? #{:list-item :blockquote} b-type) b-type :paragraph)
-                     
-                     ;; Build the new block
-                     new-block {:id new-id
-                                :type new-type
-                                :content text-after
-                                :content-spans spans-after
-                                :children []}
-                     
-                     ;; 5. Insert the new block ID into the root array immediately after the current one
-                     root (:root state)
-                     idx (inc (.indexOf root active-id))
-                     new-root (vec (concat (subvec root 0 idx) [new-id] (subvec root idx)))]
-                 
-                 ;; 6. Update the global state structurally
-                 (-> state
-                     (assoc-in [:blocks active-id :content] text-before)
-                     (assoc-in [:blocks active-id :content-spans] spans-before)
-                     (assoc-in [:blocks new-id] new-block)
-                     (assoc :root new-root)
-                     (assoc :active-block-id new-id))))))))
+(defn split-block! [!state active-id offset]
+  (swap! !state (fn [state]
+                  (let [block (get-in state [:blocks active-id])
+                        content (:content block "")
+                        spans (:content-spans block [])
+                        b-type (:type block)
+                        is-empty? (and (contains? #{:list-item :blockquote} b-type) (empty? content))]
+                    (if is-empty? (assoc-in state [:blocks active-id :type] :paragraph)
+                        (let [soff (max 0 (min offset (count content)))
+                              [sb sa] (split-spans-at spans soff)
+                              nid (str "b-" (.-millisecondsSinceEpoch (dc/DateTime.now)))
+                              nb {:id nid :type (if (contains? #{:list-item :blockquote} b-type) b-type :paragraph)
+                                  :content (subs content soff) :content-spans sa :children []}
+                              root (:root state)
+                              idx (inc (.indexOf root active-id))]
+                          (-> state
+                              (assoc-in [:blocks active-id :content] (subs content 0 soff))
+                              (assoc-in [:blocks active-id :content-spans] sb)
+                              (assoc-in [:blocks nid] nb)
+                              (assoc :root (vec (concat (subvec root 0 idx) [nid] (subvec root idx))))
+                              (assoc :active-block-id nid))))))))

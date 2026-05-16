@@ -9,159 +9,74 @@
             [rich-editor.config :as config]
             ["package:flutter/services.dart" :as s]))
 
-;; =============================================================
-;; 1. Focus and selection
-;; =============================================================
-
 (defn focus-block
-  "Activate block: update state and attach IME"
+  "The ONLY place to clear typing-attributes. This happens when the cursor is explicitly moved."
   [!state block-id offset]
-  (dart:core/print (str "[input] focus-block entry block-id=" block-id " offset=" offset))
-  (let [new-selection (s/TextSelection. .baseOffset offset .extentOffset offset)]
-    ;; 1. Update active-id, block selection, cursor visible
+  (let [new-sel (s/TextSelection.collapsed .offset offset)]
     (swap! !state (fn [curr]
                     (-> curr
+                        (dissoc :global-selection)
+                        (dissoc :typing-attributes) ;; 🌟 Clear here only
                         (assoc :active-block-id block-id)
                         (assoc :cursor-visible true)
-                        (assoc-in [:blocks block-id :selection] new-selection))))
-    (dart:core/print "[input] focus-block state updated")
-    ;; 2. No transaction (pure state switch). 3. Attach IME.
-    (ime/attach! !state block-id)
-    (dart:core/print (str "[input] focus-block ime/attach! done block-id=" block-id))))
+                        (assoc-in [:blocks block-id :selection] new-sel))))
+    (ime/attach! !state block-id)))
 
-(defn blur-all
-  "Blur: clear focus and detach IME"
-  [!state]
-  (swap! !state (fn [s] (assoc s :active-block-id nil :cursor-visible false)))
+(defn blur-all [!state]
+  (swap! !state (fn [s] (-> s (assoc :active-block-id nil :cursor-visible false) (dissoc :typing-attributes))))
   (ime/detach!))
 
-;; =============================================================
-;; 2. Document ops
-;; =============================================================
-
-(defn clear-document
-  "Clear document and reset to single empty block. Block type from state's :editor-config :default-block-type.
-   Sets active-block-id, cursor-visible and first block selection so cursor is visible; caller must call ime/attach! after first frame."
-  [!state]
-  (let [block-type (or (some-> (get @!state :editor-config) config/default-block-type) :paragraph)
-        new-id (str "b-" (.-millisecondsSinceEpoch (dart:core/DateTime.now)))
-        empty-block (node/make-node new-id block-type "")]
-    (tx/commit-transaction! !state
-      (tx/make-transaction
-        :ops [(tx/delete-op :root 0 (count (:root @!state)))
-              (tx/insert-op :root 0 [empty-block])]
-        :after-selection (s/TextSelection. .baseOffset 0 .extentOffset 0)))
-    ;; focus first block so cursor is visible and input works
-    (swap! !state (fn [s]
-                    (-> s
-                        (assoc :active-block-id new-id)
-                        (assoc :cursor-visible true)
-                        (assoc-in [:blocks new-id :selection] (s/TextSelection. .baseOffset 0 .extentOffset 0)))))))
-
-(defn delete-global-selection!
-  "Deletes the text spanned by the global selection.
-   Merges the start and end blocks if they span multiple nodes, and cleans up the orphaned blocks."
-  [!state]
-  (let [state @!state
-        g-sel (:global-selection state)]
+(defn delete-global-selection! [!state]
+  (let [state-val @!state
+        g-sel (:global-selection state-val)]
     (when (and g-sel (:start g-sel) (:end g-sel))
-      (let [n-sel (sel/normalize state g-sel)
-            start-id (get-in n-sel [:start :id])
-            start-off (get-in n-sel [:start :offset])
-            end-id (get-in n-sel [:end :id])
-            end-off (get-in n-sel [:end :offset])
-            root (:root state)
-            start-idx (.indexOf root start-id)
-            end-idx (.indexOf root end-id)]
-        
-        (if (= start-id end-id)
-          ;; Single block fallback
-          (let [len (- end-off start-off)]
-            (swap! !state dissoc :global-selection)
-            ;; If focus-block is in this same file, you can just call it:
-            ;; (focus-block !state start-id start-off)
-            (swap! !state assoc :active-block-id start-id :cursor-visible true)
-            (swap! !state assoc-in [:blocks start-id :selection] 
-                   (s/TextSelection.collapsed .offset start-off))
-            (text-cmd/delete-range !state start-id start-off len))
+      (let [ns (sel/normalize state-val g-sel)
+            sid (get-in ns [:start :id])
+            soff (get-in ns [:start :offset] 0)
+            eid (get-in ns [:end :id])
+            eoff (get-in ns [:end :offset] 0)
+            root (:root state-val)]
+        (if (= sid eid)
+          (do (swap! !state dissoc :global-selection)
+              (swap! !state assoc :active-block-id sid :cursor-visible true)
+              (swap! !state assoc-in [:blocks sid :selection] (s/TextSelection.collapsed .offset soff))
+              (text-cmd/delete-range !state sid soff (- eoff soff)))
+          (let [sb (get-in state-val [:blocks sid])
+                eb (get-in state-val [:blocks eid])
+                sc (:content sb "")
+                ec (:content eb "")
+                new-c (str (subs sc 0 soff) (subs ec eoff))
+                s-spans (filterv #(<= (:end %) soff) (:content-spans sb []))
+                e-spans (filterv #(> (:end %) eoff) (:content-spans eb []))
+                shifted-e (mapv (fn [span]
+                                  (let [head (max (:start span) eoff)]
+                                    {:start (+ soff (- head eoff)) :end (+ soff (- (:end span) eoff)) :attrs (:attrs span)}))
+                                e-spans)
+                ids-to-remove (set (subvec root (inc (.indexOf root sid)) (inc (.indexOf root eid))))]
+            (swap! !state (fn [s]
+                            (-> s
+                                (dissoc :global-selection)
+                                (dissoc :typing-attributes)
+                                (assoc :root (vec (remove ids-to-remove root)))
+                                (update :blocks (fn [bm] (apply dissoc bm ids-to-remove)))
+                                (assoc-in [:blocks sid :content] new-c)
+                                (assoc-in [:blocks sid :content-spans] (vec (concat s-spans shifted-e)))
+                                (assoc :active-block-id sid)
+                                (assoc-in [:blocks sid :selection] (s/TextSelection.collapsed .offset soff))
+                                (assoc :cursor-visible true))))))))))
 
-          ;; 🌟 Multi-block deletion & merge
-          (let [start-content (get-in state [:blocks start-id :content] "")
-                end-content (get-in state [:blocks end-id :content] "")
-                keep-prefix (subs start-content 0 start-off)
-                keep-suffix (subs end-content end-off)
-                new-content (str keep-prefix keep-suffix)
-                blocks-to-remove (set (subvec root (inc start-idx) (inc end-idx)))
-                new-root (vec (remove blocks-to-remove root))]
-            
-            (swap! !state
-                   (fn [s]
-                     (-> s
-                         (dissoc :global-selection)
-                         (assoc :root new-root)
-                         (update :blocks (fn [blocks-map] (apply dissoc blocks-map blocks-to-remove)))
-                         (assoc-in [:blocks start-id :content] new-content)
-                         (assoc :active-block-id start-id)
-                         (assoc-in [:blocks start-id :selection] 
-                                   (s/TextSelection.collapsed .offset start-off))
-                         (assoc :cursor-visible true))))))))))
-;; =============================================================
-;; 3. Shortcuts and actions
-;; =============================================================
-
-(defn handle-global-shortcut
-  "Dispatch global shortcuts (Ctrl+A, Z, X/C/V, etc.)"
-  [!state intent]
+(defn handle-global-shortcut [!state intent]
   (cond
     (= intent :select-all)
-    (let [active-id (:active-block-id @!state)]
-      (when active-id
-        (let [content (get-in @!state [:blocks active-id :content])]
-          (swap! !state assoc-in [:blocks active-id :selection]
-                 (s/TextSelection. .baseOffset 0 .extentOffset (count content))))))
-
-    (= intent :undo)
-    (history/undo! !state)
-
-    (= intent :redo)
-    (history/redo! !state)
-
-    (= intent :copy)
-    (clipboard/copy! @!state)
-
-    (= intent :cut)
-    (clipboard/cut! !state delete-global-selection!)
-
-    (= intent :paste)
-    (-> (clipboard/paste! !state)
-        (.then (fn [focus-info]
-                 (when focus-info
-                   (focus-block !state (:focus-block focus-info) (:offset focus-info))))))
-
-    ;; Inline format (multi-TextSpan tree; Mongol supports TextSpan only)
-    (= intent :bold)
-    (when-let [active-id (:active-block-id @!state)]
-      (let [block (get-in @!state [:blocks active-id])
-            sel (:selection block)]
-        (when (and sel (< (.-start sel) (.-end sel)))
-          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold true))))
-
-    (= intent :italic)
-    (when-let [active-id (:active-block-id @!state)]
-      (let [block (get-in @!state [:blocks active-id])
-            sel (:selection block)]
-        (when (and sel (< (.-start sel) (.-end sel)))
-          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic true))))
-
-    (= intent :underline)
-    (when-let [active-id (:active-block-id @!state)]
-      (let [block (get-in @!state [:blocks active-id])
-            sel (:selection block)]
-        (when (and sel (< (.-start sel) (.-end sel)))
-          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline true))))
-
-    ;; Link: placeholder; URL dialog later
-    (= intent :link)
-    nil
-
+    (let [aid (:active-block-id @!state)]
+      (when aid (swap! !state assoc-in [:blocks aid :selection]
+                       (s/TextSelection. .baseOffset 0 .extentOffset (count (get-in @!state [:blocks aid :content] ""))))))
+    (= intent :undo) (history/undo! !state)
+    (= intent :redo) (history/redo! !state)
+    (= intent :copy) (clipboard/copy! @!state)
+    (= intent :cut) (clipboard/cut! !state delete-global-selection!)
+    (= intent :paste) (-> (clipboard/paste! !state) (.then #(when % (focus-block !state (:focus-block %) (:offset %)))))
+    (= intent :bold) (text-cmd/toggle-style! !state :bold)
+    (= intent :italic) (text-cmd/toggle-style! !state :italic)
+    (= intent :underline) (text-cmd/toggle-style! !state :underline)
     :else nil))
