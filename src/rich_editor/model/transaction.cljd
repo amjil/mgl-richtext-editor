@@ -1,9 +1,10 @@
 (ns rich-editor.model.transaction
+  "Core transaction engine. Handles pure state transitions and atomic commits."
   (:require [rich-editor.model.delta :as delta]
             [rich-editor.services.history-service :as history]))
 
 ;; =============================================================
-;; 1. Operation constructors
+;; 1. Operation Constructors
 ;; =============================================================
 
 (defn insert-op [parent-id index nodes]
@@ -12,21 +13,27 @@
 (defn delete-op [parent-id index count]
   {:type :delete :parent-id parent-id :index index :count count})
 
-(defn update-content-op [block-id delta]
-  {:type :update-content :block-id block-id :delta delta})
+(defn update-content-op
+  "Updates block text content via Delta. 
+   Optionally accepts pre-calculated new-spans for strictly atomic formatting."
+  [block-id delta & [new-spans]]
+  {:type :update-content :block-id block-id :delta delta :new-spans new-spans})
 
 (defn update-attr-op [block-id attributes]
   {:type :update-attr :block-id block-id :attributes attributes})
 
-;; Merge into block: :content (replace), :type, :data (merge), :attributes (merge)
-(defn update-block-data-op [block-id data]
+(defn update-block-data-op
+  "Merges block data: replaces :content, merges :type and other :data attributes."
+  [block-id data]
   {:type :update-block-data :block-id block-id :data data})
 
 ;; =============================================================
-;; 2. Apply logic (pure)
+;; 2. Apply Logic (Pure Functions)
 ;; =============================================================
 
-(defn- apply-op [state op]
+(defn- apply-op
+  "Pure function that applies a single operation to the document state."
+  [state op]
   (case (:type op)
     :insert
     (let [{:keys [parent-id index nodes]} op
@@ -44,14 +51,16 @@
                  (fn [ids] (vec (concat (subvec ids 0 index) (subvec ids (+ index count)))))))
 
     :update-content
-    (let [{:keys [block-id delta]} op
+    (let [{:keys [block-id delta new-spans]} op
           block (get-in state [:blocks block-id])
           content (or (:content block) "")
           spans (or (:content-spans block) [])
           new-content (delta/apply-to-string content delta)
-          new-spans (delta/transform-spans spans delta (count content))]
-      (assoc-in (assoc-in state [:blocks block-id :content] new-content)
-                [:blocks block-id :content-spans] new-spans))
+          ;; Use exact spans if provided (e.g. from splice-spans engine), otherwise fallback to delta transformation
+          final-spans (if new-spans new-spans (delta/transform-spans spans delta (count content)))]
+      (-> state
+          (assoc-in [:blocks block-id :content] new-content)
+          (assoc-in [:blocks block-id :content-spans] final-spans)))
 
     :update-attr
     (update-in state [:blocks (:block-id op) :attributes] merge (:attributes op))
@@ -73,17 +82,18 @@
     state))
 
 ;; =============================================================
-;; 3. Transaction runner
+;; 3. Transaction Runner
 ;; =============================================================
 
 (defn make-transaction
-  "Build transaction. :ops - list of ops; :after-selection - caret position after apply."
+  "Builds a transaction object containing operations and the post-commit cursor selection."
   [& {:keys [ops after-selection]}]
   {:ops (vec ops)
    :after-selection after-selection})
 
 (defn apply-transaction
-  "Apply transaction to state; return new state. :after-selection updates top-level and active block selection for UI."
+  "Applies a transaction immutably to the state.
+   Updates both the global document selection and the local active block selection."
   [state transaction]
   (let [new-state (reduce apply-op state (:ops transaction))
         sel (:after-selection transaction)]
@@ -96,13 +106,14 @@
           with-global)))))
 
 (defn commit-transaction!
-  "Apply transaction to global atom. Uses history service to handle debounced undo stack pushes."
-  ;; 🌟 Note: defaulting to false is safer here
+  "Applies transaction to the global state atom. 
+   Automatically delegates to history-service for debounced snapshot tracking."
   [!state transaction & {:keys [merge?] :or {merge? false}}]
   (dart:core/print (str "[input] commit-transaction! merge?=" merge? " ops-count=" (count (:ops transaction))))
-  (swap! !state (fn [curr]
-                  ;; 🌟 Core change: pass current state and merge? flag together to push-history
-                  ;; History service decides by timestamp whether to save a new snapshot or just refresh last-edit time
-                  (let [curr' (history/push-history curr merge?)
-                        next-state (apply-transaction curr' transaction)]
-                    next-state))))
+  (swap! !state
+         (fn [curr]
+           ;; 1. Evaluate debounce & snapshot logic via history service
+           (let [curr-with-history (history/push-history curr merge?)
+                 ;; 2. Apply all structural and selection changes
+                 next-state (apply-transaction curr-with-history transaction)]
+             next-state))))

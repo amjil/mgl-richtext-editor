@@ -1,4 +1,6 @@
-(ns rich-editor.services.history-service)
+(ns rich-editor.services.history-service
+  "Handles document history, enabling performant undo/redo functionality
+   leveraging Clojure's immutable data structures.")
 
 ;; 🌟 Debounce threshold for consecutive operations (ms). 800ms is a common sweet spot for typing feel.
 (def ^:private debounce-interval-ms 800)
@@ -6,29 +8,29 @@
 ;; 1. History stack. Keep under :history in !state: {:undo-stack [] :redo-stack [] :max-depth 100 :last-edit-time 0}
 
 (defn- capture-snapshot
-  "Document snapshot for history (blocks, root, selection, active-block-id, global-selection)"
+  "Takes a lightweight snapshot of the document's current state.
+   Because of immutable data structures, this is highly memory efficient."
   [state]
   {:blocks (:blocks state)
    :root (:root state)
    :selection (:selection state)
    :active-block-id (:active-block-id state)
-   ;; 🌟 Also persist global selection
    :global-selection (:global-selection state)})
 
-;; 2. Undo/redo
+;; 2. Undo/redo Core Logic
 
 (defn push-history
-  "Call before transaction; push current state to undo stack with debouncing"
+  "Call before applying a transaction. Pushes current state to undo stack with debouncing."
   [state merge?]
   (let [now (.-millisecondsSinceEpoch (dart:core/DateTime.now))
         history (or (:history state) {:undo-stack [] :redo-stack [] :max-depth 100})
         last-time (:last-edit-time history 0)]
 
     (if (and merge? (< (- now last-time) debounce-interval-ms))
-      ;; 🌟 [Debounce hit]: last input was recent and merge allowed. No new snapshot, only refresh timestamp
+      ;; [Debounce hit]: Consecutive typing within threshold. Only refresh timestamp.
       (assoc state :history (assoc history :last-edit-time now))
 
-      ;; 🌟 [Normal push]: last op was long ago, or this is a major action (merge? = false)
+      ;; [Normal push]: Time threshold exceeded, or a major action occurred (merge? = false)
       (let [snapshot (capture-snapshot state)
             new-undo-stack (conj (:undo-stack history []) snapshot)
             max-depth (:max-depth history 100)
@@ -39,42 +41,50 @@
         (assoc state :history
                (assoc history
                       :undo-stack trimmed-undo
-                      :redo-stack []
+                      :redo-stack [] ;; Clear redo stack on new action
                       :last-edit-time now))))))
 
 (defn undo
-  "Undo: pop undo-stack, push current to redo-stack"
+  "Pops the undo stack, pushes current state to redo stack, and restores the snapshot.
+   Safely clears pending typing attributes to prevent format bleeding across history."
   [state]
   (let [{:keys [undo-stack redo-stack] :as history} (:history state)]
     (if (empty? undo-stack)
       state
       (let [snapshot (last undo-stack)
             current-snapshot (capture-snapshot state)
-            new-state (merge state snapshot)]
+            ;; 🌟 Restore snapshot AND scrub temporary typing states
+            new-state (-> state
+                          (merge snapshot)
+                          (dissoc :typing-attributes))]
         (assoc new-state :history
                (assoc history
                       :undo-stack (pop undo-stack)
                       :redo-stack (conj redo-stack current-snapshot)
-                      ;; 🌟 After undo, reset timestamp so next typing becomes a new history entry
+                      ;; Reset timestamp so next typing immediately creates a new history entry
                       :last-edit-time 0))))))
 
 (defn redo
-  "Redo: pop redo-stack, push current to undo-stack"
+  "Pops the redo stack, pushes current state to undo stack, and restores the snapshot.
+   Safely clears pending typing attributes."
   [state]
   (let [{:keys [undo-stack redo-stack] :as history} (:history state)]
     (if (empty? redo-stack)
       state
       (let [snapshot (last redo-stack)
             current-snapshot (capture-snapshot state)
-            new-state (merge state snapshot)]
+            ;; 🌟 Restore snapshot AND scrub temporary typing states
+            new-state (-> state
+                          (merge snapshot)
+                          (dissoc :typing-attributes))]
         (assoc new-state :history
                (assoc history
                       :undo-stack (conj undo-stack current-snapshot)
                       :redo-stack (pop redo-stack)
-                      ;; 🌟 After redo, reset timestamp as well
+                      ;; Reset timestamp
                       :last-edit-time 0))))))
 
-;; 3. Command integration
+;; 3. Command Integration
 
 (defn undo! [!state]
   (swap! !state undo))

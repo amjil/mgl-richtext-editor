@@ -2,6 +2,7 @@
   (:require ["package:flutter/material.dart" :as m]
             [cljd.flutter :as f]
             [rich-editor.commands.text-commands :as text-cmd]
+            [rich-editor.services.history-service :as history]
             [rich-editor.model.selection :as sel]))
 
 (defn mongol-toolbar [!state]
@@ -11,6 +12,11 @@
          active-id (:active-block-id state)
          block (when active-id (get-in state [:blocks active-id]))
          local-sel (when block (:selection block))
+
+         ;; 🌟 1. Extract history states to control button availability
+         hist (:history state)
+         can-undo? (boolean (seq (:undo-stack hist)))
+         can-redo? (boolean (seq (:redo-stack hist)))
 
          ;; Helper function to detect if a specific format is active in the current selection
          is-format-active? (fn [format-key]
@@ -49,29 +55,57 @@
    (m/Container
     .height 48.0
     .decoration (m/BoxDecoration.
-                 ;; Add background color to prevent transparency issues
                  .color m.Colors/white
                  .border (m/Border. .top (m/BorderSide. .color m/Colors.grey.shade300)))
     .child
     (m/Row
      .mainAxisAlignment m.MainAxisAlignment/center
      .children
-     [;; Bold Button
+     [;; ==========================================
+      ;; History Controls
+      ;; ==========================================
+
+      ;; Undo Button
+      (m/IconButton
+       .icon (m/Icon m.Icons/undo)
+       ;; Passing nil to onPressed automatically disables the button visually in Flutter
+       .onPressed (if can-undo? #(history/undo! !state) nil)
+       .tooltip "Undo")
+
+      ;; Redo Button
+      (m/IconButton
+       .icon (m/Icon m.Icons/redo)
+       .onPressed (if can-redo? #(history/redo! !state) nil)
+       .tooltip "Redo")
+
+      ;; Vertical Divider
+      (m/Container
+       .height 24.0
+       .width 1.0
+       .color m/Colors.grey.shade300
+       .margin (m/EdgeInsets.symmetric .horizontal 8.0))
+
+      ;; ==========================================
+      ;; Formatting Controls
+      ;; ==========================================
+
+      ;; Bold Button
       (m/IconButton
        .icon (m/Icon m.Icons/format_bold)
        .color (if (is-format-active? :bold) m.Colors/blue m.Colors/black87)
-       ;; Bind to the high-level toggle-style! command.
-       ;; No has-selection? restriction needed: allows toggling on empty cursors.
-       .onPressed #(text-cmd/toggle-style! !state :bold))
+       .onPressed #(text-cmd/toggle-style! !state :bold)
+       .tooltip "Bold")
 
       ;; Italic Button
       (m/IconButton
        .icon (m/Icon m.Icons/format_italic)
        .color (if (is-format-active? :italic) m.Colors/blue m.Colors/black87)
-       .onPressed #(text-cmd/toggle-style! !state :italic))
+       .onPressed #(text-cmd/toggle-style! !state :italic)
+       .tooltip "Italic")
 
       ;; Underline Button
       (m/IconButton
        .icon (m/Icon m.Icons/format_underlined)
        .color (if (is-format-active? :underline) m.Colors/blue m.Colors/black87)
-       .onPressed #(text-cmd/toggle-style! !state :underline))]))))
+       .onPressed #(text-cmd/toggle-style! !state :underline)
+       .tooltip "Underline")]))))

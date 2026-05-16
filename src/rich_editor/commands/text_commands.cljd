@@ -80,64 +80,75 @@
              (remove nil?) vec))))
 
 ;; =============================================================
-;; Basic Text Mutations (Insert, Delete, Replace)
+;; Basic Text Mutations (Insert, Delete, Replace) - 🛡️ IME Safe
 ;; =============================================================
 
 (defn insert-string
-  "Insert string and precisely splice active formats."
+  "Insert string and precisely splice active formats. Protected against IME desync."
   [!state block-id offset text]
   (let [state-val @!state
         block (get-in state-val [:blocks block-id])
         content-len (count (:content block ""))
+        
+        ;; 🌟 SHIELD: Clamp offset to prevent IME out-of-bounds crashes
+        safe-offset (max 0 (min offset content-len))
+        
         spans (:content-spans block [])
-        inherited (get-formats-at-offset spans offset 0)
+        inherited (get-formats-at-offset spans safe-offset 0)
         active-attrs (if (contains? state-val :typing-attributes) (:typing-attributes state-val) inherited)
         text-len (count text)
-        new-offset (+ offset text-len)
-        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain offset) (delta/insert text)]))]]
-
+        new-offset (+ safe-offset text-len)
+        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain safe-offset) (delta/insert text)]))]]
+    
     (tx/commit-transaction! !state
-                            (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset new-offset))
-                            :merge? true)
-
+      (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset new-offset))
+      :merge? true)
+      
     (swap! !state update-in [:blocks block-id]
            (fn [b]
-             (assoc b :content-spans (splice-spans content-len (:content-spans b []) offset 0 text-len active-attrs))))))
+             (assoc b :content-spans (splice-spans content-len (:content-spans b []) safe-offset 0 text-len active-attrs))))))
 
 (defn delete-range
-  "Delete range and collapse spans."
+  "Delete range and collapse spans. Protected against IME desync."
   [!state block-id offset length]
-  (when (> length 0)
-    (let [content-len (count (get-in @!state [:blocks block-id :content] ""))
-          ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain offset) (delta/delete length)]))]]
-      (tx/commit-transaction! !state
-                              (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset offset))
-                              :merge? true)
-      (swap! !state update-in [:blocks block-id]
-             (fn [b]
-               (assoc b :content-spans (splice-spans content-len (:content-spans b []) offset length 0 nil)))))))
+  (let [content-len (count (get-in @!state [:blocks block-id :content] ""))
+        ;; 🌟 SHIELD: Ensure we don't start or end out of bounds
+        safe-offset (max 0 (min offset content-len))
+        safe-len (max 0 (min length (- content-len safe-offset)))]
+    (when (> safe-len 0)
+      (let [ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain safe-offset) (delta/delete safe-len)]))]]
+        (tx/commit-transaction! !state
+          (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset safe-offset))
+          :merge? true)
+        (swap! !state update-in [:blocks block-id]
+               (fn [b]
+                 (assoc b :content-spans (splice-spans content-len (:content-spans b []) safe-offset safe-len 0 nil))))))))
 
 (defn replace-text
-  "Replace text (IME) and precisely splice active formats."
+  "Replace text (IME) and precisely splice active formats. Protected against IME desync."
   [!state block-id offset old-text new-text]
-  (let [old-len (count old-text)
-        new-len (count new-text)
-        state-val @!state
+  (let [state-val @!state
         block (get-in state-val [:blocks block-id])
         content-len (count (:content block ""))
+        old-len (count old-text)
+        
+        ;; 🌟 SHIELD: Clamp offsets
+        safe-offset (max 0 (min offset content-len))
+        safe-old-len (max 0 (min old-len (- content-len safe-offset)))
+        
+        new-len (count new-text)
         spans (:content-spans block [])
-        inherited (get-formats-at-offset spans offset old-len)
+        inherited (get-formats-at-offset spans safe-offset safe-old-len)
         active-attrs (if (contains? state-val :typing-attributes) (:typing-attributes state-val) inherited)
-        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain offset) (delta/delete old-len) (delta/insert new-text)]))]]
-
+        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain safe-offset) (delta/delete safe-old-len) (delta/insert new-text)]))]]
+    
     (tx/commit-transaction! !state
-                            (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset (+ offset new-len)))
-                            :merge? true)
-
+      (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset (+ safe-offset new-len)))
+      :merge? true)
+      
     (swap! !state update-in [:blocks block-id]
            (fn [b]
-             (assoc b :content-spans (splice-spans content-len (:content-spans b []) offset old-len new-len active-attrs))))))
-
+             (assoc b :content-spans (splice-spans content-len (:content-spans b []) safe-offset safe-old-len new-len active-attrs))))))
 ;; =============================================================
 ;; Formatting Commands
 ;; =============================================================
