@@ -2,10 +2,10 @@
   (:require [rich-editor.model.selection :as sel]))
 
 (defn- apply-format-to-spans
-  "给 [start, end) 区间施加或取消特定格式"
+  "Apply or remove a format on the [start, end) range."
   [content old-spans start end format-key format-val]
   (let [len (count content)
-        ;; 1. 拍平成字符属性数组
+        ;; 1. Flatten into per-character attribute array
         char-attrs (reduce (fn [acc {:keys [s e attrs] :as span}]
                              (reduce (fn [a i]
                                        (if (and (>= i 0) (< i len))
@@ -16,17 +16,17 @@
                            (vec (repeat len {}))
                            old-spans)
         
-        ;; 2. 修改指定区间的属性
+        ;; 2. Update attributes in the given range
         updated-attrs (map-indexed
                        (fn [idx attrs]
                          (if (and (>= idx start) (< idx end))
                            (if (nil? format-val)
-                             (dissoc attrs format-key) ;; 取消格式
-                             (assoc attrs format-key format-val)) ;; 添加格式
+                             (dissoc attrs format-key) ;; Remove format
+                             (assoc attrs format-key format-val)) ;; Add format
                            attrs))
                        char-attrs)]
     
-    ;; 3. 重新聚合为优化后的绝对区间 spans
+    ;; 3. Re-coalesce into optimized absolute spans
     (if (empty? content)
       []
       (->> (map-indexed vector updated-attrs)
@@ -41,7 +41,7 @@
            vec))))
 
 (defn toggle-format!
-  "开关当前选区的格式 (如 :bold, :italic)"
+  "Toggle format on the current selection (e.g. :bold, :italic)."
   [!state format-key]
   (let [state-val @!state
         active-id (:active-block-id state-val)]
@@ -54,7 +54,7 @@
                 content (:content block "")
                 old-spans (:content-spans block [])
                 
-                ;; 检查当前选区的第一个字是否已有该格式，决定是“开启”还是“关闭”
+                ;; If the first char in the selection has the format, turn it off; otherwise on
                 is-active? (some (fn [span]
                                    (and (<= (:start span) start)
                                         (> (:end span) start)
@@ -63,5 +63,5 @@
                 new-val (if is-active? nil true)
                 new-spans (apply-format-to-spans content old-spans start end format-key new-val)]
             
-            ;; 执行事务
+            ;; Apply update
             (swap! !state assoc-in [:blocks active-id :content-spans] new-spans)))))))
