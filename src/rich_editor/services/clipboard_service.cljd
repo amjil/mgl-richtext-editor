@@ -1,10 +1,11 @@
 (ns rich-editor.services.clipboard-service
+  "Handles clipboard operations (Copy, Cut, Paste) for both single-block and cross-block selections."
   (:require ["package:flutter/services.dart" :as s]
             [rich-editor.commands.text-commands :as text-cmd]
             [rich-editor.model.selection :as sel]
             [clojure.string :as str]))
 
-;; --- 1. Extract (Replaces old selection->data) ---
+;; --- 1. Extract ---
 
 (defn- extract-selected-text
   "Extracts text handling both global (cross-block) and local (single-block) selections."
@@ -50,17 +51,18 @@
 ;; --- 2. Copy ---
 
 (defn copy!
-  "Put selection into system clipboard"
+  "Put selection into system clipboard.
+   NOTE: Debug print removed for production readiness."
   [state]
   (let [text (extract-selected-text state)]
     (when (not-empty text)
-      (s/Clipboard.setData (s/ClipboardData. .text text))
-      (dart:core/print "Copied to clipboard!"))))
+      (s/Clipboard.setData (s/ClipboardData. .text text)))))
 
-;; --- 3. Paste (Kept your exact logic) ---
+;; --- 3. Paste ---
 
 (defn paste!
-  "Read clipboard and insert at caret. Future resolves to {:focus-block id :offset 0} when new block created (no focus); caller focus-block."
+  "Read clipboard and insert at caret. 
+   Future resolves to {:focus-block id :offset 0} when new block created (no focus); caller focus-block."
   [!state]
   (let [f (s/Clipboard.getData s.Clipboard/kTextPlain)
         f2 (.then f (fn [data]
@@ -76,22 +78,23 @@
                             ;; B: no focus -> delegate to block layer (if any); return focus-info for caller to focus
                             (when-let [paste-no-focus! (get-in state [:editor-config :block-ops :paste-when-no-focus!])]
                               (paste-no-focus! !state raw-text)))))))]
-    (.catchError f2 (fn [err] (dart:core/print err)))))
+    ;; Silently catch errors in production
+    (.catchError f2 (fn [_err] nil))))
 
 ;; --- 4. Cut ---
 
 (defn cut!
-  "Copy and delete selection"
+  "Copy and delete selection."
   [!state delete-global-fn]
   (let [state @!state]
     ;; 1. Always copy the text first
     (copy! state)
-    
+
     ;; 2. Delete the text based on selection type
     (if (:global-selection state)
       (delete-global-fn !state)
-      
-      ;; 3. Single block cut (Kept your logic, but made it robust against direction)
+
+      ;; 3. Single block cut (Made robust against selection direction)
       (when-let [active-id (:active-block-id state)]
         (let [sel (get-in state [:blocks active-id :selection])]
           (when (and sel (not (.-isCollapsed sel)))

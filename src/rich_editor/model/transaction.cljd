@@ -7,23 +7,29 @@
 ;; 1. Operation Constructors
 ;; =============================================================
 
-(defn insert-op [parent-id index nodes]
+(defn insert-op
+  "Creates an operation to insert new nodes at a specific index under a parent."
+  [parent-id index nodes]
   {:type :insert :parent-id parent-id :index index :nodes nodes})
 
-(defn delete-op [parent-id index count]
+(defn delete-op
+  "Creates an operation to delete a specific number of child nodes under a parent."
+  [parent-id index count]
   {:type :delete :parent-id parent-id :index index :count count})
 
 (defn update-content-op
   "Updates block text content via Delta. 
-   Optionally accepts pre-calculated new-spans for strictly atomic formatting."
+   Optionally accepts pre-calculated new-spans for strictly atomic formatting without recalculation."
   [block-id delta & [new-spans]]
   {:type :update-content :block-id block-id :delta delta :new-spans new-spans})
 
-(defn update-attr-op [block-id attributes]
+(defn update-attr-op
+  "Updates block-level specific attributes (e.g., text alignment, indent level)."
+  [block-id attributes]
   {:type :update-attr :block-id block-id :attributes attributes})
 
 (defn update-block-data-op
-  "Merges block data: replaces :content, merges :type and other :data attributes."
+  "Merges block data comprehensively: replaces :content, merges :type, and any other custom :data attributes."
   [block-id data]
   {:type :update-block-data :block-id block-id :data data})
 
@@ -32,7 +38,7 @@
 ;; =============================================================
 
 (defn- apply-op
-  "Pure function that applies a single operation to the document state."
+  "Pure function that applies a single operation to the document state immutably."
   [state op]
   (case (:type op)
     :insert
@@ -79,6 +85,7 @@
                      (some? type) (assoc :type type)
                      (seq data-merger) (update :data merge data-merger)))))
 
+    ;; Fallback for unknown operations
     state))
 
 ;; =============================================================
@@ -107,13 +114,13 @@
 
 (defn commit-transaction!
   "Applies transaction to the global state atom. 
-   Automatically delegates to history-service for debounced snapshot tracking."
+   Automatically delegates to history-service for debounced snapshot tracking.
+   NOTE: Internal debug prints have been removed for production readiness."
   [!state transaction & {:keys [merge?] :or {merge? false}}]
-  (dart:core/print (str "[input] commit-transaction! merge?=" merge? " ops-count=" (count (:ops transaction))))
   (swap! !state
          (fn [curr]
            ;; 1. Evaluate debounce & snapshot logic via history service
            (let [curr-with-history (history/push-history curr merge?)
-                 ;; 2. Apply all structural and selection changes
+                 ;; 2. Apply all structural and selection changes sequentially
                  next-state (apply-transaction curr-with-history transaction)]
              next-state))))

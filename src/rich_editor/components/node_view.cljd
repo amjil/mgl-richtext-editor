@@ -1,4 +1,5 @@
 (ns rich-editor.components.node-view
+  "Handles the UI rendering, gesture detection, and local selection logic for individual text and atomic blocks."
   (:require ["package:flutter/material.dart" :as m]
             ["package:flutter/gestures.dart" :as g]
             ["package:flutter/foundation.dart" :as foundation]
@@ -46,15 +47,21 @@
               (fn [m] (if (contains? m id) m (assoc m id (m/GlobalKey.)))))
        id))
 
-(defn- mgl-separator? [^String s idx]
+(defn- mgl-separator? 
+  "Determines if a character is a word boundary.
+   Crucially EXCLUDES Mongolian specific modifiers like NNBSP (0x202F), MVS (0x180E), 
+   and FVS1-3 (0x180B-0x180D) so that inflected words are selected as a single unit."
+  [^String s idx]
   (let [code (.codeUnitAt s idx)]
-    (or (<= code 31)
-        (== code 0x202E)
-        (== code 0x180D)
-        (contains? #{"." "," "!" "?" "：" "；" "“" "”" "（" "）" "(" ")" "《" "》" "〈" "〉" "、"} 
+    (or (<= code 31)     ;; Control chars
+        (== code 0x0020) ;; Standard space
+        (== code 0x3000) ;; Ideographic space
+        (== code 0x202E) ;; RTL override (formatting)
+        (contains? #{"." "," "!" "?" "：" "；" "“" "”" "（" "）" "(" ")" "《" "》" "〈" "〉" "、" "\n" "\t"} 
                    (subs s idx (inc idx))))))
 
 (defn- get-word-boundaries 
+  "Calculates the [start, end] boundaries of the word under the given offset."
   [^String text offset]
   (let [len (count text)
         safe-off (max 0 (min offset len))]
@@ -70,7 +77,6 @@
                     (recur (inc i))))]
         [start end]))))
 
-;; 🌟 FIX: Updated to handle custom Atomic blocks bounding boxes during drag
 (defn- find-block-at-offset [state global-offset cfg]
   (let [root (:root state)]
     (reduce
@@ -81,6 +87,7 @@
              (let [^m/RenderBox rb (.findRenderObject ctx)
                    local-pos (.globalToLocal rb global-offset)
                    size (.-size rb)]
+               ;; Give a generous hit-test area for mobile fat-finger selection
                (if (and (>= (.-dx local-pos) -30.0)
                         (<= (.-dx local-pos) (+ (.-width size) 30.0)))
                  (let [block-type (:type (get-in state [:blocks id]))
@@ -90,7 +97,7 @@
                            content-len (count (get-in state [:blocks id :content] ""))
                            safe-off (max 0 (min (.-offset pos) content-len))]
                        (reduced {:id id :offset safe-off}))
-                     ;; Atomic Block drag logic
+                     ;; Atomic Block drag logic (split bounding box in half)
                      (let [local-y (.-dy local-pos)
                            height (.-height size)
                            safe-off (if (< local-y (/ height 2.0)) 0 1)]
@@ -102,7 +109,6 @@
      nil
      root)))
 
-;; 🌟 FIX: Support atomic block virtual lengths in selection highlighting
 (defn- compute-selection [state id cfg]
   (let [g-sel (:global-selection state)
         local-sel (get-in state [:blocks id :selection])]
@@ -114,9 +120,10 @@
             end-off (get-in n-sel [:end :offset])
             cmp-start (sel/compare-block-order state id start-id)
             cmp-end (sel/compare-block-order state id end-id)
+            ;; Atomic blocks conceptually have length 1 for selection purposes
             content-len (if (config/text-block-type? cfg (:type (get-in state [:blocks id])))
                           (count (get-in state [:blocks id :content] ""))
-                          1)] ;; Atomic blocks conceptually have length 1
+                          1)] 
         (cond
           (or (< cmp-start 0) (> cmp-end 0)) nil
           (and (= cmp-start 0) (= cmp-end 0)) (m/TextSelection. .baseOffset start-off .extentOffset end-off)
@@ -126,12 +133,15 @@
       local-sel)))
 
 (defn block-node
+  "Main rendering function for an individual block node (Text or Atomic)."
   ([id !state] (block-node id !state nil nil))
   ([id !state root-index] (block-node id !state root-index nil))
   ([id !state root-index editor-config]
    (let [cfg (or editor-config config/default-config)
          text-key (get-text-key id)]
      (f/widget
+      ;; NOTE: To further optimize rendering in massive documents, you can use a custom selector here 
+      ;; to only re-render this block if (:blocks id) or global-selection changes.
       :watch [state !state]
       (let [block (get-in state [:blocks id])
             block-type (:type block)
@@ -161,6 +171,7 @@
             indent-level (get-in block [:attributes :indent] 0)
             indent-padding (* indent-level 32.0)
 
+            ;; Post-frame callback to update IME caret position for floating keyboards
             _ (when (and is-active cursor-visible)
                 (-> m/WidgetsBinding.instance
                     (.addPostFrameCallback
@@ -311,7 +322,7 @@
               .padding (m.EdgeInsets/only .top (+ 4.0 indent-padding) .left 4.0 .right 4.0 .bottom 4.0)
               .child
               (m/Container
-               .key text-key ;; Bind text-key so we can measure the atomic block
+               .key text-key ;; Bind text-key so we can measure the atomic block bounds
                .decoration (if (and is-active has-valid-sel) 
                              (m/BoxDecoration. .border (m/Border.all .color m.Colors/blue .width 2.0))
                              nil)

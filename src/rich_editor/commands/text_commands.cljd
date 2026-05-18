@@ -1,5 +1,6 @@
 (ns rich-editor.commands.text-commands
-  "Handles text mutations, formatting, and block-level transformations for the rich text editor."
+  "Handles text mutations, formatting, and block-level transformations for the rich text editor.
+   Powered by a high-performance O(S) Interval Math Engine for rendering spans."
   (:require ["package:flutter/services.dart" :as s]
             ["package:flutter/material.dart" :as m]
             ["dart:core" :as dc]
@@ -8,7 +9,7 @@
             [rich-editor.model.selection :as sel]))
 
 ;; =============================================================
-;; Helper: Absolute Splice & Formatting Engine
+;; Helper: High-Performance Interval Math Engine (O(S) Complexity)
 ;; =============================================================
 
 (defn get-formats-at-offset
@@ -22,65 +23,96 @@
             {}
             spans)))
 
-(defn- safe-subvec [v start end]
-  (let [s (max 0 (min start (count v)))
-        e (max s (min end (count v)))]
-    (subvec v s e)))
+(defn- normalize-spans
+  "Merges adjacent spans with identical attributes and removes empty spans.
+   Prevents span fragmentation over time."
+  [spans]
+  (let [valid-spans (filter #(> (:end %) (:start %)) spans)
+        sorted-spans (sort-by :start valid-spans)]
+    (reduce (fn [acc span]
+              (if-let [last-span (last acc)]
+                ;; If adjacent and attributes are exactly the same, merge them
+                (if (and (= (:end last-span) (:start span))
+                         (= (:attrs last-span) (:attrs span)))
+                  (conj (vec (butlast acc)) (assoc last-span :end (:end span)))
+                  (conj acc span))
+                [span]))
+            []
+            sorted-spans)))
+
+(defn- sever-spans-at
+  "Splits any span that crosses the specific mathematical point."
+  [spans point]
+  (mapcat (fn [{:keys [start end attrs] :as span}]
+            (if (and (< start point) (> end point))
+              ;; Cut the span into two pieces at the point
+              [{:start start :end point :attrs attrs}
+               {:start point :end end :attrs attrs}]
+              [span]))
+          spans))
 
 (defn- splice-spans
-  "🌟 CORE ENGINE: Flattens spans into a character array, splices new formats, and regroups.
-   This guarantees ZERO overlapping spans and flawless typing-attributes overrides."
-  [content-len old-spans offset del-len ins-len active-attrs]
-  (let [safe-len (max 0 content-len)
-        ;; 1. Flatten old spans into per-character attributes
-        char-attrs (reduce (fn [acc {:keys [start end attrs]}]
-                             (reduce (fn [a i] (if (and (>= i 0) (< i safe-len)) (update a i merge attrs) a))
-                                     acc (range start end)))
-                           (vec (repeat safe-len {}))
-                           old-spans)
-        ;; 2. Delete characters range
-        after-del (vec (concat (safe-subvec char-attrs 0 offset)
-                               (safe-subvec char-attrs (+ offset del-len) (count char-attrs))))
-        ;; 3. Insert new characters with active attributes (punches a hole in surrounding formats)
-        after-ins (vec (concat (safe-subvec after-del 0 offset)
-                               (vec (repeat ins-len (or active-attrs {})))
-                               (safe-subvec after-del offset (count after-del))))]
-    ;; 4. Regroup continuous identical attributes into absolute spans
-    (->> (map-indexed vector after-ins)
-         (partition-by second)
-         (map (fn [group]
-                (let [gs (first (first group))
-                      ge (inc (first (last group)))
-                      at (second (first group))]
-                  (when (seq at) {:start gs :end ge :attrs at}))))
-         (remove nil?)
-         vec)))
+  "Pure mathematical interval splicing. 
+   Deletes spans within [offset, offset + del-len], shifts subsequent spans, 
+   and inserts the newly typed active-attrs span. 
+   Complexity: O(S) where S is the number of format spans, NOT character count."
+  [old-spans offset del-len ins-len active-attrs]
+  (let [del-end (+ offset del-len)
+        ;; 1. Sever spans exactly at the boundaries of the mutation
+        s1 (sever-spans-at old-spans offset)
+        s2 (sever-spans-at s1 del-end)
+        
+        ;; 2. Filter deleted segments and shift surviving downstream segments
+        shift-amount (- ins-len del-len)
+        shifted-spans (mapcat (fn [{:keys [start end attrs] :as span}]
+                                (cond
+                                  ;; Entirely before the mutation area -> keep untouched
+                                  (<= end offset) [span]
+                                  
+                                  ;; Inside the deletion range -> drop completely
+                                  (and (>= start offset) (<= end del-end)) []
+                                  
+                                  ;; Entirely after the mutation -> shift coordinates
+                                  (>= start del-end)
+                                  [(-> span
+                                       (update :start #(+ % shift-amount))
+                                       (update :end #(+ % shift-amount)))]
+                                       
+                                  ;; Should not reach here due to sever-spans-at guarantees
+                                  :else [span]))
+                              s2)
+        
+        ;; 3. Inject the newly typed format span if insertion occurred
+        final-spans (if (> ins-len 0)
+                      (conj (vec shifted-spans) {:start offset :end (+ offset ins-len) :attrs (or active-attrs {})})
+                      shifted-spans)]
+    
+    ;; 4. Clean up fragmentation
+    (normalize-spans final-spans)))
 
 (defn- apply-format-to-spans
-  "Applies or removes a specific format in the [start, end) range seamlessly."
-  [content old-spans start end format-key format-val]
-  (let [len (count content)
-        char-attrs (reduce (fn [acc {:keys [start end attrs]}]
-                             (reduce (fn [a i] (if (and (>= i 0) (< i len)) (update a i merge attrs) a))
-                                     acc (range start end)))
-                           (vec (repeat len {})) old-spans)
-        updated-attrs (map-indexed (fn [idx attrs]
-                                     (if (and (>= idx start) (< idx end))
-                                       (if (nil? format-val) (dissoc attrs format-key) (assoc attrs format-key format-val))
-                                       attrs))
-                                   char-attrs)]
-    (if (empty? content) []
-        (->> (map-indexed vector updated-attrs)
-             (partition-by second)
-             (map (fn [group]
-                    (let [gs (first (first group))
-                          ge (inc (first (last group)))
-                          at (second (first group))]
-                      (when (seq at) {:start gs :end ge :attrs at}))))
-             (remove nil?) vec))))
+  "Applies or removes a specific format in the [start, end) range seamlessly using interval math."
+  [old-spans format-start format-end format-key format-val]
+  (if (>= format-start format-end)
+    old-spans
+    (let [;; 1. Isolate the target range by severing spans at boundaries
+          s1 (sever-spans-at old-spans format-start)
+          s2 (sever-spans-at s1 format-end)
+          
+          ;; 2. Map over the isolated spans and mutate attributes if they fall inside the range
+          mutated-spans (map (fn [{:keys [start end attrs] :as span}]
+                               (if (and (>= start format-start) (<= end format-end))
+                                 (if (nil? format-val)
+                                   (update span :attrs dissoc format-key)
+                                   (assoc-in span [:attrs format-key] format-val))
+                                 span))
+                             s2)]
+      
+      ;; 3. Clean up fragmentation
+      (normalize-spans mutated-spans))))
 
 ;; =============================================================
-;; Basic Text Mutations (Insert, Delete, Replace) - 🛡️ IME Safe
+;; Basic Text Mutations (Insert, Delete, Replace) - IME Safe
 ;; =============================================================
 
 (defn insert-string
@@ -90,7 +122,7 @@
         block (get-in state-val [:blocks block-id])
         content-len (count (:content block ""))
         
-        ;; 🌟 SHIELD: Clamp offset to prevent IME out-of-bounds crashes
+        ;; SHIELD: Clamp offset to prevent IME out-of-bounds crashes
         safe-offset (max 0 (min offset content-len))
         
         spans (:content-spans block [])
@@ -106,13 +138,13 @@
       
     (swap! !state update-in [:blocks block-id]
            (fn [b]
-             (assoc b :content-spans (splice-spans content-len (:content-spans b []) safe-offset 0 text-len active-attrs))))))
+             (assoc b :content-spans (splice-spans (:content-spans b []) safe-offset 0 text-len active-attrs))))))
 
 (defn delete-range
   "Delete range and collapse spans. Protected against IME desync."
   [!state block-id offset length]
   (let [content-len (count (get-in @!state [:blocks block-id :content] ""))
-        ;; 🌟 SHIELD: Ensure we don't start or end out of bounds
+        ;; SHIELD: Ensure we don't start or end out of bounds
         safe-offset (max 0 (min offset content-len))
         safe-len (max 0 (min length (- content-len safe-offset)))]
     (when (> safe-len 0)
@@ -122,7 +154,7 @@
           :merge? true)
         (swap! !state update-in [:blocks block-id]
                (fn [b]
-                 (assoc b :content-spans (splice-spans content-len (:content-spans b []) safe-offset safe-len 0 nil))))))))
+                 (assoc b :content-spans (splice-spans (:content-spans b []) safe-offset safe-len 0 nil))))))))
 
 (defn replace-text
   "Replace text (IME) and precisely splice active formats. Protected against IME desync."
@@ -132,7 +164,7 @@
         content-len (count (:content block ""))
         old-len (count old-text)
         
-        ;; 🌟 SHIELD: Clamp offsets
+        ;; SHIELD: Clamp offsets
         safe-offset (max 0 (min offset content-len))
         safe-old-len (max 0 (min old-len (- content-len safe-offset)))
         
@@ -148,7 +180,8 @@
       
     (swap! !state update-in [:blocks block-id]
            (fn [b]
-             (assoc b :content-spans (splice-spans content-len (:content-spans b []) safe-offset safe-old-len new-len active-attrs))))))
+             (assoc b :content-spans (splice-spans (:content-spans b []) safe-offset safe-old-len new-len active-attrs))))))
+
 ;; =============================================================
 ;; Formatting Commands
 ;; =============================================================
@@ -161,9 +194,8 @@
     (tx/commit-transaction! !state
                             (tx/make-transaction :ops ops :after-selection (m/TextSelection. .baseOffset start .extentOffset end)))
     (swap! !state (fn [s]
-                    (let [content (get-in s [:blocks block-id :content] "")
-                          old (get-in s [:blocks block-id :content-spans] [])
-                          new-s (apply-format-to-spans content old start end attr-key attr-val)]
+                    (let [old (get-in s [:blocks block-id :content-spans] [])
+                          new-s (apply-format-to-spans old start end attr-key attr-val)]
                       (assoc-in s [:blocks block-id :content-spans] new-s))))))
 
 (defn apply-style-cross-block!
@@ -186,7 +218,7 @@
                                           old (get-in acc [:blocks id :content-spans] [])
                                           bs (if (= id sid) soff 0)
                                           be (if (= id eid) eoff (count content))]
-                                      (assoc-in acc [:blocks id :content-spans] (apply-format-to-spans content old bs be attr-key attr-val))))
+                                      (assoc-in acc [:blocks id :content-spans] (apply-format-to-spans old bs be attr-key attr-val))))
                                   st (subvec root sidx (inc eidx)))))))))
 
 (defn toggle-style!
@@ -224,7 +256,10 @@
 ;; Block Splitting Engine
 ;; =============================================================
 
-(defn- split-spans-at [spans offset]
+(defn- divide-spans-for-block 
+  "Splits existing spans at the block break coordinate. 
+   Returns a tuple [before-spans after-spans]."
+  [spans offset]
   (reduce (fn [[before after] span]
             (let [{:keys [start end attrs]} span]
               (cond (<= end offset) [(conj before span) after]
@@ -233,7 +268,9 @@
                            (conj after {:start 0 :end (- end offset) :attrs attrs})])))
           [[] []] (or spans [])))
 
-(defn split-block! [!state active-id offset]
+(defn split-block! 
+  "Splits a block at the given offset. Generates a safe UUID for the new block."
+  [!state active-id offset]
   (swap! !state (fn [state]
                   (let [block (get-in state [:blocks active-id])
                         content (:content block "")
@@ -242,8 +279,9 @@
                         is-empty? (and (contains? #{:list-item :blockquote} b-type) (empty? content))]
                     (if is-empty? (assoc-in state [:blocks active-id :type] :paragraph)
                         (let [soff (max 0 (min offset (count content)))
-                              [sb sa] (split-spans-at spans soff)
-                              nid (str "b-" (.-millisecondsSinceEpoch (dc/DateTime.now)))
+                              [sb sa] (divide-spans-for-block spans soff)
+                              ;; Fix: Utilized random-uuid to prevent rapid-split collisions
+                              nid (str "b-" (random-uuid))
                               nb {:id nid :type (if (contains? #{:list-item :blockquote} b-type) b-type :paragraph)
                                   :content (subs content soff) :content-spans sa :children []}
                               root (:root state)
