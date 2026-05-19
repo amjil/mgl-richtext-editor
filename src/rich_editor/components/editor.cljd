@@ -273,7 +273,8 @@
 ;; =============================================================================
 (defn mongol-editor
   "Highly encapsulated Mongolian rich text editor."
-  [!state editor-config & {:keys [leading-widget]}]
+  ;; 🌟 ADDED `toolbar` named argument here
+  [!state editor-config & {:keys [leading-widget toolbar]}]
   (let [cfg (config/merge-config defaults/full-default-config editor-config)]
     (f/widget
      :managed [editor-focus-node (m/FocusNode)]
@@ -346,6 +347,11 @@
                  (keyboard/candidates nil)
                  (m/SizedBox.shrink))]))
 
+            ;; 🌟 PLACED TOOLBAR HERE: Rendered exactly between the content and the virtual keyboard
+            (if toolbar
+              toolbar
+              (m/SizedBox.shrink))
+
             (if (or (:active-block-id state) (:external-keyboard-delegate state))
               (keyboard/keyboard
                {:custom-fns
@@ -373,7 +379,17 @@
                          (handle-backspace-action !state cfg)))))}})
               (m/SizedBox.shrink))]))
 
+         ;; Desktop layout
          (overlay/ime-global-wrapper
-          (m/CallbackShortcuts
-           .bindings (config/shortcut-bindings cfg !state)
-           .child combined-input-area) "main-page-ime-wrapper"))))))
+          (m/Column
+           .children
+           [(m/Expanded
+             .child
+             (m/CallbackShortcuts
+              .bindings (config/shortcut-bindings cfg !state)
+              .child combined-input-area))
+            ;; 🌟 PLACED TOOLBAR HERE: Rendered at the bottom for Desktop mode
+            (if toolbar
+              toolbar
+              (m/SizedBox.shrink))])
+          "main-page-ime-wrapper"))))))

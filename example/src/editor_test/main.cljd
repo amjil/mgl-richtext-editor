@@ -64,9 +64,10 @@
                    :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
                    :on-submitted (fn [text]
                                    (dart:core/print (str "Title input completed: " text)))
-
-                   :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)}))))
-       (toolbar/mongol-toolbar !editor-state)])))))
+                   :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)}))
+                
+                ;; 🌟 FIX: Pass the toolbar directly into the editor component
+                :toolbar (toolbar/mongol-toolbar !editor-state)))])))))
 
 ;; =============================================================
 ;; 3. App Entry and Initialization
