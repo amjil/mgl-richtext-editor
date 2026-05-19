@@ -1,5 +1,7 @@
 (ns rich-editor.rendering.text-renderer
+  "Handles the conversion of raw text and attribute spans into Flutter TextSpan trees."
   (:require ["package:flutter/material.dart" :as m]
+            [clojure.string :as str]
             [rich-editor.config :as config]))
 
 (defn- hex-string->color [hex-str]
@@ -63,8 +65,12 @@
     (m/TextSpan. .text "" .style base-style)
     (let [segments (text+spans->segments content spans)
           children (mapv (fn [{:keys [text attrs]}]
-                           (m/TextSpan.
-                            .text text
-                            .style (apply-inline-formats base-style attrs)))
+                           (let [display-text (-> text
+                                                  (str/replace "\u202F" " ")  ;; Replace NNBSP with a regular space
+                                                  ;; (str/replace "\u180E" " ") ;; Uncomment if MVS also causes font issues
+                                                  )]
+                             (m/TextSpan.
+                              .text display-text
+                              .style (apply-inline-formats base-style attrs))))
                          segments)]
       (m/TextSpan. .style base-style .children children))))
