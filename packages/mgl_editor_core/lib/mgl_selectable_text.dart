@@ -352,7 +352,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
       behavior: HitTestBehavior.translucent,
       onPointerDown: _handlePointerDown,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10.0),
+        padding: const EdgeInsets.symmetric(horizontal: 0.0),
         child: CompositedTransformTarget(
           link: _layerLink,
           child: RepaintBoundary(child: content),
