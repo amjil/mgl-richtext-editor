@@ -55,7 +55,6 @@
    (m/Container
     .height 48.0
     .decoration (m/BoxDecoration.
-                 .color m.Colors/white
                  .border (m/Border. .top (m/BorderSide. .color m/Colors.grey.shade300)))
     .child
     (m/Row

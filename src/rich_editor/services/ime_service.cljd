@@ -194,7 +194,8 @@
     (^void showToolbar [this] nil)
     (^void insertTextPlaceholder [this ^m/Size size] nil)
     (^void removeTextPlaceholder [this] nil)
-    (^void performPrivateCommand [this ^String action ^Map data] nil)))
+    (^void performPrivateCommand [this ^String action ^Map data] nil)
+    (^void showAutocorrectionPromptRect [_ start end] nil)))
 
 ;; --- 2. Connection ---
 

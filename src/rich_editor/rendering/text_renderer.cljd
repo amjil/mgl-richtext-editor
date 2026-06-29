@@ -1,18 +1,24 @@
 (ns rich-editor.rendering.text-renderer
-  "Handles the conversion of raw text and attribute spans into Flutter TextSpan trees."
+  "Handles the conversion of raw text and attribute spans into Flutter TextSpan trees.
+   Supports inline formatting and interactive deterministic entities (Tags/Mentions)."
   (:require ["package:flutter/material.dart" :as m]
-            [clojure.string :as str]
-            [rich-editor.config :as config]))
+            ["package:flutter/gestures.dart" :as g]
+            [clojure.string :as str]))
+
+;; =============================================================================
+;; 1. Formatting & Styling Helpers
+;; =============================================================================
 
 (defn- hex-string->color [hex-str]
   (try
     (let [clean-hex (if (.startsWith hex-str "#") (subs hex-str 1) hex-str)
           full-hex (if (= 6 (count clean-hex)) (str "FF" clean-hex) clean-hex)]
-      ;; Use Dart's native int.parse with base 16 instead of JVM's Long/parseLong
       (m/Color (dart:core/int.parse full-hex .radix 16)))
     (catch Exception _ nil)))
 
 (defn apply-inline-formats
+  "Applies formatting attributes to the base text style.
+   Automatically colors and bolds text identified as a `:tag`."
   [^m/TextStyle base-style attributes]
   (if (empty? attributes)
     base-style
@@ -20,25 +26,35 @@
           is-italic (:italic attributes)
           is-underline (:underline attributes)
           is-strikethrough (:strikethrough attributes)
+          is-tag (:tag attributes)
           color-hex (:color attributes)
+
+          ;; Determine the final color (Tag default is blue, but can be overridden)
+          final-color (cond
+                        color-hex (hex-string->color color-hex)
+                        is-tag m/Colors.blue 
+                        :else (.-color base-style))
 
           decorations (cond-> []
                         is-underline (conj m.TextDecoration/underline)
                         is-strikethrough (conj m.TextDecoration/lineThrough))
           final-decoration (if (seq decorations)
                              (m.TextDecoration/combine decorations)
-                             m.TextDecoration/none)
-
-          text-color (when color-hex (hex-string->color color-hex))]
+                             m.TextDecoration/none)]
 
       (.copyWith base-style
-                 .fontWeight (if is-bold m.FontWeight/bold (.-fontWeight base-style))
+                 .fontWeight (if (or is-bold is-tag) m.FontWeight/bold (.-fontWeight base-style))
                  .fontStyle (if is-italic m.FontStyle/italic (.-fontStyle base-style))
                  .decoration final-decoration
-                 .color (or text-color (.-color base-style))))))
+                 .color final-color))))
+
+;; =============================================================================
+;; 2. Core Segmenting Engine
+;; =============================================================================
 
 (defn- text+spans->segments
-  "Converts absolute ranges into continuous, non-overlapping segments."
+  "Converts absolute ranges into continuous, non-overlapping segments.
+   If a character is covered by multiple spans, their attributes are merged."
   [text spans]
   (let [len (count text)
         char-attrs (reduce (fn [acc {:keys [start end attrs]}]
@@ -58,19 +74,34 @@
                   {:text (apply str (map first group))
                    :attrs (second (first group))}))))))
 
+;; =============================================================================
+;; 3. Main Builder function
+;; =============================================================================
+
 (defn build-rich-text-span
-  "Builds a Flutter TextSpan tree from content and span data."
+  "Builds a Flutter TextSpan tree from content and span data.
+   Extracts :on-tag-tap from cfg to handle entity clicks dynamically."
   [content spans base-style cfg]
   (if (empty? content)
     (m/TextSpan. .text "" .style base-style)
-    (let [segments (text+spans->segments content spans)
+    (let [on-tag-tap (:on-tag-tap cfg)
+          
+          segments (text+spans->segments content spans)
           children (mapv (fn [{:keys [text attrs]}]
-                           (let [display-text (-> text
-                                                  (str/replace "\u202F" " ")  ;; Replace NNBSP with a regular space
-                                                  ;; (str/replace "\u180E" " ") ;; Uncomment if MVS also causes font issues
-                                                  )]
+                           (let [;; Handle Mongolian specific invisible formatting characters
+                                 display-text (str/replace text "\u202F" " ") 
+                                 
+                                 is-tag (:tag attrs)
+                                 entity-id (:entity-id attrs)
+                                 
+                                 recognizer (when (and is-tag entity-id on-tag-tap)
+                                              (let [recog (g/TapGestureRecognizer.)]
+                                                (set! (.-onTap recog) 
+                                                      (fn [] (on-tag-tap entity-id)))
+                                                recog))]
                              (m/TextSpan.
                               .text display-text
+                              .recognizer recognizer
                               .style (apply-inline-formats base-style attrs))))
                          segments)]
       (m/TextSpan. .style base-style .children children))))

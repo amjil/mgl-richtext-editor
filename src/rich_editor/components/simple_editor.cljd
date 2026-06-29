@@ -1,0 +1,221 @@
+(ns rich-editor.components.simple-editor
+  "A lightweight, single-block editor component optimized for social media style composition.
+   Supports custom IME integration, toolbar slots, and span-based deterministic entity tracking.
+   (Completely decoupled from application layer)"
+  (:require ["package:flutter/material.dart" :as m]
+            ["package:flutter/foundation.dart" :as foundation]
+            [cljd.flutter :as f]
+            [clojure.string :as str]
+            
+            ;; Editor core components
+            [rich-editor.components.node-view :as node-view]
+            [rich-editor.config :as config]
+            [rich-editor.defaults :as defaults]
+            [rich-editor.services.ime-service :as ime] ;; 🌟 修复焦点必需的包
+            
+            ;; Custom Virtual Keyboard & IME
+            [virtual-keyboard.keyboard :as keyboard]
+            [virtual-keyboard.options :as options]
+            [virtual-keyboard.keyboard-action :as vk-action]
+            [virtual-keyboard.keyboard-state :as vk-state]
+            [shared-ime.overlay-view :as overlay]))
+
+;; =============================================================================
+;; Platform Utils (Internal)
+;; =============================================================================
+(defn- use-virtual-keyboard? 
+  "Determines if the custom virtual keyboard should be used (Mobile platforms)."
+  []
+  (let [p foundation/defaultTargetPlatform]
+    (not (or (= p foundation.TargetPlatform/macOS)
+             (= p foundation.TargetPlatform/windows)
+             (= p foundation.TargetPlatform/linux)))))
+
+;; =============================================================================
+;; State & Helpers
+;; =============================================================================
+
+;; The fixed ID for single-block mode
+(def ^:private POST_ID "main-post-id")
+
+(defn init-simple-state []
+  (atom {:root [POST_ID]
+         :active-block-id POST_ID
+         :cursor-visible true
+         :external-keyboard-delegate nil
+         :blocks {POST_ID {:id POST_ID 
+                           :type :paragraph 
+                           :content "" 
+                           :content-spans [] 
+                           :attributes {}}}
+         :global-selection nil}))
+
+(defn- request-focus! 
+  "🌟 修复1：强制获取焦点，并显式注册到底层 IME 服务"
+  [!state]
+  (let [content-len (count (get-in @!state [:blocks POST_ID :content] ""))]
+    (swap! !state (fn [s]
+                    (-> s
+                        (assoc :active-block-id POST_ID :cursor-visible true)
+                        (update-in [:blocks POST_ID :selection] 
+                                   #(or % (m/TextSelection.collapsed .offset content-len))))))
+    (ime/attach! !state POST_ID)))
+
+(defn- insert-text-at-cursor! [!state text-to-insert]
+  (swap! !state (fn [s]
+                  (let [id (first (:root s))
+                        block (get-in s [:blocks id])
+                        sel (:selection block)
+                        offset (if sel (.-extentOffset sel) (count (:content block "")))
+                        content (:content block "")
+                        new-content (str (subs content 0 offset) text-to-insert (subs content offset))
+                        new-offset (+ offset (count text-to-insert))]
+                    (-> s
+                        (assoc-in [:blocks id :content] new-content)
+                        (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset new-offset)))))))
+
+(defn- delete-backward-at-cursor! [!state]
+  (swap! !state (fn [s]
+                  (let [id (first (:root s))
+                        block (get-in s [:blocks id])
+                        sel (:selection block)
+                        start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))
+                        end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))
+                        content (:content block "")]
+                    (if (not= start end)
+                      (let [new-content (str (subs content 0 start) (subs content end))]
+                        (-> s
+                            (assoc-in [:blocks id :content] new-content)
+                            (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset start))))
+                      (if (> start 0)
+                        (let [new-content (str (subs content 0 (dec start)) (subs content start))]
+                          (-> s
+                              (assoc-in [:blocks id :content] new-content)
+                              (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset (dec start)))))
+                        s))))))
+
+(defn insert-entity-at-cursor!
+  "Public API: Inserts display text (e.g. '@Alice') and binds its entity ID."
+  [!state display-text entity-id]
+  (swap! !state (fn [s]
+                  (let [id (first (:root s))
+                        block (get-in s [:blocks id])
+                        sel (:selection block)
+                        offset (if sel (.-extentOffset sel) (count (:content block "")))
+                        content (:content block "")
+                        
+                        text-to-insert (str display-text " ")
+                        new-content (str (subs content 0 offset) text-to-insert (subs content offset))
+                        
+                        start-idx offset
+                        end-idx (+ offset (count display-text))
+                        new-span {:start start-idx 
+                                  :end end-idx 
+                                  :attrs {:tag true :entity-id entity-id}}]
+                    
+                    (-> s
+                        (assoc-in [:blocks id :content] new-content)
+                        (update-in [:blocks id :content-spans] (fnil conj []) new-span)
+                        (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset (+ end-idx 1))))))))
+
+;; =============================================================================
+;; Main Editor Widget
+;; =============================================================================
+
+(defn simple-editor
+  "The main single-block editor widget, integrating IME, Node View, and Toolbar slot."
+  [!state & {:keys [editor-config toolbar leading trailing]}]
+  (let [cfg (config/merge-config defaults/full-default-config editor-config)]
+    (f/widget
+     :watch [state !state]
+     
+     :let [main-content
+           (m/Container
+            .padding (m/EdgeInsets.all 12.0)
+            .color m.Colors/transparent
+            .width double/infinity
+            .alignment m.Alignment/topLeft
+            .child
+            (m/ConstrainedBox
+             .constraints (m/BoxConstraints .minHeight 100.0)
+             .child
+             (node-view/block-node POST_ID !state 0 cfg)))
+           
+           content-row
+           (m/Row
+            .crossAxisAlignment m.CrossAxisAlignment/start
+            .children
+            [(if leading leading (m/SizedBox.shrink))
+             (m/Expanded .child main-content)
+             (if trailing trailing (m/SizedBox.shrink))])
+           
+           info (merge options/keyboard-option 
+                       {:keyboard/mongol-font-family "OyunQaganTig" 
+                        :keyboard/key-container-color m/Colors.grey.shade500 
+                        :keyboard/font-size 16})]
+     
+     :bind {:info info}
+     
+     (if (use-virtual-keyboard?)
+       ;; ==========================================
+       ;; MOBILE LAYOUT: Virtual Keyboard enabled
+       ;; ==========================================
+       (m/Column
+        .children
+        [(m/Expanded
+          .child
+          ;; 🌟 铺设全局半透明点击侦测区，解决焦点穿透问题
+          (m/GestureDetector
+           .behavior m.HitTestBehavior/translucent
+           .onTap #(request-focus! !state)
+           .child
+           (m/Stack
+            .children
+            [content-row 
+             (if (or (:active-block-id state) (:external-keyboard-delegate state))
+               ;; 🌟 修复2：传入 nil 而不是 map，解决 PersistentHashMap 类型转换报错
+               (keyboard/candidates nil)
+               (m/SizedBox.shrink))])))
+         
+         (if toolbar toolbar (m/SizedBox.shrink))
+         
+         (if (or (:active-block-id state) (:external-keyboard-delegate state))
+           (m/SafeArea
+            .top false
+            .child
+            (keyboard/keyboard 
+             {:widget-key (m/ValueKey. "se-kb")
+              :custom-fns
+              {:on-return
+               (fn []
+                 (if-let [cb (:on-return (:external-keyboard-delegate @!state))]
+                   (cb)
+                   (insert-text-at-cursor! !state "\n"))
+                 nil)
+               
+               :on-backspace
+               (fn []
+                 (let [cands (:keyboard/candidates-list @vk-state/state)]
+                   (if (seq cands)
+                     (vk-action/clear-candidates)
+                     (if-let [cb (:on-backspace (:external-keyboard-delegate @!state))]
+                       (cb)
+                       (delete-backward-at-cursor! !state))))
+                 nil)}}))
+           (m/SizedBox.shrink))])
+       
+       ;; ==========================================
+       ;; DESKTOP/WEB LAYOUT: Global IME interceptor
+       ;; ==========================================
+       (overlay/ime-global-wrapper 
+        (m/Column
+         .children
+         [(m/Expanded
+           .child
+           ;; 🌟 PC 端同样增加全局焦点侦测
+           (m/GestureDetector
+            .behavior m.HitTestBehavior/translucent
+            .onTap #(request-focus! !state)
+            .child content-row))
+          (if toolbar toolbar (m/SizedBox.shrink))])
+        "se-ime")))))

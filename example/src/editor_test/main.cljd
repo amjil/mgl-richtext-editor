@@ -3,12 +3,15 @@
    ["package:flutter/material.dart" :as m]
    ["package:flutter/foundation.dart" :as foundation :refer [kIsWeb]]
    [cljd.flutter :as f]
+   
+   ;; 核心组件引入
    [rich-editor.components.editor :as editor]
+   [rich-editor.components.simple-editor :as simple-editor]
    [rich-editor.components.text-field :as custom-tf]
    [rich-editor.components.toolbar :as toolbar]
    [rich-editor.defaults :as defaults]
 
-   ;; Cross-platform IME Engine Dictionary Libraries
+   ;; 跨平台蒙古文输入法引擎底层库
    [virtual-keyboard.input-control :as input-control]
    [ime-core.remote-api :as remote]
    [ime-core.fst-engine :as fst]
@@ -19,10 +22,11 @@
     (or (= platform foundation.TargetPlatform/android)
         (= platform foundation.TargetPlatform/iOS))))
 
-;; =============================================================
-;; 1. Declare shared global state
-;; =============================================================
-(defonce !editor-state
+;; =============================================================================
+;; 1. 独立声明两种模式下的全局原子状态
+;; =============================================================================
+
+(defonce !multi-block-state
   (atom {:root ["b-init"]
          :blocks {"b-init" {:id "b-init" :type :paragraph :content ""}}
          :active-block-id nil
@@ -30,48 +34,176 @@
          :external-keyboard-delegate nil
          :history {:undo-stack [] :redo-stack [] :max-depth 100}}))
 
-;; =============================================================
-;; 2. Main Page View
-;; =============================================================
-(defn main-page []
+(defonce !single-block-state (simple-editor/init-simple-state))
+
+;; =============================================================================
+;; 2. 沙箱专属 Mock 标签选择器
+;; =============================================================================
+(defn- show-sandbox-tag-modal! [ctx !state on-insert-fn]
+  (m/showModalBottomSheet
+   .context ctx
+   .backgroundColor m.Colors/transparent
+   .builder (fn [sheet-ctx]
+              (m/Container
+               .decoration (m/BoxDecoration 
+                            .color (m/Color 0xFF212121)
+                            .borderRadius (m/BorderRadius.vertical .top (m/Radius.circular 16.0)))
+               .height 180.0
+               .child
+               (m/Column
+                .children
+                [(m/ListTile
+                  .leading (m/Icon m.Icons/person .color m.Colors/blue)
+                  .title (m/Text "@Oyun" .style (m/TextStyle .color m.Colors/white))
+                  .onTap (fn []
+                           (on-insert-fn "@Oyun" "user_test_888")
+                           (m/Navigator.pop sheet-ctx)))
+                 (m/ListTile
+                  .leading (m/Icon m.Icons/tag .color m.Colors/blue)
+                  .title (m/Text "#ClojureDart" .style (m/TextStyle .color m.Colors/white))
+                  .onTap (fn []
+                           (on-insert-fn "#ClojureDart" "topic_test_999")
+                           (m/Navigator.pop sheet-ctx)))])))))
+
+;; =============================================================================
+;; 3. 页面一：长文/多块编辑器页面
+;; =============================================================================
+(defn multi-block-page []
   (f/widget
    :managed [title-focus-node (m/FocusNode)
              title-controller (m/TextEditingController)]
-
    (m/Scaffold
-    .appBar (m/AppBar
-             .title (m/Text "ᠮᠣᠩᠭᠣᠯ ᠵᠠᠰᠠᠪᠤᠷᠢᠯᠠᠭᠴᠢ"
-                            .style (m/TextStyle .fontFamily "OyunQaganTig"))
-             .elevation 0.0)
+    .appBar 
+    (m/AppBar
+     .title (m/Text "长文模式" .style (m/TextStyle .fontFamily "OyunQaganTig"))
+     .elevation 0.0
+     .actions [(m/IconButton
+                .icon (m/Icon m.Icons/bug_report)
+                .onPressed #(dart:core/print (str "📚 Content: " @!multi-block-state)))])
     .body
     (m/SafeArea
      .child
      (m/Column
       .children
       [(m/Expanded
-        .child (editor/mongol-editor
-                !editor-state
-                defaults/full-default-config
+        .child 
+        (editor/mongol-editor
+         !multi-block-state
+         defaults/full-default-config
+         :leading-widget
+         (m/Padding
+          .padding (m/EdgeInsets.only .left 20.0 .right 0.0 .top 20.0)
+          .child
+          (custom-tf/text-field
+           !multi-block-state
+           {:controller title-controller
+            :focus-node title-focus-node
+            :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
+            :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)}))
+         :toolbar (toolbar/mongol-toolbar !multi-block-state)))])))))
 
-                :leading-widget
-                (m/Padding
-                 .padding (m/EdgeInsets.only .left 20.0 .right 0.0 .top 20.0)
-                 .child
-                 (custom-tf/text-field
-                  !editor-state
-                  {:controller title-controller
-                   :focus-node title-focus-node
-                   :hint "ᠭᠠᠷᠴᠠᠭ ᠣᠷᠣᠭᠤᠯᠬᠤ..."
-                   :on-submitted (fn [text]
-                                   (dart:core/print (str "Title input completed: " text)))
-                   :style (m/TextStyle .fontSize 24.0 .fontWeight m.FontWeight/bold)}))
-                
-                ;; 🌟 FIX: Pass the toolbar directly into the editor component
-                :toolbar (toolbar/mongol-toolbar !editor-state)))])))))
+;; =============================================================================
+;; 4. 页面二：推文/单块发帖页面 (🌟 重点测试左右插槽)
+;; =============================================================================
+(defn single-block-page []
+  (f/widget
+   :context ctx
+   (m/Scaffold
+    .appBar 
+    (m/AppBar
+     .title (m/Text "推文模式" .style (m/TextStyle .fontFamily "OyunQaganTig"))
+     .elevation 0.0
+     .actions [(m/IconButton
+                .icon (m/Icon m.Icons/bug_report)
+                .onPressed (fn []
+                             (let [block (get-in @!single-block-state [:blocks "main-post-id"])]
+                               (dart:core/print (str "📝 Text: " (:content block)))
+                               (dart:core/print (str "📍 Spans: " (:content-spans block))))))])
+    .body
+    (m/SafeArea
+     .child
+     (simple-editor/simple-editor
+      !single-block-state
+      :editor-config {:on-tag-tap #(dart:core/print (str "🚀 Click Link ID: " %))}
+      
+      ;; 🌟 左侧插槽：纵向工具栏
+      :leading 
+      (m/Container
+       .padding (m/EdgeInsets.only .top 12.0 .left 8.0 .right 4.0)
+       .child
+       (m/Column
+        .children
+        [(m/IconButton
+          .icon (m/Icon m.Icons/alternate_email .color m.Colors/blue)
+          .tooltip "Tag User"
+          .onPressed #(show-sandbox-tag-modal! ctx !single-block-state 
+                       (fn [display id] (simple-editor/insert-entity-at-cursor! !single-block-state display id))))
+         (m/IconButton
+          .icon (m/Icon m.Icons/tag .color m.Colors/blue)
+          .tooltip "Add Topic"
+          .onPressed #(show-sandbox-tag-modal! ctx !single-block-state 
+                       (fn [display id] (simple-editor/insert-entity-at-cursor! !single-block-state display id))))
+         (m/IconButton
+          .icon (m/Icon m.Icons/image_outlined .color m.Colors/blue)
+          .tooltip "Add Image"
+          .onPressed #())]))
 
-;; =============================================================
-;; 3. App Entry and Initialization
-;; =============================================================
+      ;; 🌟 右侧插槽：引用推文预览框
+      :trailing
+      (m/Container
+       .width 140.0
+       .margin (m/EdgeInsets.only .top 12.0 .right 16.0 .bottom 12.0)
+       .padding (m/EdgeInsets.all 12.0)
+       .decoration (m/BoxDecoration 
+                    .color (m/Color 0xFF2A2A2A)
+                    .border (m/Border.all .color m/Colors.grey.shade800)
+                    .borderRadius (m/BorderRadius.circular 12.0))
+       .child
+       (m/Column
+        .crossAxisAlignment m.CrossAxisAlignment/start
+        .children
+        [(m/Text "@Batjargal" .style (m/TextStyle .fontWeight m.FontWeight/bold .color m.Colors/blue))
+         (m/SizedBox .height 8.0)
+         (m/Text "This is a quote preview. 这是一个引用推文的预览区域，位于输入框的右侧。" 
+                 .style (m/TextStyle .color m.Colors/white70 .fontSize 12.0)
+                 .maxLines 8 
+                 .overflow m.TextOverflow/ellipsis)])))))))
+
+;; =============================================================================
+;; 5. 导航主页 (Home Page)
+;; =============================================================================
+(defn home-page []
+  (f/widget
+   :context ctx
+   (m/Scaffold
+    .appBar (m/AppBar 
+             .title (m/Text "Mongol Editor Sandbox" .style (m/TextStyle .fontFamily "OyunQaganTig"))
+             .elevation 0.0)
+    .body
+    (m/Center
+     .child
+     (m/Column
+      .mainAxisAlignment m.MainAxisAlignment/center
+      .children
+      [(m/ElevatedButton
+        .style (m/ElevatedButton.styleFrom 
+                .padding (m/EdgeInsets.symmetric .horizontal 32.0 .vertical 16.0))
+        .onPressed (fn [] (m/Navigator.push ctx (m/MaterialPageRoute .builder (fn [_] (multi-block-page)))) nil)
+        .child (m/Text "进入长文多块编辑器" .style (m/TextStyle .fontSize 18.0)))
+       
+       (m/SizedBox .height 24.0)
+       
+       (m/ElevatedButton
+        .style (m/ElevatedButton.styleFrom 
+                .backgroundColor m.Colors/teal
+                .foregroundColor m.Colors/white
+                .padding (m/EdgeInsets.symmetric .horizontal 32.0 .vertical 16.0))
+        .onPressed (fn [] (m/Navigator.push ctx (m/MaterialPageRoute .builder (fn [_] (single-block-page)))) nil)
+        .child (m/Text "进入单块推文编辑器" .style (m/TextStyle .fontSize 18.0)))])))))
+
+;; =============================================================================
+;; 6. 引擎级初始化与程序入口
+;; =============================================================================
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)
   
@@ -88,10 +220,10 @@
 
   (f/run
    (m/MaterialApp
-    .title "Mongol Editor"
+    .title "Mongol Editor Sandbox"
     .debugShowCheckedModeBanner false
     .theme (m/ThemeData
             .brightness m.Brightness/dark
             .primarySwatch m.Colors/blue
             .fontFamily "OyunQaganTig")
-    .home (main-page))))
+    .home (home-page))))
