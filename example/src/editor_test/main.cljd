@@ -4,14 +4,14 @@
    ["package:flutter/foundation.dart" :as foundation :refer [kIsWeb]]
    [cljd.flutter :as f]
    
-   ;; 核心组件引入
+   ;; Core component imports
    [rich-editor.components.editor :as editor]
    [rich-editor.components.simple-editor :as simple-editor]
    [rich-editor.components.text-field :as custom-tf]
    [rich-editor.components.toolbar :as toolbar]
    [rich-editor.defaults :as defaults]
 
-   ;; 跨平台蒙古文输入法引擎底层库
+   ;; Cross-platform Mongolian IME engine libraries
    [virtual-keyboard.input-control :as input-control]
    [ime-core.remote-api :as remote]
    [ime-core.fst-engine :as fst]
@@ -23,7 +23,7 @@
         (= platform foundation.TargetPlatform/iOS))))
 
 ;; =============================================================================
-;; 1. 独立声明两种模式下的全局原子状态
+;; 1. Global atom state for both editor modes
 ;; =============================================================================
 
 (defonce !multi-block-state
@@ -37,7 +37,7 @@
 (defonce !single-block-state (simple-editor/init-simple-state))
 
 ;; =============================================================================
-;; 2. 沙箱专属 Mock 标签选择器
+;; 2. Sandbox mock tag picker
 ;; =============================================================================
 (defn- show-sandbox-tag-modal! [ctx !state on-insert-fn]
   (m/showModalBottomSheet
@@ -66,7 +66,7 @@
                            (m/Navigator.pop sheet-ctx)))])))))
 
 ;; =============================================================================
-;; 3. 页面一：长文/多块编辑器页面
+;; 3. Page one: long-form / multi-block editor
 ;; =============================================================================
 (defn multi-block-page []
   (f/widget
@@ -75,7 +75,7 @@
    (m/Scaffold
     .appBar 
     (m/AppBar
-     .title (m/Text "长文模式" .style (m/TextStyle .fontFamily "OyunQaganTig"))
+     .title (m/Text "Long-form Mode" .style (m/TextStyle .fontFamily "OyunQaganTig"))
      .elevation 0.0
      .actions [(m/IconButton
                 .icon (m/Icon m.Icons/bug_report)
@@ -103,7 +103,7 @@
          :toolbar (toolbar/mongol-toolbar !multi-block-state)))])))))
 
 ;; =============================================================================
-;; 4. 页面二：推文/单块发帖页面 (🌟 重点测试左右插槽)
+;; 4. Page two: tweet / single-block post (leading & trailing slots)
 ;; =============================================================================
 (defn single-block-page []
   (f/widget
@@ -111,7 +111,7 @@
    (m/Scaffold
     .appBar 
     (m/AppBar
-     .title (m/Text "推文模式" .style (m/TextStyle .fontFamily "OyunQaganTig"))
+     .title (m/Text "Tweet Mode" .style (m/TextStyle .fontFamily "OyunQaganTig"))
      .elevation 0.0
      .actions [(m/IconButton
                 .icon (m/Icon m.Icons/bug_report)
@@ -126,7 +126,6 @@
       !single-block-state
       :editor-config {:on-tag-tap #(dart:core/print (str "🚀 Click Link ID: " %))}
       
-      ;; 🌟 左侧插槽：纵向工具栏
       :leading 
       (m/Container
        .padding (m/EdgeInsets.only .top 12.0 .left 8.0 .right 4.0)
@@ -148,7 +147,7 @@
           .tooltip "Add Image"
           .onPressed #())]))
 
-      ;; 🌟 右侧插槽：引用推文预览框
+      ;; Trailing slot: quote preview
       :trailing
       (m/Container
        .width 140.0
@@ -164,13 +163,13 @@
         .children
         [(m/Text "@Batjargal" .style (m/TextStyle .fontWeight m.FontWeight/bold .color m.Colors/blue))
          (m/SizedBox .height 8.0)
-         (m/Text "This is a quote preview. 这是一个引用推文的预览区域，位于输入框的右侧。" 
+         (m/Text "This is a quote preview in the trailing slot beside the editor." 
                  .style (m/TextStyle .color m.Colors/white70 .fontSize 12.0)
                  .maxLines 8 
                  .overflow m.TextOverflow/ellipsis)])))))))
 
 ;; =============================================================================
-;; 5. 导航主页 (Home Page)
+;; 5. Home page navigation
 ;; =============================================================================
 (defn home-page []
   (f/widget
@@ -189,7 +188,7 @@
         .style (m/ElevatedButton.styleFrom 
                 .padding (m/EdgeInsets.symmetric .horizontal 32.0 .vertical 16.0))
         .onPressed (fn [] (m/Navigator.push ctx (m/MaterialPageRoute .builder (fn [_] (multi-block-page)))) nil)
-        .child (m/Text "进入长文多块编辑器" .style (m/TextStyle .fontSize 18.0)))
+        .child (m/Text "Open Multi-block Editor" .style (m/TextStyle .fontSize 18.0)))
        
        (m/SizedBox .height 24.0)
        
@@ -199,10 +198,10 @@
                 .foregroundColor m.Colors/white
                 .padding (m/EdgeInsets.symmetric .horizontal 32.0 .vertical 16.0))
         .onPressed (fn [] (m/Navigator.push ctx (m/MaterialPageRoute .builder (fn [_] (single-block-page)))) nil)
-        .child (m/Text "进入单块推文编辑器" .style (m/TextStyle .fontSize 18.0)))])))))
+        .child (m/Text "Open Single-block Tweet Editor" .style (m/TextStyle .fontSize 18.0)))])))))
 
 ;; =============================================================================
-;; 6. 引擎级初始化与程序入口
+;; 6. Engine initialization and entry point
 ;; =============================================================================
 (defn main []
   (m.WidgetsFlutterBinding/ensureInitialized)

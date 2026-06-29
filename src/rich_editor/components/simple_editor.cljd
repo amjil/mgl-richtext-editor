@@ -51,7 +51,6 @@
          :global-selection nil}))
 
 (defn- request-focus! 
-  "🌟 修复1：强制获取焦点，并显式注册到底层 IME 服务"
   [!state]
   (let [content-len (count (get-in @!state [:blocks POST_ID :content] ""))]
     (swap! !state (fn [s]
@@ -164,7 +163,6 @@
         .children
         [(m/Expanded
           .child
-          ;; 🌟 铺设全局半透明点击侦测区，解决焦点穿透问题
           (m/GestureDetector
            .behavior m.HitTestBehavior/translucent
            .onTap #(request-focus! !state)
@@ -173,7 +171,6 @@
             .children
             [content-row 
              (if (or (:active-block-id state) (:external-keyboard-delegate state))
-               ;; 🌟 修复2：传入 nil 而不是 map，解决 PersistentHashMap 类型转换报错
                (keyboard/candidates nil)
                (m/SizedBox.shrink))])))
          
@@ -212,7 +209,6 @@
          .children
          [(m/Expanded
            .child
-           ;; 🌟 PC 端同样增加全局焦点侦测
            (m/GestureDetector
             .behavior m.HitTestBehavior/translucent
             .onTap #(request-focus! !state)
