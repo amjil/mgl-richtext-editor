@@ -309,44 +309,65 @@ class _MglSelectableTextState extends State<MglSelectableText>
     final MongolRenderParagraph? renderBox =
         MglSelectableText._safeRenderParagraph(widget.textKey);
 
-    Widget content = MongolRichText(
+    // Keep the GlobalKey text widget as a stable Stack sibling instead of
+    // nesting it inside CustomPaint. Nesting caused RenderCustomPaint to be
+    // mutated during SliverList.performLayout when elements were retaken.
+    final Widget text = MongolRichText(
       key: widget.textKey,
       text: _ensureLineHeight(widget.textSpan),
     );
 
+    final List<Widget> overlays = [];
+
     if (widget.showLineDivider) {
-      content = CustomPaint(
-        painter: LineDividerPainter(
-          renderBox: renderBox,
-          text: widget.textSpan.toPlainText(),
-          extendToLineEnd: true,
+      overlays.add(
+        Positioned.fill(
+          child: CustomPaint(
+            painter: LineDividerPainter(
+              renderBox: renderBox,
+              text: widget.textSpan.toPlainText(),
+              extendToLineEnd: true,
+            ),
+          ),
         ),
-        child: content,
       );
     }
 
     if (widget.selection != null && !widget.selection!.isCollapsed) {
-      content = CustomPaint(
-        painter: MongolSelectionPainter(
-          textKey: widget.textKey,
-          selection: widget.selection!,
-          hasFocus: widget.isFocused,
+      overlays.add(
+        Positioned.fill(
+          child: CustomPaint(
+            painter: MongolSelectionPainter(
+              textKey: widget.textKey,
+              selection: widget.selection!,
+              hasFocus: widget.isFocused,
+            ),
+          ),
         ),
-        child: content,
       );
     }
 
     if (widget.selection?.isCollapsed == true && widget.showCursor) {
-      content = CustomPaint(
-        foregroundPainter: MongolCaretPainter(
-          textKey: widget.textKey,
-          selection: widget.selection!,
-          caretColor: Theme.of(context).colorScheme.onSurface,
-          blinkAnimation: _shouldBlink ? _blinkController : null,
+      overlays.add(
+        Positioned.fill(
+          child: CustomPaint(
+            foregroundPainter: MongolCaretPainter(
+              textKey: widget.textKey,
+              selection: widget.selection!,
+              caretColor: Theme.of(context).colorScheme.onSurface,
+              blinkAnimation: _shouldBlink ? _blinkController : null,
+            ),
+          ),
         ),
-        child: content,
       );
     }
+
+    final Widget body = overlays.isEmpty
+        ? text
+        : Stack(
+            clipBehavior: Clip.none,
+            children: [text, ...overlays],
+          );
 
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -355,7 +376,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
         padding: const EdgeInsets.symmetric(horizontal: 0.0),
         child: CompositedTransformTarget(
           link: _layerLink,
-          child: RepaintBoundary(child: content),
+          child: RepaintBoundary(child: body),
         ),
       ),
     );
