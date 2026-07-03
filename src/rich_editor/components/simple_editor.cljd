@@ -3,6 +3,7 @@
    Supports custom IME integration, toolbar slots, and span-based deterministic entity tracking.
    (Completely decoupled from application layer)"
   (:require ["package:flutter/material.dart" :as m]
+            ["package:flutter/services.dart" :as s]
             ["package:flutter/foundation.dart" :as foundation]
             [cljd.flutter :as f]
             [clojure.string :as str]
@@ -11,13 +12,14 @@
             [rich-editor.components.node-view :as node-view]
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
-            [rich-editor.services.ime-service :as ime] ;; 🌟 修复焦点必需的包
+            [rich-editor.services.ime-service :as ime]
             
             ;; Custom Virtual Keyboard & IME
             [virtual-keyboard.keyboard :as keyboard]
             [virtual-keyboard.options :as options]
             [virtual-keyboard.keyboard-action :as vk-action]
             [virtual-keyboard.keyboard-state :as vk-state]
+            [shared-ime.controller :as ime-ctrl]
             [shared-ime.overlay-view :as overlay]))
 
 ;; =============================================================================
@@ -117,6 +119,36 @@
                         (update-in [:blocks id :content-spans] (fnil conj []) new-span)
                         (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset (+ end-idx 1))))))))
 
+(defn- handle-key-event [!state event]
+  (let [ime-res (ime-ctrl/handle-key-event event)]
+    (if (= ime-res m.KeyEventResult/handled)
+      ime-res
+      (let [logical-key (.-logicalKey event)
+            is-down? (dart/is? event s/KeyDownEvent)]
+        (cond
+          (= logical-key s.LogicalKeyboardKey/backspace)
+          (if is-down?
+            (do
+              (let [cands (:keyboard/candidates-list @vk-state/state)]
+                (if (seq cands)
+                  (vk-action/clear-candidates)
+                  (if-let [cb (:on-backspace (:external-keyboard-delegate @!state))]
+                    (cb)
+                    (delete-backward-at-cursor! !state))))
+              m.KeyEventResult/handled)
+            m.KeyEventResult/handled)
+
+          (= logical-key s.LogicalKeyboardKey/enter)
+          (if is-down?
+            (do
+              (if-let [cb (:on-return (:external-keyboard-delegate @!state))]
+                (cb)
+                (insert-text-at-cursor! !state "\n"))
+              m.KeyEventResult/handled)
+            m.KeyEventResult/handled)
+
+          :else m.KeyEventResult/ignored)))))
+
 ;; =============================================================================
 ;; Main Editor Widget
 ;; =============================================================================
@@ -126,6 +158,7 @@
   [!state & {:keys [editor-config toolbar leading trailing]}]
   (let [cfg (config/merge-config defaults/full-default-config editor-config)]
     (f/widget
+     :managed [editor-focus-node (m/FocusNode)]
      :watch [state !state]
      
      :let [main-content
@@ -148,6 +181,35 @@
              (m/Expanded .child main-content)
              (if trailing trailing (m/SizedBox.shrink))])
            
+           clickable-content
+           (m/Listener
+            .behavior m.HitTestBehavior/translucent
+            .onPointerDown (fn [_] (.requestFocus editor-focus-node))
+            .onPointerUp (fn [_]
+                           (m/WidgetsBinding.instance.addPostFrameCallback
+                            (fn [_]
+                              (try (.requestFocus editor-focus-node) (catch Exception _)))))
+            .child
+            (m/GestureDetector
+             .behavior m.HitTestBehavior/translucent
+             .onTap #(request-focus! !state)
+             .child content-row))
+
+           core-input-area
+           (m/Focus
+            .focusNode editor-focus-node
+            .onFocusChange 
+            (fn [has-focus?]
+              (if has-focus?
+                (do
+                  (swap! !state assoc :external-keyboard-delegate nil :cursor-visible true)
+                  (request-focus! !state))
+                (do
+                  (ime/detach!)
+                  (swap! !state assoc :cursor-visible false))))
+            .onKeyEvent (fn [node event] (handle-key-event !state event))
+            .child clickable-content)
+           
            info (merge options/keyboard-option 
                        {:keyboard/mongol-font-family "OyunQaganTig" 
                         :keyboard/key-container-color m/Colors.grey.shade500 
@@ -163,16 +225,12 @@
         .children
         [(m/Expanded
           .child
-          (m/GestureDetector
-           .behavior m.HitTestBehavior/translucent
-           .onTap #(request-focus! !state)
-           .child
-           (m/Stack
-            .children
-            [content-row 
-             (if (or (:active-block-id state) (:external-keyboard-delegate state))
-               (keyboard/candidates nil)
-               (m/SizedBox.shrink))])))
+          (m/Stack
+           .children
+           [core-input-area 
+            (if (or (:active-block-id state) (:external-keyboard-delegate state))
+              (keyboard/candidates nil)
+              (m/SizedBox.shrink))]))
          
          (if toolbar toolbar (m/SizedBox.shrink))
          
@@ -207,11 +265,6 @@
        (overlay/ime-global-wrapper 
         (m/Column
          .children
-         [(m/Expanded
-           .child
-           (m/GestureDetector
-            .behavior m.HitTestBehavior/translucent
-            .onTap #(request-focus! !state)
-            .child content-row))
+         [(m/Expanded .child core-input-area)
           (if toolbar toolbar (m/SizedBox.shrink))])
         "se-ime")))))
