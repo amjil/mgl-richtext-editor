@@ -246,14 +246,20 @@
 
   ;; Standard System TextInput attach (Direct call, NO resolve!)
   (let [block (get-in @!state [:blocks block-id])
-        content (:content block "")
+        content (or (:content block) "")
+        content-len (count content)
         config (s/TextInputConfiguration.
                 .inputType s.TextInputType/multiline
                 .enableDeltaModel true)
         conn (s/TextInput.attach (create-input-client !state block-id) config)]
     (reset! !connection conn)
-    (let [raw-sel (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))]
-      (.setEditingState conn (s/TextEditingValue. .text content .selection raw-sel)))
+    
+    (let [raw-sel (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))
+          safe-base (min content-len (max 0 (.-baseOffset raw-sel)))
+          safe-extent (min content-len (max 0 (.-extentOffset raw-sel)))
+          safe-sel (s/TextSelection. .baseOffset safe-base .extentOffset safe-extent)]
+      (.setEditingState conn (s/TextEditingValue. .text content .selection safe-sel)))
+      
     (.show conn)))
 
 (defn update-state! [content selection]
