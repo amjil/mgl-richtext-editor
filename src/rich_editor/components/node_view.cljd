@@ -77,37 +77,44 @@
                     (recur (inc i))))]
         [start end]))))
 
+(defn- flatten-block-ids
+  "Document order: each root, then its descendants (depth-first)."
+  [state]
+  (let [blocks (:blocks state)]
+    (letfn [(walk [id]
+              (cons id (mapcat walk (get-in blocks [id :children] []))))]
+      (mapcat walk (:root state)))))
+
 (defn- find-block-at-offset [state global-offset cfg]
-  (let [root (:root state)]
-    (reduce
-     (fn [acc id]
-       (if-let [text-key (get @!block-text-keys id)]
-         (if-let [ctx (.-currentContext text-key)]
-           (try
-             (let [^m/RenderBox rb (.findRenderObject ctx)
-                   local-pos (.globalToLocal rb global-offset)
-                   size (.-size rb)]
-               ;; Give a generous hit-test area for mobile fat-finger selection
-               (if (and (>= (.-dx local-pos) -30.0)
-                        (<= (.-dx local-pos) (+ (.-width size) 30.0)))
-                 (let [block-type (:type (get-in state [:blocks id]))
-                       is-text? (config/text-block-type? cfg block-type)]
-                   (if is-text?
-                     (let [pos (native/MglSelectableText.getPositionAtOffset text-key global-offset)
-                           content-len (count (get-in state [:blocks id :content] ""))
-                           safe-off (max 0 (min (.-offset pos) content-len))]
-                       (reduced {:id id :offset safe-off}))
-                     ;; Atomic Block drag logic (split bounding box in half)
-                     (let [local-y (.-dy local-pos)
-                           height (.-height size)
-                           safe-off (if (< local-y (/ height 2.0)) 0 1)]
-                       (reduced {:id id :offset safe-off}))))
-                 acc))
-             (catch Exception _ acc))
-           acc)
-         acc))
-     nil
-     root)))
+  (reduce
+   (fn [acc id]
+     (if-let [text-key (get @!block-text-keys id)]
+       (if-let [ctx (.-currentContext text-key)]
+         (try
+           (let [^m/RenderBox rb (.findRenderObject ctx)
+                 local-pos (.globalToLocal rb global-offset)
+                 size (.-size rb)]
+             ;; Give a generous hit-test area for mobile fat-finger selection
+             (if (and (>= (.-dx local-pos) -30.0)
+                      (<= (.-dx local-pos) (+ (.-width size) 30.0)))
+               (let [block-type (:type (get-in state [:blocks id]))
+                     is-text? (config/text-block-type? cfg block-type)]
+                 (if is-text?
+                   (let [pos (native/MglSelectableText.getPositionAtOffset text-key global-offset)
+                         content-len (count (get-in state [:blocks id :content] ""))
+                         safe-off (max 0 (min (.-offset pos) content-len))]
+                     (reduced {:id id :offset safe-off}))
+                   ;; Atomic Block drag logic (split bounding box in half)
+                   (let [local-y (.-dy local-pos)
+                         height (.-height size)
+                         safe-off (if (< local-y (/ height 2.0)) 0 1)]
+                     (reduced {:id id :offset safe-off}))))
+               acc))
+           (catch Exception _ acc))
+         acc)
+       acc))
+   nil
+   (flatten-block-ids state)))
 
 (defn- compute-selection [state id cfg]
   (let [g-sel (:global-selection state)
