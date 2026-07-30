@@ -231,30 +231,32 @@
            (m/Padding
             .padding (m.EdgeInsets/only .top (+ 4.0 indent-padding) .left 4.0 .right 4.0 .bottom 4.0)
             .child
-            (let [text-widget (native/MglSelectableText.
-                               .textKey text-key
-                               .textSpan (text-renderer/build-rich-text-span (:content block) (:content-spans block []) style cfg)
-                               .selection selection
-                               .isFocused is-active
-                               .showCursor cursor-visible
-                               .showLineDivider true
-                               .showCaretHandle show-caret-handle
-                               .showStartHandle show-start-handle
-                               .showEndHandle show-end-handle
-                               
-                               .onSelectionChanged 
-                               (fn [^m/TextSelection new-selection]
-                                 (if (:global-selection @!state)
-                                   (let [start-id (get-in @!state [:global-selection :start :id])
-                                         end-id (get-in @!state [:global-selection :end :id])]
-                                     (when (= id start-id)
-                                       (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection)))
-                                     (when (= id end-id)
-                                       (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))
-                                   (do
-                                     (swap! !state assoc-in [:blocks id :selection] new-selection)
-                                     (when (not is-active)
-                                       (editor-cmd/focus-block !state id (.-extentOffset new-selection)))))))]
+            (let [text-widget (m/ExcludeFocus
+                               .child
+                               (native/MglSelectableText.
+                                .textKey text-key
+                                .textSpan (text-renderer/build-rich-text-span (:content block) (:content-spans block []) style cfg)
+                                .selection selection
+                                .isFocused is-active
+                                .showCursor cursor-visible
+                                .showLineDivider true
+                                .showCaretHandle show-caret-handle
+                                .showStartHandle show-start-handle
+                                .showEndHandle show-end-handle
+
+                                .onSelectionChanged
+                                (fn [^m/TextSelection new-selection]
+                                  (if (:global-selection @!state)
+                                    (let [start-id (get-in @!state [:global-selection :start :id])
+                                          end-id (get-in @!state [:global-selection :end :id])]
+                                      (when (= id start-id)
+                                        (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection)))
+                                      (when (= id end-id)
+                                        (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))
+                                    (do
+                                      (swap! !state assoc-in [:blocks id :selection] new-selection)
+                                      (when (not is-active)
+                                        (editor-cmd/focus-block !state id (.-extentOffset new-selection))))))))]
               
               ;; TEXT BLOCK WRAPPERS (for warning boxes, quote blocks etc)
               (if-let [wrapper-fn (get-in cfg [:text-block-wrappers block-type])]
