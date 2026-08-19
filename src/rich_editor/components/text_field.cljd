@@ -24,8 +24,7 @@
          autofocus false
          obscure-text false
          focus-node nil}}]
-  (let [is-empty (atom (empty? (.-text controller)))
-        default-font-size 16.0
+  (let [default-font-size 16.0
         default-line-height 1.2]
 
     (f/widget
@@ -34,7 +33,6 @@
      
      :get {{{:flds [onSurface onSurfaceVariant]} .-colorScheme
             {:flds [bodyMedium]} .-textTheme} m/Theme}
-     :watch [is-empty? is-empty]
      :let [font-size (or (when style (.-fontSize style))
                          (when bodyMedium (.-fontSize bodyMedium))
                          default-font-size)
@@ -44,10 +42,11 @@
            base-style (let [style-obj (or style (m/TextStyle .color onSurface .fontSize font-size))]
                         (if (.-height style-obj) style-obj (.copyWith style-obj .height line-height)))
 
+           ;; Native hint tracks controller.isEmpty (including IME replace-text!).
            final-decoration (-> (or decoration (m/InputDecoration .border m/InputBorder.none))
                                 (.copyWith
-                                 .hintText nil
-                                 .hintStyle nil
+                                 .hintText hint
+                                 .hintStyle (.copyWith base-style .color (.withOpacity onSurfaceVariant 0.6))
                                  .contentPadding (m/EdgeInsets.symmetric .horizontal 8 .vertical 4)))]
 
      (m/Focus
@@ -55,8 +54,12 @@
       (fn [has-focus?]
         (if has-focus?
           (do
-            (s/SystemChannels.textInput.invokeMethod "TextInput.hide")
-            
+            ;; Desktop: hide the OS IME; physical keys go through shared-ime.
+            ;; Mobile: keep TextInput shown so virtual-keyboard.input-control
+            ;; can flip `visible` and the in-app keyboard appears.
+            (when is-desktop?
+              (s/SystemChannels.textInput.invokeMethod "TextInput.hide"))
+
             (ime-ctrl/register-client!
              {:replace-text!
               (fn [delete-len insert-str]
@@ -173,45 +176,29 @@
         (m/Flexible
          .fit m/FlexFit.loose
          .child
-         (let [stack
-               (m/Stack
-                .alignment m/Alignment.topCenter
-                .children
-                [(if (and is-empty? hint)
-                   (m/Positioned
-                    .top 4
-                    .child
-                    (m/IgnorePointer
-                     .child
-                     (mgl/MongolText
-                      hint
-                      .style (.copyWith base-style .color (.withOpacity onSurfaceVariant 0.6))
-                      .textAlign mgl/MongolTextAlign.top)))
-                   (m/SizedBox.shrink))
-
-                 (mgl/MongolTextField
-                  .controller controller
-                  .focusNode focus-node
-                  .readOnly is-desktop?
-                  .showCursor true
-                  .autofocus autofocus
-                  .minLines min-lines
-                  .maxLines max-lines
-                  .obscureText obscure-text
-                  .style base-style
-                  .decoration final-decoration
-                  .textAlign mgl/MongolTextAlign.top
-                  .cursorColor onSurface
-                  .onChanged (fn [text]
-                               (reset! is-empty (empty? text))
-                               (when on-changed (on-changed text))))])]
+         (let [field
+               (mgl/MongolTextField
+                .controller controller
+                .focusNode focus-node
+                .readOnly is-desktop?
+                .showCursor true
+                .autofocus autofocus
+                .minLines min-lines
+                .maxLines max-lines
+                .obscureText obscure-text
+                .style base-style
+                .decoration final-decoration
+                .textAlign mgl/MongolTextAlign.top
+                .cursorColor onSurface
+                .onChanged (fn [text]
+                             (when on-changed (on-changed text))))]
            
            (if focus-node
              (m/GestureDetector
               .behavior m/HitTestBehavior.opaque
               .onTap #(.requestFocus focus-node)
-              .child stack)
-             stack)))
+              .child field)
+             field)))
 
         (if suffix-icon
           (m/Padding .padding (m/EdgeInsets.only .top 4) .child suffix-icon)
