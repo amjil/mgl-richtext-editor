@@ -200,9 +200,16 @@
 
            .onTapUp
            (fn [^m/TapUpDetails details]
-             (swap! !state dissoc :global-selection) 
-             (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
-               (editor-cmd/focus-block !state id offset)))
+             (swap! !state dissoc :global-selection)
+             (let [global-pos (.globalPosition details)
+                   offset (get-safe-offset @!state id text-key global-pos)
+                   content (get-in @!state [:blocks id :content] "")
+                   wiki-target (when-let [f (:wiki-target-at cfg)]
+                                 (f content offset))
+                   on-link (:on-link-tap cfg)]
+               (if (and wiki-target on-link)
+                 (on-link wiki-target)
+                 (editor-cmd/focus-block !state id offset))))
 
            .onLongPressStart
            (fn [^m/LongPressStartDetails details] 
@@ -231,11 +238,17 @@
            (m/Padding
             .padding (m.EdgeInsets/only .top (+ 4.0 indent-padding) .left 4.0 .right 4.0 .bottom 4.0)
             .child
-            (let [text-widget (m/ExcludeFocus
+            (let [span-builder (or (:text-span-builder cfg)
+                                   text-renderer/build-rich-text-span)
+                  text-span (span-builder (:content block)
+                                          (:content-spans block [])
+                                          style
+                                          cfg)
+                  text-widget (m/ExcludeFocus
                                .child
                                (native/MglSelectableText.
                                 .textKey text-key
-                                .textSpan (text-renderer/build-rich-text-span (:content block) (:content-spans block []) style cfg)
+                                .textSpan text-span
                                 .selection selection
                                 .isFocused is-active
                                 .showCursor cursor-visible
@@ -256,7 +269,12 @@
                                     (do
                                       (swap! !state assoc-in [:blocks id :selection] new-selection)
                                       (when (not is-active)
-                                        (editor-cmd/focus-block !state id (.-extentOffset new-selection))))))))]
+                                        ;; Do NOT call focus-block for range sels — it collapses the selection.
+                                        (if (.-isCollapsed new-selection)
+                                          (editor-cmd/focus-block !state id (.-extentOffset new-selection))
+                                          (swap! !state assoc
+                                                 :active-block-id id
+                                                 :cursor-visible true))))))))]
               
               ;; TEXT BLOCK WRAPPERS (for warning boxes, quote blocks etc)
               (if-let [wrapper-fn (get-in cfg [:text-block-wrappers block-type])]

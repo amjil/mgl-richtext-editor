@@ -27,16 +27,18 @@
           is-underline (:underline attributes)
           is-strikethrough (:strikethrough attributes)
           is-tag (:tag attributes)
+          is-link (or (:link attributes) (:href attributes))
           color-hex (:color attributes)
 
-          ;; Determine the final color (Tag default is blue, but can be overridden)
+          ;; Determine the final color (Tag/link default is blue, but can be overridden)
           final-color (cond
                         color-hex (hex-string->color color-hex)
-                        is-tag m/Colors.blue 
+                        is-tag m/Colors.blue
+                        is-link m/Colors.blue
                         :else (.-color base-style))
 
           decorations (cond-> []
-                        is-underline (conj m.TextDecoration/underline)
+                        (or is-underline is-link) (conj m.TextDecoration/overline)
                         is-strikethrough (conj m.TextDecoration/lineThrough))
           final-decoration (if (seq decorations)
                              (m.TextDecoration/combine decorations)

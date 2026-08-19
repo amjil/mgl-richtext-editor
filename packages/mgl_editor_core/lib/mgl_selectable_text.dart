@@ -81,6 +81,21 @@ class MglSelectableText extends StatefulWidget {
     return renderBox.getPositionForOffset(localOffset);
   }
 
+  /// True when the text span under [globalOffset] has a gesture recognizer
+  /// (e.g. wiki link / tag). Callers can skip focus/selection tap handling.
+  static bool hasRecognizerAt(GlobalKey key, Offset globalOffset) {
+    final renderBox = _safeRenderParagraph(key);
+    if (renderBox == null) return false;
+    try {
+      final localOffset = renderBox.globalToLocal(globalOffset);
+      final position = renderBox.getPositionForOffset(localOffset);
+      final span = renderBox.textPainter.text?.getSpanForPosition(position);
+      return span is TextSpan && span.recognizer != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Offset? getGlobalOffsetForCaret(GlobalKey key, int caretOffset) {
     final renderBox = _safeRenderParagraph(key);
     if (renderBox == null || !renderBox.hasSize) return null;
