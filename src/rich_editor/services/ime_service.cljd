@@ -92,15 +92,21 @@
           (let [dr (.-deletedRange delta)
                 offset (.-start dr)
                 len (count (.-textDeleted delta))]
-            (if (and (= offset 0) (= len 1))
+            ;; offset=0 len=1 is "delete the first character", not "backspace at start".
+            ;; Merge-with-previous is handled by performSelector / the editor keyboard path
+            ;; when the caret is already at 0. An empty deletion at 0 is the only delta
+            ;; that should try to merge.
+            (if (and (zero? offset) (zero? len))
               (when-let [{:keys [prev-id new-offset]} (merge-with-previous! !state block-id)]
                 (if-let [f @!merge-focus-callback]
                   (f !state prev-id new-offset)
-                  (focus-block-internal! !state prev-id new-offset)))
-              (do (text-cmd/delete-range !state block-id offset len)
-                  (update-state! (get-in @!state [:blocks block-id :content])
-                                 (get-in @!state [:blocks block-id :selection]))
-                  (request-frame!))))
+                  (focus-block-internal! !state prev-id new-offset))
+                (request-frame!))
+              (when (pos? len)
+                (text-cmd/delete-range !state block-id offset len)
+                (update-state! (get-in @!state [:blocks block-id :content])
+                               (get-in @!state [:blocks block-id :selection]))
+                (request-frame!))))
 
           (dart/is? delta s/TextEditingDeltaReplacement)
           (let [rr (.-replacedRange delta)]

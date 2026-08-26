@@ -33,8 +33,8 @@
           ;; Determine the final color (Tag/link default is blue, but can be overridden)
           final-color (cond
                         color-hex (hex-string->color color-hex)
-                        is-tag m/Colors.blue
-                        is-link m/Colors.blue
+                        is-tag m.Colors/blue
+                        is-link m.Colors/blue
                         :else (.-color base-style))
 
           decorations (cond-> []

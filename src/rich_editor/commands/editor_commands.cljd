@@ -26,11 +26,23 @@
   (swap! !state (fn [s] (-> s (assoc :active-block-id nil :cursor-visible false) (dissoc :typing-attributes))))
   (ime/detach!))
 
-;; Core algorithm: flatten the tree into a 1D array in visual order
-(defn- get-flat-tree [blocks root-ids]
-  (letfn [(traverse [id]
-            (cons id (mapcat traverse (:children (get blocks id) []))))]
-    (vec (mapcat traverse root-ids))))
+(defn- ensure-history
+  "Push a structural snapshot unless the caller just recorded the same document."
+  [state]
+  (let [last-snap (last (get-in state [:history :undo-stack] []))]
+    (if (and last-snap
+             (= (:blocks last-snap) (:blocks state))
+             (= (:root last-snap) (:root state)))
+      state
+      (history/push-history state false))))
+
+(defn- descendant-of-removed?
+  "True if this id is a child of a removed block (via :parent or children lists)."
+  [state ids-to-remove id]
+  (or (contains? ids-to-remove (:parent (get-in state [:blocks id])))
+      (boolean (some (fn [rid]
+                       (some #{id} (get-in state [:blocks rid :children] [])))
+                     ids-to-remove))))
 
 (defn delete-global-selection! [!state]
   (let [state-val @!state
@@ -41,53 +53,50 @@
             soff (get-in ns [:start :offset] 0)
             eid (get-in ns [:end :id])
             eoff (get-in ns [:end :offset] 0)
-            root-ids (:root state-val)
-            flat-ids (get-flat-tree (:blocks state-val) root-ids)]
+            flat-ids (vec (sel/get-all-ordered-ids state-val))]
         (if (= sid eid)
           ;; Local deletion within the same block
           (do (swap! !state dissoc :global-selection)
               (swap! !state assoc :active-block-id sid :cursor-visible true)
               (swap! !state assoc-in [:blocks sid :selection] (s/TextSelection.collapsed .offset soff))
               (text-cmd/delete-range !state sid soff (- eoff soff)))
-          
-          ;; Tree-level deletion across multiple blocks
+
+          ;; Tree-level deletion across multiple blocks.
+          ;; Intermediate ids in document order (including children of sid that sit
+          ;; between sid and eid) are fully selected and removed. Survivors whose
+          ;; parent was removed are adopted by sid.
           (let [s-idx (.indexOf flat-ids sid)
                 e-idx (.indexOf flat-ids eid)]
             (when (and (>= s-idx 0) (>= e-idx 0))
-              (let [;; 1. Find all block-ids sandwiched in between that need to be removed (including eid)
-                    ids-to-remove (set (subvec flat-ids (inc s-idx) (inc e-idx)))
+              (let [ids-to-remove (set (subvec flat-ids (inc s-idx) (inc e-idx)))
                     sb (get-in state-val [:blocks sid])
                     eb (get-in state-val [:blocks eid])
                     sc (:content sb "")
                     ec (:content eb "")
-                    ;; Safely substring to prevent cursor out-of-bounds
-                    new-c (str (subs sc 0 (min soff (count sc))) (subs ec (min eoff (count ec))))
-                    s-spans (filterv #(<= (:end %) soff) (:content-spans sb []))
-                    e-spans (filterv #(> (:end %) eoff) (:content-spans eb []))
+                    safe-soff (max 0 (min soff (count sc)))
+                    safe-eoff (max 0 (min eoff (count ec)))
+                    new-c (str (subs sc 0 safe-soff) (subs ec safe-eoff))
+                    [s-spans _] (text-cmd/divide-spans-for-block (:content-spans sb []) safe-soff)
+                    [_ e-rest] (text-cmd/divide-spans-for-block (:content-spans eb []) safe-eoff)
                     shifted-e (mapv (fn [span]
-                                      (let [head (max (:start span) eoff)]
-                                        {:start (+ soff (- head eoff)) :end (+ soff (- (:end span) eoff)) :attrs (:attrs span)}))
-                                    e-spans)
-                    
-                    ;; 2. Find orphan nodes: not deleted themselves, but their parent was
+                                      (-> span
+                                          (update :start + safe-soff)
+                                          (update :end + safe-soff)))
+                                    e-rest)
                     orphan-ids (filterv (fn [id]
                                           (and (not (contains? ids-to-remove id))
-                                               (contains? ids-to-remove (:parent (get-in state-val [:blocks id])))))
+                                               (descendant-of-removed? state-val ids-to-remove id)))
                                         flat-ids)]
                 (swap! !state
                        (fn [s]
-                         (let [;; A. Remove deleted blocks from the root list
+                         (let [s (ensure-history s)
                                new-root (vec (remove ids-to-remove (:root s)))
-                               
-                               ;; B. Rebuild the :blocks map, destroy deleted blocks, and clean surviving blocks' :children lists
                                blocks-clean (reduce-kv (fn [acc k v]
                                                          (if (ids-to-remove k)
                                                            acc
                                                            (assoc acc k (update v :children #(vec (remove ids-to-remove (or % [])))))))
                                                        {}
                                                        (:blocks s))
-                               
-                               ;; C. Reparent orphans: attach homeless grandchild nodes under the surviving start block (sid), and update parent pointers
                                blocks-final (if (seq orphan-ids)
                                               (-> blocks-clean
                                                   (update-in [sid :children] #(vec (concat (or % []) orphan-ids)))
@@ -97,11 +106,10 @@
                                (dissoc :global-selection :typing-attributes)
                                (assoc :root new-root)
                                (assoc :blocks blocks-final)
-                               ;; D. Concatenate surviving head/tail text and styles
                                (assoc-in [:blocks sid :content] new-c)
                                (assoc-in [:blocks sid :content-spans] (vec (concat s-spans shifted-e)))
                                (assoc :active-block-id sid :cursor-visible true)
-                               (assoc-in [:blocks sid :selection] (s/TextSelection.collapsed .offset soff))))))))))))))
+                               (assoc-in [:blocks sid :selection] (s/TextSelection.collapsed .offset safe-soff))))))))))))))
 
 (defn handle-global-shortcut [!state intent]
   (cond
@@ -113,7 +121,10 @@
     (= intent :redo) (history/redo! !state)
     (= intent :copy) (clipboard/copy! @!state)
     (= intent :cut) (clipboard/cut! !state delete-global-selection!)
-    (= intent :paste) (-> (clipboard/paste! !state) (.then #(when % (focus-block !state (:focus-block %) (:offset %)))))
+    (= intent :paste) (do
+                        (when (:global-selection @!state)
+                          (delete-global-selection! !state))
+                        (-> (clipboard/paste! !state) (.then #(when % (focus-block !state (:focus-block %) (:offset %))))))
     (= intent :bold) (text-cmd/toggle-style! !state :bold)
     (= intent :italic) (text-cmd/toggle-style! !state :italic)
     (= intent :underline) (text-cmd/toggle-style! !state :underline)

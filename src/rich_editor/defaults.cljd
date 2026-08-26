@@ -55,6 +55,21 @@
             (let [target-len (- end-off start-off)]
               (>= (calc-overlap start-off end-off spans attr-key) target-len))))))))
 
+(defn- toggle-or-apply-style!
+  "Range selection: smart toggle via 100% coverage.
+   Collapsed caret: pending typing-attributes via toggle-style!."
+  [!state attr-key]
+  (let [state @!state]
+    (if-let [g-sel (:global-selection state)]
+      (text-cmd/apply-style-cross-block! !state g-sel attr-key
+                                         (if (is-active-style? state attr-key) nil true))
+      (when-let [active-id (:active-block-id state)]
+        (let [sel (get-in state [:blocks active-id :selection])]
+          (if (and sel (< (.-start sel) (.-end sel)))
+            (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) attr-key
+                                  (if (is-active-style? state attr-key) nil true))
+            (text-cmd/toggle-style! !state attr-key)))))))
+
 ;; =============================================================
 ;; Default command registry
 ;; =============================================================
@@ -86,44 +101,16 @@
                  (swap! !s dissoc :global-selection))
                (editor-cmd/delete-global-selection! !s)))))
    :paste (fn [!state]
+            (when (:global-selection @!state)
+              (editor-cmd/delete-global-selection! !state))
             (-> (clipboard/paste! !state)
                 (.then (fn [focus-info]
                          (when focus-info
                            (editor-cmd/focus-block !state (:focus-block focus-info) (:offset focus-info)))))))
-                           
-   ;; Smart bold toggle (Ctrl+B)
-   :bold (fn [!state]
-           (let [state @!state
-                 ;; If 100% covered pass nil (remove), otherwise pass true (bold)
-                 target-val (if (is-active-style? state :bold) nil true)]
-             (if-let [g-sel (:global-selection state)]
-               (text-cmd/apply-style-cross-block! !state g-sel :bold target-val)
-               (when-let [active-id (:active-block-id state)]
-                 (let [sel (get-in state [:blocks active-id :selection])]
-                   (when (and sel (< (.-start sel) (.-end sel)))
-                     (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :bold target-val)))))))
-                     
-   ;; Smart italic toggle (Ctrl+I)
-   :italic (fn [!state]
-             (let [state @!state
-                   target-val (if (is-active-style? state :italic) nil true)]
-               (if-let [g-sel (:global-selection state)]
-                 (text-cmd/apply-style-cross-block! !state g-sel :italic target-val)
-                 (when-let [active-id (:active-block-id state)]
-                   (let [sel (get-in state [:blocks active-id :selection])]
-                     (when (and sel (< (.-start sel) (.-end sel)))
-                       (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :italic target-val)))))))
-                       
-   ;; Smart underline toggle (Ctrl+U)
-   :underline (fn [!state]
-                (let [state @!state
-                      target-val (if (is-active-style? state :underline) nil true)]
-                  (if-let [g-sel (:global-selection state)]
-                    (text-cmd/apply-style-cross-block! !state g-sel :underline target-val)
-                    (when-let [active-id (:active-block-id state)]
-                      (let [sel (get-in state [:blocks active-id :selection])]
-                        (when (and sel (< (.-start sel) (.-end sel)))
-                          (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) :underline target-val)))))))
+
+   :bold (fn [!state] (toggle-or-apply-style! !state :bold))
+   :italic (fn [!state] (toggle-or-apply-style! !state :italic))
+   :underline (fn [!state] (toggle-or-apply-style! !state :underline))
                           
    ;; Block indent (Tab / Shift+Tab) — delegated via :block-ops when provided (e.g. by block-editor)
    :indent (fn [!state]

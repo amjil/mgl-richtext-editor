@@ -7,6 +7,14 @@
 
 ;; --- 1. Extract ---
 
+(defn- safe-subs
+  "Substring clamped to [0, (count s)]."
+  [s start end]
+  (let [n (count (or s ""))
+        a (max 0 (min (or start 0) n))
+        b (max a (min (or end n) n))]
+    (subs (or s "") a b)))
+
 (defn- extract-selected-text
   "Extracts text handling both global (cross-block) and local (single-block) selections."
   [state]
@@ -16,8 +24,8 @@
       (let [n-sel (sel/normalize state g-sel)
             start-id (get-in n-sel [:start :id])
             end-id (get-in n-sel [:end :id])
-            start-off (get-in n-sel [:start :offset])
-            end-off (get-in n-sel [:end :offset])
+            start-off (get-in n-sel [:start :offset] 0)
+            end-off (get-in n-sel [:end :offset] 0)
             ordered (vec (sel/get-all-ordered-ids state))
             start-idx (.indexOf ordered start-id)
             end-idx (.indexOf ordered end-id)]
@@ -27,12 +35,11 @@
                        (fn [i id]
                          (let [content (get-in state [:blocks id :content] "")]
                            (cond
-                             (= start-idx end-idx) (subs content start-off end-off)
-                             (= i 0) (subs content start-off)
-                             (= i (dec (count ids-in-range))) (subs content 0 end-off)
+                             (= start-idx end-idx) (safe-subs content start-off end-off)
+                             (= i 0) (safe-subs content start-off (count content))
+                             (= i (dec (count ids-in-range))) (safe-subs content 0 end-off)
                              :else content)))
                        ids-in-range)]
-            ;; Join blocks with newline character
             (str/join "\n" texts))
           ""))
       "")
@@ -42,9 +49,8 @@
             sel (:selection block)]
         (if (and sel (not (.-isCollapsed sel)))
           (let [start (min (.-baseOffset sel) (.-extentOffset sel))
-                end (max (.-baseOffset sel) (.-extentOffset sel))
-                content (:content block "")]
-            (subs content start end))
+                end (max (.-baseOffset sel) (.-extentOffset sel))]
+            (safe-subs (:content block "") start end))
           ""))
       "")))
 
@@ -60,9 +66,25 @@
 
 ;; --- 3. Paste ---
 
+(defn- paste-into-active-block!
+  "Replace the local selection if any, otherwise insert at the caret."
+  [!state active-id raw-text]
+  (let [block (get-in @!state [:blocks active-id])
+        content (:content block "")
+        sel (:selection block)
+        start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) (count content))
+        end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) (count content))
+        n (count content)
+        safe-start (max 0 (min start n))
+        safe-end (max safe-start (min end n))]
+    (if (not= safe-start safe-end)
+      (text-cmd/replace-text !state active-id safe-start (subs content safe-start safe-end) raw-text)
+      (text-cmd/insert-string !state active-id safe-start raw-text))))
+
 (defn paste!
-  "Read clipboard and insert at caret. 
-   Future resolves to {:focus-block id :offset 0} when new block created (no focus); caller focus-block."
+  "Read clipboard and insert at caret, replacing any local selection.
+   Future resolves to {:focus-block id :offset 0} when new block created (no focus); caller focus-block.
+   Cross-block selection should be deleted by the caller before invoking this."
   [!state]
   (let [f (s/Clipboard.getData s.Clipboard/kTextPlain)
         f2 (.then f (fn [data]
@@ -70,15 +92,10 @@
                         (let [state @!state
                               active-id (:active-block-id state)]
                           (if active-id
-                            ;; A: paste into current block
-                            (do (let [sel (get-in state [:blocks active-id :selection])
-                                      offset (if sel (.-extentOffset sel) 0)]
-                                  (text-cmd/insert-string !state active-id offset raw-text))
+                            (do (paste-into-active-block! !state active-id raw-text)
                                 nil)
-                            ;; B: no focus -> delegate to block layer (if any); return focus-info for caller to focus
                             (when-let [paste-no-focus! (get-in state [:editor-config :block-ops :paste-when-no-focus!])]
                               (paste-no-focus! !state raw-text)))))))]
-    ;; Silently catch errors in production
     (.catchError f2 (fn [_err] nil))))
 
 ;; --- 4. Cut ---

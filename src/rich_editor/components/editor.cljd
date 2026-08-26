@@ -159,7 +159,11 @@
           (do (clipboard/copy! @!state) m.KeyEventResult/handled)
 
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyV))
-          (do (clipboard/paste! !state) m.KeyEventResult/handled)
+          (do
+            (when (:global-selection @!state)
+              (editor-cmd/delete-global-selection! !state))
+            (clipboard/paste! !state)
+            m.KeyEventResult/handled)
 
           (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyX))
           (do (clipboard/cut! !state editor-cmd/delete-global-selection!) m.KeyEventResult/handled)
