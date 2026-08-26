@@ -27,14 +27,42 @@
 ;; 2. Default inline format (attr -> applied to base-style)
 ;; =============================================================
 
-(defn default-apply-inline [base-style attrs]
+(defn- hex-string->color [hex-str]
+  (try
+    (let [clean-hex (if (.startsWith hex-str "#") (subs hex-str 1) hex-str)
+          full-hex (if (= 6 (count clean-hex)) (str "FF" clean-hex) clean-hex)]
+      (m/Color (dart:core/int.parse full-hex .radix 16)))
+    (catch Exception _ nil)))
+
+(defn default-apply-inline
+  "Applies inline attrs onto a base TextStyle.
+   Underline uses overline to match Mongolian vertical layout (same as text-renderer)."
+  [base-style attrs]
   (if (or (empty? attrs) (nil? base-style))
     base-style
-    (let [s (if (:bold attrs) (.copyWith base-style .fontWeight m.FontWeight/bold) base-style)
-          s (if (:italic attrs) (.copyWith s .fontStyle m.FontStyle/italic) s)
-          s (if (:underline attrs) (.copyWith s .decoration m.TextDecoration/underline) s)
-          s (if (:link attrs) (.copyWith s .decoration m.TextDecoration/underline .color m.Colors/blue) s)]
-      s)))
+    (let [is-bold (:bold attrs)
+          is-italic (:italic attrs)
+          is-underline (:underline attrs)
+          is-strikethrough (:strikethrough attrs)
+          is-tag (:tag attrs)
+          is-link (or (:link attrs) (:href attrs))
+          color-hex (:color attrs)
+          final-color (cond
+                        color-hex (hex-string->color color-hex)
+                        is-tag m.Colors/blue
+                        is-link m.Colors/blue
+                        :else (.-color base-style))
+          decorations (cond-> []
+                        (or is-underline is-link) (conj m.TextDecoration/overline)
+                        is-strikethrough (conj m.TextDecoration/lineThrough))
+          final-decoration (if (seq decorations)
+                             (m.TextDecoration/combine decorations)
+                             m.TextDecoration/none)]
+      (.copyWith base-style
+                 .fontWeight (if (or is-bold is-tag) m.FontWeight/bold (.-fontWeight base-style))
+                 .fontStyle (if is-italic m.FontStyle/italic (.-fontStyle base-style))
+                 .decoration final-decoration
+                 .color final-color))))
 
 ;; =============================================================
 ;; 3. Default shortcuts (SingleActivator -> intent)
@@ -82,9 +110,16 @@
 
 (defn merge-config
   "Merge user-config into base. base is usually defaults/full-default-config.
-   User can override :block-style :inline-format-applier :commands :shortcuts :text-block-types :default-block-type :custom-block-renderers."
+
+   Known keys are merged with existing rules:
+   :block-style :inline-format-applier :commands :shortcuts
+   :text-block-types :default-block-type :custom-block-renderers
+
+   All other keys pass through (e.g. :on-tag-tap :on-link-tap :block-ops
+   :text-span-builder :text-block-wrappers :wiki-target-at)."
   ([base user-config]
    (let [base (or base default-config)
+         user-config (or user-config {})
          block-style (or (:block-style user-config) (:block-style base))
          ;; if block-style is a map, wrap as fn
          block-style-fn (if (fn? block-style)
@@ -98,13 +133,14 @@
          text-types (or (:text-block-types user-config) (:text-block-types base))
          default-type (or (:default-block-type user-config) (:default-block-type base))
          custom-renderers (merge (:custom-block-renderers base) (:custom-block-renderers user-config {}))]
-     {:block-style block-style-fn
-      :inline-format-applier inline
-      :commands commands
-      :shortcuts shortcuts
-      :text-block-types text-types
-      :default-block-type default-type
-      :custom-block-renderers custom-renderers})))
+     (-> (merge base user-config)
+         (assoc :block-style block-style-fn
+                :inline-format-applier inline
+                :commands commands
+                :shortcuts shortcuts
+                :text-block-types text-types
+                :default-block-type default-type
+                :custom-block-renderers custom-renderers)))))
 
 (defn get-block-style
   [config block-type]

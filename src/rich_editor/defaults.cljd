@@ -77,13 +77,15 @@
    :redo (fn [!state] (history/redo! !state))
    
    :copy (fn [!state] (clipboard/copy! @!state))
-   :cut (fn [!state] 
-          (let [state @!state]
-            (if-let [g-sel (:global-selection state)]
-              (do (when-let [del! (get-in state [:editor-config :block-ops :delete-cross-block-selection!])]
-                    (del! !state g-sel))
-                  (swap! !state dissoc :global-selection))
-              (clipboard/cut! @!state editor-cmd/delete-global-selection!))))
+   :cut (fn [!state]
+          (clipboard/cut!
+           !state
+           (fn [!s]
+             (if-let [del! (get-in @!s [:editor-config :block-ops :delete-cross-block-selection!])]
+               (when-let [g-sel (:global-selection @!s)]
+                 (del! !s g-sel)
+                 (swap! !s dissoc :global-selection))
+               (editor-cmd/delete-global-selection! !s)))))
    :paste (fn [!state]
             (-> (clipboard/paste! !state)
                 (.then (fn [focus-info]

@@ -87,23 +87,21 @@
   (if (empty? content)
     (m/TextSpan. .text "" .style base-style)
     (let [on-tag-tap (:on-tag-tap cfg)
-          
+          apply-fn (or (:inline-format-applier cfg) apply-inline-formats)
           segments (text+spans->segments content spans)
           children (mapv (fn [{:keys [text attrs]}]
                            (let [;; Handle Mongolian specific invisible formatting characters
-                                 display-text (str/replace text "\u202F" " ") 
-                                 
+                                 display-text (str/replace text "\u202F" " ")
                                  is-tag (:tag attrs)
                                  entity-id (:entity-id attrs)
-                                 
                                  recognizer (when (and is-tag entity-id on-tag-tap)
                                               (let [recog (g/TapGestureRecognizer.)]
-                                                (set! (.-onTap recog) 
+                                                (set! (.-onTap recog)
                                                       (fn [] (on-tag-tap entity-id)))
                                                 recog))]
                              (m/TextSpan.
                               .text display-text
                               .recognizer recognizer
-                              .style (apply-inline-formats base-style attrs))))
+                              .style (apply-fn base-style attrs))))
                          segments)]
       (m/TextSpan. .style base-style .children children))))

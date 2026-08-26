@@ -130,15 +130,14 @@
         active-attrs (if (contains? state-val :typing-attributes) (:typing-attributes state-val) inherited)
         text-len (count text)
         new-offset (+ safe-offset text-len)
-        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain safe-offset) (delta/insert text)]))]]
+        new-spans (splice-spans spans safe-offset 0 text-len active-attrs)
+        ops [(tx/update-content-op block-id
+                                   (delta/make-delta [(delta/retain safe-offset) (delta/insert text)])
+                                   new-spans)]]
     
     (tx/commit-transaction! !state
       (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset new-offset))
-      :merge? true)
-      
-    (swap! !state update-in [:blocks block-id]
-           (fn [b]
-             (assoc b :content-spans (splice-spans (:content-spans b []) safe-offset 0 text-len active-attrs))))))
+      :merge? true)))
 
 (defn delete-range
   "Delete range and collapse spans. Protected against IME desync."
@@ -148,13 +147,14 @@
         safe-offset (max 0 (min offset content-len))
         safe-len (max 0 (min length (- content-len safe-offset)))]
     (when (> safe-len 0)
-      (let [ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain safe-offset) (delta/delete safe-len)]))]]
+      (let [old-spans (get-in @!state [:blocks block-id :content-spans] [])
+            new-spans (splice-spans old-spans safe-offset safe-len 0 nil)
+            ops [(tx/update-content-op block-id
+                                       (delta/make-delta [(delta/retain safe-offset) (delta/delete safe-len)])
+                                       new-spans)]]
         (tx/commit-transaction! !state
           (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset safe-offset))
-          :merge? true)
-        (swap! !state update-in [:blocks block-id]
-               (fn [b]
-                 (assoc b :content-spans (splice-spans (:content-spans b []) safe-offset safe-len 0 nil))))))))
+          :merge? true)))))
 
 (defn replace-text
   "Replace text (IME) and precisely splice active formats. Protected against IME desync."
@@ -172,15 +172,14 @@
         spans (:content-spans block [])
         inherited (get-formats-at-offset spans safe-offset safe-old-len)
         active-attrs (if (contains? state-val :typing-attributes) (:typing-attributes state-val) inherited)
-        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain safe-offset) (delta/delete safe-old-len) (delta/insert new-text)]))]]
+        new-spans (splice-spans spans safe-offset safe-old-len new-len active-attrs)
+        ops [(tx/update-content-op block-id
+                                   (delta/make-delta [(delta/retain safe-offset) (delta/delete safe-old-len) (delta/insert new-text)])
+                                   new-spans)]]
     
     (tx/commit-transaction! !state
       (tx/make-transaction :ops ops :after-selection (m/TextSelection.collapsed .offset (+ safe-offset new-len)))
-      :merge? true)
-      
-    (swap! !state update-in [:blocks block-id]
-           (fn [b]
-             (assoc b :content-spans (splice-spans (:content-spans b []) safe-offset safe-old-len new-len active-attrs))))))
+      :merge? true)))
 
 ;; =============================================================
 ;; Formatting Commands
@@ -190,13 +189,13 @@
   "Apply style to selection."
   [!state block-id start end attr-key attr-val]
   (let [len (- end start)
-        ops [(tx/update-content-op block-id (delta/make-delta [(delta/retain start) (delta/retain len {attr-key attr-val})]))]]
+        old (get-in @!state [:blocks block-id :content-spans] [])
+        new-spans (apply-format-to-spans old start end attr-key attr-val)
+        ops [(tx/update-content-op block-id
+                                   (delta/make-delta [(delta/retain start) (delta/retain len {attr-key attr-val})])
+                                   new-spans)]]
     (tx/commit-transaction! !state
-                            (tx/make-transaction :ops ops :after-selection (m/TextSelection. .baseOffset start .extentOffset end)))
-    (swap! !state (fn [s]
-                    (let [old (get-in s [:blocks block-id :content-spans] [])
-                          new-s (apply-format-to-spans old start end attr-key attr-val)]
-                      (assoc-in s [:blocks block-id :content-spans] new-s))))))
+                            (tx/make-transaction :ops ops :after-selection (m/TextSelection. .baseOffset start .extentOffset end)))))
 
 (defn apply-style-cross-block!
   "Cross-block formatting."
@@ -206,20 +205,28 @@
         sid (get-in n-sel [:start :id])
         eid (get-in n-sel [:end :id])
         soff (get-in n-sel [:start :offset] 0)
-        eoff (get-in n-sel [:end :offset] 0)
-        root (:root state-val)]
-    (if (= sid eid) (apply-style !state sid soff eoff attr-key attr-val)
-        (let [sidx (.indexOf root sid)
-              eidx (.indexOf root eid)]
-          (tx/commit-transaction! !state (tx/make-transaction :ops [] :after-selection nil) :merge? false)
-          (swap! !state (fn [st]
-                          (reduce (fn [acc id]
-                                    (let [content (get-in acc [:blocks id :content] "")
-                                          old (get-in acc [:blocks id :content-spans] [])
-                                          bs (if (= id sid) soff 0)
-                                          be (if (= id eid) eoff (count content))]
-                                      (assoc-in acc [:blocks id :content-spans] (apply-format-to-spans old bs be attr-key attr-val))))
-                                  st (subvec root sidx (inc eidx)))))))))
+        eoff (get-in n-sel [:end :offset] 0)]
+    (if (= sid eid)
+      (apply-style !state sid soff eoff attr-key attr-val)
+      (let [ordered (vec (sel/get-all-ordered-ids state-val))
+            sidx (.indexOf ordered sid)
+            eidx (.indexOf ordered eid)]
+        (when (and (>= sidx 0) (>= eidx 0))
+          (let [ids (subvec ordered sidx (inc eidx))
+                ops (mapv
+                     (fn [id]
+                       (let [content (get-in state-val [:blocks id :content] "")
+                             old (get-in state-val [:blocks id :content-spans] [])
+                             bs (if (= id sid) soff 0)
+                             be (if (= id eid) eoff (count content))
+                             new-spans (apply-format-to-spans old bs be attr-key attr-val)]
+                         (tx/update-content-op id
+                                               (delta/make-delta [(delta/retain (count content))])
+                                               new-spans)))
+                     ids)]
+            (tx/commit-transaction! !state
+                                    (tx/make-transaction :ops ops :after-selection nil)
+                                    :merge? false)))))))
 
 (defn toggle-style!
   "Master toggle for formats. Prioritizes typing-attributes for precise control."

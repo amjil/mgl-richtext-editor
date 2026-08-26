@@ -18,11 +18,11 @@
             end-id (get-in n-sel [:end :id])
             start-off (get-in n-sel [:start :offset])
             end-off (get-in n-sel [:end :offset])
-            root (:root state)
-            start-idx (.indexOf root start-id)
-            end-idx (.indexOf root end-id)]
+            ordered (vec (sel/get-all-ordered-ids state))
+            start-idx (.indexOf ordered start-id)
+            end-idx (.indexOf ordered end-id)]
         (if (and (>= start-idx 0) (>= end-idx 0))
-          (let [ids-in-range (subvec root start-idx (inc end-idx))
+          (let [ids-in-range (subvec ordered start-idx (inc end-idx))
                 texts (map-indexed
                        (fn [i id]
                          (let [content (get-in state [:blocks id :content] "")]
