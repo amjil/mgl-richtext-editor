@@ -27,6 +27,22 @@
                  (cons id (mapcat walk children))))]
     (mapcat walk (:root state))))
 
+(defn prev-id
+  "Previous block in document order, or nil."
+  [state id]
+  (let [ids (vec (get-all-ordered-ids state))
+        idx (.indexOf ids id)]
+    (when (pos? idx)
+      (nth ids (dec idx)))))
+
+(defn next-id
+  "Next block in document order, or nil."
+  [state id]
+  (let [ids (vec (get-all-ordered-ids state))
+        idx (.indexOf ids id)]
+    (when (and (>= idx 0) (< idx (dec (count ids))))
+      (nth ids (inc idx)))))
+
 (defn compare-block-order
   "Compare two block-ids: negative (id1 first), 0 (same), positive (id2 first)."
   [state id1 id2]

@@ -40,6 +40,23 @@
   (let [target-id (last path)]
     (get-node-by-id state target-id)))
 
+(defn find-parent-id
+  "Parent id of block, or :root. Nil if the id is not in the tree."
+  [state id]
+  (cond
+    (some #{id} (or (:root state) [])) :root
+    :else
+    (or (let [p (:parent (get-in state [:blocks id]))]
+          (when (and p (not= p :root)
+                     (some #{id} (get-in state [:blocks p :children] [])))
+            p))
+        (reduce-kv (fn [_ bid block]
+                     (if (some #{id} (or (:children block) []))
+                       (reduced bid)
+                       nil))
+                   nil
+                   (:blocks state)))))
+
 (defn insert-child-id
   "Insert child-id at index in parent's children"
   [state parent-id child-id index]
@@ -49,6 +66,42 @@
                  (let [ids (or ids [])
                        [before after] (split-at index ids)]
                    (vec (concat before [child-id] after)))))))
+
+(defn insert-sibling-after
+  "Insert new-id immediately after after-id in the same sibling list."
+  [state after-id new-id]
+  (let [parent (find-parent-id state after-id)
+        path (if (= parent :root) [:root] (when parent [:blocks parent :children]))
+        ids (vec (or (and path (get-in state path)) []))
+        idx (.indexOf ids after-id)]
+    (if (or (nil? path) (neg? idx))
+      state
+      (update-in state path
+                 (fn [xs]
+                   (let [xs (vec (or xs []))]
+                     (vec (concat (subvec xs 0 (inc idx)) [new-id] (subvec xs (inc idx))))))))))
+
+(defn insert-sibling-before
+  "Insert new-id immediately before before-id in the same sibling list."
+  [state before-id new-id]
+  (let [parent (or (find-parent-id state before-id) :root)
+        ids (vec (or (if (= parent :root)
+                       (:root state)
+                       (get-in state [:blocks parent :children]))
+                     []))
+        idx (.indexOf ids before-id)]
+    (if (neg? idx)
+      state
+      (insert-child-id state parent new-id idx))))
+
+(defn remove-id-from-tree
+  "Remove id from root or its parent's children list. Does not dissoc :blocks."
+  [state id]
+  (let [parent (find-parent-id state id)
+        path (if (= parent :root) [:root] (when parent [:blocks parent :children]))]
+    (if path
+      (update-in state path #(vec (remove #{id} (or % []))))
+      state)))
 
 ;; =============================================================
 ;; 4. Helpers

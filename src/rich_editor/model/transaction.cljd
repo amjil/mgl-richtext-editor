@@ -52,9 +52,20 @@
 
     :delete
     (let [{:keys [parent-id index count]} op
-          parent-path (if (= parent-id :root) [:root] [:blocks parent-id :children])]
-      (update-in state parent-path
-                 (fn [ids] (vec (concat (subvec ids 0 index) (subvec ids (+ index count)))))))
+          parent-path (if (= parent-id :root) [:root] [:blocks parent-id :children])
+          ids (vec (or (get-in state parent-path) []))
+          n (count ids)
+          idx (max 0 (min (or index 0) n))
+          cnt (max 0 (min (or count 0) (- n idx)))
+          removed (if (zero? cnt) [] (subvec ids idx (+ idx cnt)))
+          collect-ids (fn collect [id]
+                        (cons id (mapcat collect (get-in state [:blocks id :children] []))))
+          to-drop (set (mapcat collect-ids removed))]
+      (if (zero? cnt)
+        state
+        (-> state
+            (assoc-in parent-path (vec (concat (subvec ids 0 idx) (subvec ids (+ idx cnt)))))
+            (update :blocks (fn [m] (apply dissoc m to-drop))))))
 
     :update-content
     (let [{:keys [block-id delta new-spans]} op

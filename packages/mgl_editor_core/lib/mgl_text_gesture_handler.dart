@@ -7,7 +7,7 @@ import 'm_render_paragraph.dart';
 class MglTextGestureHandler {
   final MongolRenderParagraph Function() getRenderParagraph;
   final TextSelection? Function() getSelection;
-  final ValueChanged<TextSelection> onSelectionChanged;
+  ValueChanged<TextSelection> onSelectionChanged;
 
   int? _dragStartOffset;
 

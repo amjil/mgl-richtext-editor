@@ -7,9 +7,12 @@
             [rich-editor.commands.text-commands :as text-cmd]
             [rich-editor.services.ime-service :as ime]
             [rich-editor.services.clipboard-service :as clipboard]
+            [rich-editor.services.history-service :as history]
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
             [rich-editor.components.node-view :as node-view]
+            [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
             [virtual-keyboard.keyboard :as keyboard]
             [virtual-keyboard.keyboard-state :as vk-state]
             [virtual-keyboard.keyboard-action :as vk-action]
@@ -21,6 +24,49 @@
   (let [platform foundation/defaultTargetPlatform]
     (or (= platform foundation.TargetPlatform/android)
         (= platform foundation.TargetPlatform/iOS))))
+
+(defn- adopt-orphans [state prev-id orphans]
+  (reduce (fn [s oid]
+            (assoc-in s [:blocks oid :parent] prev-id))
+          (update-in state [:blocks prev-id :children] #(vec (concat (or % []) orphans)))
+          orphans))
+
+(defn- merge-text-blocks [state prev-id active-id]
+  (let [prev (get-in state [:blocks prev-id])
+        curr (get-in state [:blocks active-id])
+        prev-content (:content prev "")
+        curr-content (:content curr "")
+        prev-len (count prev-content)
+        shifted-curr (mapv (fn [span]
+                             (-> span
+                                 (update :start + prev-len)
+                                 (update :end + prev-len)))
+                           (:content-spans curr []))
+        orphans (or (:children curr) [])]
+    (-> state
+        (assoc-in [:blocks prev-id :content] (str prev-content curr-content))
+        (assoc-in [:blocks prev-id :content-spans] (vec (concat (:content-spans prev []) shifted-curr)))
+        (adopt-orphans prev-id orphans)
+        (node/remove-id-from-tree active-id)
+        (update :blocks dissoc active-id)
+        (assoc :active-block-id prev-id)
+        (assoc-in [:blocks prev-id :selection] (m/TextSelection.collapsed .offset prev-len)))))
+
+(defn- collect-descendants [state id]
+  (letfn [(walk [cid]
+            (cons cid (mapcat walk (get-in state [:blocks cid :children] []))))]
+    (vec (mapcat walk (get-in state [:blocks id :children] [])))))
+
+(defn- delete-block [state active-id prev-id]
+  (let [desc (collect-descendants state active-id)
+        state (-> state
+                  (node/remove-id-from-tree active-id)
+                  (update :blocks #(apply dissoc % (cons active-id desc)))
+                  (assoc :active-block-id prev-id))]
+    (if prev-id
+      (assoc-in state [:blocks prev-id :selection]
+                (m/TextSelection.collapsed .offset (count (get-in state [:blocks prev-id :content] ""))))
+      state)))
 
 ;; =============================================================================
 ;; THE CORE ENGINE FOR BACKSPACE
@@ -39,7 +85,8 @@
             is-text? (config/text-block-type? cfg block-type)
             sel (:selection block)
             start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) 0)
-            end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) 0)]
+            end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) 0)
+            prev-id (sel/prev-id state-val active-id)]
         (if is-text?
           (if (not= start end)
             (do
@@ -47,52 +94,16 @@
               (editor-cmd/focus-block !state active-id start))
             (if (> start 0)
               (text-cmd/delete-range !state active-id (dec start) 1)
-              (let [root (:root state-val)
-                    idx (.indexOf root active-id)]
-                (when (> idx 0)
-                  (let [prev-id (nth root (dec idx))
-                        prev-block (get-in state-val [:blocks prev-id])
-                        prev-is-text? (config/text-block-type? cfg (:type prev-block))
-                        curr-content (:content block "")]
-                    (if prev-is-text?
-                      (let [prev-content (:content prev-block "")
-                            prev-len (count prev-content)
-                            prev-spans (:content-spans prev-block [])
-                            curr-spans (:content-spans block [])
-                            shifted-curr-spans (mapv (fn [span]
-                                                       (-> span
-                                                           (update :start + prev-len)
-                                                           (update :end + prev-len)))
-                                                     curr-spans)
-                            merged-spans (vec (concat prev-spans shifted-curr-spans))]
-                        (swap! !state
-                               (fn [s]
-                                 (-> s
-                                     (assoc-in [:blocks prev-id :content] (str prev-content curr-content))
-                                     (assoc-in [:blocks prev-id :content-spans] merged-spans) 
-                                     (update :root #(vec (remove #{active-id} %)))
-                                     (update :blocks dissoc active-id)
-                                     (assoc :active-block-id prev-id)
-                                     (assoc-in [:blocks prev-id :selection] (m/TextSelection.collapsed .offset prev-len))))))
-                      (editor-cmd/focus-block !state prev-id 1)))))))
+              (when prev-id
+                (let [prev-block (get-in state-val [:blocks prev-id])
+                      prev-is-text? (config/text-block-type? cfg (:type prev-block))]
+                  (if prev-is-text?
+                    (swap! !state (fn [s] (-> s (history/push-history false) (merge-text-blocks prev-id active-id))))
+                    (editor-cmd/focus-block !state prev-id 1))))))
           (if (> start 0)
-            (let [root (:root state-val)
-                  idx (.indexOf root active-id)
-                  prev-id (if (> idx 0) (nth root (dec idx)) nil)]
-              (swap! !state (fn [s]
-                              (let [s-new (-> s
-                                              (update :root #(vec (remove #{active-id} %)))
-                                              (update :blocks dissoc active-id)
-                                              (assoc :active-block-id prev-id))]
-                                (if prev-id
-                                  (assoc-in s-new [:blocks prev-id :selection] 
-                                            (m/TextSelection.collapsed .offset (count (get-in s [:blocks prev-id :content] ""))))
-                                  s-new)))))
-            (let [root (:root state-val)
-                  idx (.indexOf root active-id)]
-              (when (> idx 0)
-                (let [prev-id (nth root (dec idx))]
-                  (editor-cmd/focus-block !state prev-id (count (get-in state-val [:blocks prev-id :content] "")))))))))
+            (swap! !state (fn [s] (-> s (history/push-history false) (delete-block active-id prev-id))))
+            (when prev-id
+              (editor-cmd/focus-block !state prev-id (count (get-in state-val [:blocks prev-id :content] "")))))))
       :else nil)))
 
 ;; =============================================================================
@@ -112,18 +123,18 @@
             (text-cmd/split-block! !state active-id offset)
             (let [new-active-id (:active-block-id @!state)]
               (editor-cmd/focus-block !state new-active-id 0)))
-          (let [new-id (str (random-uuid))]
+          (let [new-id (str (random-uuid))
+                parent (node/find-parent-id state-val active-id)]
             (swap! !state
                    (fn [s]
-                     (let [root (:root s)
-                           idx (.indexOf root active-id)
-                           insert-idx (if (>= offset 1) (inc idx) idx)
-                           new-root (vec (concat (subvec root 0 insert-idx)
-                                                 [new-id]
-                                                 (subvec root insert-idx)))]
+                     (let [s (history/push-history s false)
+                           nb (cond-> {:id new-id :type :paragraph :content "" :attributes {} :children []}
+                                (and parent (not= parent :root)) (assoc :parent parent))
+                           s (assoc-in s [:blocks new-id] nb)
+                           s (if (>= offset 1)
+                               (node/insert-sibling-after s active-id new-id)
+                               (node/insert-sibling-before s active-id new-id))]
                        (-> s
-                           (assoc :root new-root)
-                           (assoc-in [:blocks new-id] {:id new-id :type :paragraph :content "" :attributes {}})
                            (assoc :active-block-id new-id)
                            (assoc-in [:blocks new-id :selection] (m/TextSelection.collapsed .offset 0))))))))))))
 
@@ -174,13 +185,33 @@
                       sel (:selection block)
                       offset (if sel (.-extentOffset sel) 0)
                       content-len (if (config/text-block-type? cfg* (:type block)) (count (:content block "")) 1)
-                      root (:root @!state)
-                      idx (.indexOf root active-id)]
+                      prev-id (sel/prev-id @!state active-id)
+                      next-id (sel/next-id @!state active-id)]
                   (cond
-                    is-up? (if (> offset 0) (do (editor-cmd/focus-block !state active-id (dec offset)) m.KeyEventResult/handled) (if (> idx 0) (let [prev-id (nth root (dec idx)) prev-len (count (:content (get-in @!state [:blocks prev-id]) ""))] (editor-cmd/focus-block !state prev-id prev-len) m.KeyEventResult/handled) m.KeyEventResult/handled))
-                    is-down-arrow? (if (< offset content-len) (do (editor-cmd/focus-block !state active-id (inc offset)) m.KeyEventResult/handled) (if (< idx (dec (count root))) (let [next-id (nth root (inc idx))] (editor-cmd/focus-block !state next-id 0) m.KeyEventResult/handled) m.KeyEventResult/handled))
-                    is-left? (if (> idx 0) (let [prev-id (nth root (dec idx)) prev-len (count (:content (get-in @!state [:blocks prev-id]) "")) new-offset (min offset prev-len)] (editor-cmd/focus-block !state prev-id new-offset) m.KeyEventResult/handled) m.KeyEventResult/handled)
-                    is-right? (if (< idx (dec (count root))) (let [next-id (nth root (inc idx)) next-len (count (:content (get-in @!state [:blocks next-id]) "")) new-offset (min offset next-len)] (editor-cmd/focus-block !state next-id new-offset) m.KeyEventResult/handled) m.KeyEventResult/handled)
+                    is-up? (if (> offset 0)
+                             (do (editor-cmd/focus-block !state active-id (dec offset)) m.KeyEventResult/handled)
+                             (if prev-id
+                               (let [prev-len (count (:content (get-in @!state [:blocks prev-id]) ""))]
+                                 (editor-cmd/focus-block !state prev-id prev-len)
+                                 m.KeyEventResult/handled)
+                               m.KeyEventResult/handled))
+                    is-down-arrow? (if (< offset content-len)
+                                     (do (editor-cmd/focus-block !state active-id (inc offset)) m.KeyEventResult/handled)
+                                     (if next-id
+                                       (do (editor-cmd/focus-block !state next-id 0) m.KeyEventResult/handled)
+                                       m.KeyEventResult/handled))
+                    is-left? (if prev-id
+                               (let [prev-len (count (:content (get-in @!state [:blocks prev-id]) ""))
+                                     new-offset (min offset prev-len)]
+                                 (editor-cmd/focus-block !state prev-id new-offset)
+                                 m.KeyEventResult/handled)
+                               m.KeyEventResult/handled)
+                    is-right? (if next-id
+                                (let [next-len (count (:content (get-in @!state [:blocks next-id]) ""))
+                                      new-offset (min offset next-len)]
+                                  (editor-cmd/focus-block !state next-id new-offset)
+                                  m.KeyEventResult/handled)
+                                m.KeyEventResult/handled)
                     :else m.KeyEventResult/ignored))
                 m.KeyEventResult/handled))
             m.KeyEventResult/handled)

@@ -298,6 +298,8 @@ class _MglSelectableTextState extends State<MglSelectableText>
       });
     }
 
+    _gestureHandler.onSelectionChanged = widget.onSelectionChanged ?? (_) {};
+
     final bool wasBlinking = oldWidget.isFocused &&
         oldWidget.showCursor &&
         (oldWidget.selection?.isCollapsed == true);

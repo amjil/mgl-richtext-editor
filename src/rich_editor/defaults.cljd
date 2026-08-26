@@ -5,7 +5,8 @@
             [rich-editor.services.history-service :as history]
             [rich-editor.services.clipboard-service :as clipboard]
             [rich-editor.commands.editor-commands :as editor-cmd]
-            [rich-editor.commands.text-commands :as text-cmd]))
+            [rich-editor.commands.text-commands :as text-cmd]
+            [rich-editor.model.selection :as sel]))
 
 ;; =============================================================
 ;; Style detector (production-grade): checks if selection is 100% covered by target style
@@ -62,13 +63,11 @@
   {;; 🌟 FIX: Global Cross-Block Select All
    :select-all (fn [!state]
                  (let [state-val @!state
-                       root (:root state-val)]
-                   (when (seq root)
-                     (let [first-id (first root)
-                           last-id (last root)
+                       ordered (vec (sel/get-all-ordered-ids state-val))]
+                   (when (seq ordered)
+                     (let [first-id (first ordered)
+                           last-id (last ordered)
                            last-len (count (get-in state-val [:blocks last-id :content] ""))]
-                       ;; Set the global selection from the very beginning of the first block 
-                       ;; to the very end of the last block.
                        (swap! !state assoc :global-selection
                               {:start {:id first-id :offset 0}
                                :end   {:id last-id :offset last-len}})))))

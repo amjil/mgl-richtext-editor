@@ -1,67 +1,9 @@
 (ns rich-editor.commands.format-commands
-  (:require [rich-editor.model.selection :as sel]))
-
-(defn- apply-format-to-spans
-  "Apply or remove a format on the [start, end) range."
-  [content old-spans start end format-key format-val]
-  (let [len (count content)
-        ;; 1. Flatten into per-character attribute array
-        char-attrs (reduce (fn [acc {:keys [s e attrs] :as span}]
-                             (reduce (fn [a i]
-                                       (if (and (>= i 0) (< i len))
-                                         (update a i merge attrs)
-                                         a))
-                                     acc
-                                     (range (:start span) (:end span))))
-                           (vec (repeat len {}))
-                           old-spans)
-        
-        ;; 2. Update attributes in the given range
-        updated-attrs (map-indexed
-                       (fn [idx attrs]
-                         (if (and (>= idx start) (< idx end))
-                           (if (nil? format-val)
-                             (dissoc attrs format-key) ;; Remove format
-                             (assoc attrs format-key format-val)) ;; Add format
-                           attrs))
-                       char-attrs)]
-    
-    ;; 3. Re-coalesce into optimized absolute spans
-    (if (empty? content)
-      []
-      (->> (map-indexed vector updated-attrs)
-           (partition-by second)
-           (map (fn [group]
-                  (let [group-start (first (first group))
-                        group-end (inc (first (last group)))
-                        attrs (second (first group))]
-                    (when (seq attrs)
-                      {:start group-start :end group-end :attrs attrs}))))
-           (remove nil?)
-           vec))))
+  "Legacy format helpers. Prefer rich-editor.commands.text-commands."
+  (:require [rich-editor.commands.text-commands :as text-cmd]))
 
 (defn toggle-format!
-  "Toggle format on the current selection (e.g. :bold, :italic)."
+  "Toggle format on the current selection (e.g. :bold, :italic).
+   Delegates to text-commands/toggle-style!."
   [!state format-key]
-  (let [state-val @!state
-        active-id (:active-block-id state-val)]
-    (when active-id
-      (let [block (get-in state-val [:blocks active-id])
-            sel (:selection block)]
-        (when (and sel (not (.-isCollapsed sel)))
-          (let [start (min (.-baseOffset sel) (.-extentOffset sel))
-                end (max (.-baseOffset sel) (.-extentOffset sel))
-                content (:content block "")
-                old-spans (:content-spans block [])
-                
-                ;; If the first char in the selection has the format, turn it off; otherwise on
-                is-active? (some (fn [span]
-                                   (and (<= (:start span) start)
-                                        (> (:end span) start)
-                                        (get-in span [:attrs format-key])))
-                                 old-spans)
-                new-val (if is-active? nil true)
-                new-spans (apply-format-to-spans content old-spans start end format-key new-val)]
-            
-            ;; Apply update
-            (swap! !state assoc-in [:blocks active-id :content-spans] new-spans)))))))
+  (text-cmd/toggle-style! !state format-key))

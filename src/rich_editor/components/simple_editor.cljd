@@ -6,13 +6,13 @@
             ["package:flutter/services.dart" :as s]
             ["package:flutter/foundation.dart" :as foundation]
             [cljd.flutter :as f]
-            [clojure.string :as str]
             
             ;; Editor core components
             [rich-editor.components.node-view :as node-view]
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
             [rich-editor.services.ime-service :as ime]
+            [rich-editor.commands.text-commands :as text-cmd]
             
             ;; Custom Virtual Keyboard & IME
             [virtual-keyboard.keyboard :as keyboard]
@@ -63,61 +63,31 @@
     (ime/attach! !state POST_ID)))
 
 (defn- insert-text-at-cursor! [!state text-to-insert]
-  (swap! !state (fn [s]
-                  (let [id (first (:root s))
-                        block (get-in s [:blocks id])
-                        sel (:selection block)
-                        offset (if sel (.-extentOffset sel) (count (:content block "")))
-                        content (:content block "")
-                        new-content (str (subs content 0 offset) text-to-insert (subs content offset))
-                        new-offset (+ offset (count text-to-insert))]
-                    (-> s
-                        (assoc-in [:blocks id :content] new-content)
-                        (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset new-offset)))))))
+  (let [id (first (:root @!state))
+        block (get-in @!state [:blocks id])
+        sel (:selection block)
+        offset (if sel (.-extentOffset sel) (count (:content block "")))]
+    (text-cmd/insert-string !state id offset text-to-insert)))
 
 (defn- delete-backward-at-cursor! [!state]
-  (swap! !state (fn [s]
-                  (let [id (first (:root s))
-                        block (get-in s [:blocks id])
-                        sel (:selection block)
-                        start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))
-                        end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))
-                        content (:content block "")]
-                    (if (not= start end)
-                      (let [new-content (str (subs content 0 start) (subs content end))]
-                        (-> s
-                            (assoc-in [:blocks id :content] new-content)
-                            (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset start))))
-                      (if (> start 0)
-                        (let [new-content (str (subs content 0 (dec start)) (subs content start))]
-                          (-> s
-                              (assoc-in [:blocks id :content] new-content)
-                              (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset (dec start)))))
-                        s))))))
+  (let [id (first (:root @!state))
+        block (get-in @!state [:blocks id])
+        sel (:selection block)
+        start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))
+        end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))]
+    (if (not= start end)
+      (text-cmd/delete-range !state id start (- end start))
+      (when (pos? start)
+        (text-cmd/delete-range !state id (dec start) 1)))))
 
 (defn insert-entity-at-cursor!
   "Public API: Inserts display text (e.g. '@Alice') and binds its entity ID."
   [!state display-text entity-id]
-  (swap! !state (fn [s]
-                  (let [id (first (:root s))
-                        block (get-in s [:blocks id])
-                        sel (:selection block)
-                        offset (if sel (.-extentOffset sel) (count (:content block "")))
-                        content (:content block "")
-                        
-                        text-to-insert (str display-text " ")
-                        new-content (str (subs content 0 offset) text-to-insert (subs content offset))
-                        
-                        start-idx offset
-                        end-idx (+ offset (count display-text))
-                        new-span {:start start-idx 
-                                  :end end-idx 
-                                  :attrs {:tag true :entity-id entity-id}}]
-                    
-                    (-> s
-                        (assoc-in [:blocks id :content] new-content)
-                        (update-in [:blocks id :content-spans] (fnil conj []) new-span)
-                        (assoc-in [:blocks id :selection] (m/TextSelection.collapsed .offset (+ end-idx 1))))))))
+  (let [id (first (:root @!state))
+        block (get-in @!state [:blocks id])
+        sel (:selection block)
+        offset (if sel (.-extentOffset sel) (count (:content block "")))]
+    (text-cmd/insert-entity! !state id offset display-text entity-id)))
 
 (defn- handle-key-event [!state event]
   (let [ime-res (ime-ctrl/handle-key-event event)]

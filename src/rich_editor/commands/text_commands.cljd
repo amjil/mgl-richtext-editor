@@ -6,7 +6,9 @@
             ["dart:core" :as dc]
             [rich-editor.model.delta :as delta]
             [rich-editor.model.transaction :as tx]
-            [rich-editor.model.selection :as sel]))
+            [rich-editor.model.selection :as sel]
+            [rich-editor.model.node :as node]
+            [rich-editor.services.history-service :as history]))
 
 ;; =============================================================
 ;; Helper: High-Performance Interval Math Engine (O(S) Complexity)
@@ -263,8 +265,8 @@
 ;; Block Splitting Engine
 ;; =============================================================
 
-(defn- divide-spans-for-block 
-  "Splits existing spans at the block break coordinate. 
+(defn divide-spans-for-block
+  "Splits existing spans at the block break coordinate.
    Returns a tuple [before-spans after-spans]."
   [spans offset]
   (reduce (fn [[before after] span]
@@ -275,27 +277,54 @@
                            (conj after {:start 0 :end (- end offset) :attrs attrs})])))
           [[] []] (or spans [])))
 
-(defn split-block! 
-  "Splits a block at the given offset. Generates a safe UUID for the new block."
+(defn insert-entity!
+  "Insert display-text as a tagged entity span, followed by a trailing space."
+  [!state block-id offset display-text entity-id]
+  (let [state-val @!state
+        block (get-in state-val [:blocks block-id])
+        content-len (count (:content block ""))
+        safe-offset (max 0 (min offset content-len))
+        text-to-insert (str display-text " ")
+        tag-len (count display-text)
+        text-len (count text-to-insert)
+        spans (:content-spans block [])
+        spliced (splice-spans spans safe-offset 0 text-len {})
+        tagged (-> spliced
+                   (apply-format-to-spans safe-offset (+ safe-offset tag-len) :tag true)
+                   (apply-format-to-spans safe-offset (+ safe-offset tag-len) :entity-id entity-id))
+        ops [(tx/update-content-op block-id
+                                   (delta/make-delta [(delta/retain safe-offset) (delta/insert text-to-insert)])
+                                   tagged)]]
+    (tx/commit-transaction! !state
+                            (tx/make-transaction :ops ops
+                                                 :after-selection (m/TextSelection.collapsed .offset (+ safe-offset text-len))))))
+
+(defn split-block!
+  "Splits a block at the given offset. Inserts the new block as a sibling."
   [!state active-id offset]
-  (swap! !state (fn [state]
-                  (let [block (get-in state [:blocks active-id])
-                        content (:content block "")
-                        spans (:content-spans block [])
-                        b-type (:type block)
-                        is-empty? (and (contains? #{:list-item :blockquote} b-type) (empty? content))]
-                    (if is-empty? (assoc-in state [:blocks active-id :type] :paragraph)
-                        (let [soff (max 0 (min offset (count content)))
-                              [sb sa] (divide-spans-for-block spans soff)
-                              ;; Fix: Utilized random-uuid to prevent rapid-split collisions
-                              nid (str "b-" (random-uuid))
-                              nb {:id nid :type (if (contains? #{:list-item :blockquote} b-type) b-type :paragraph)
-                                  :content (subs content soff) :content-spans sa :children []}
-                              root (:root state)
-                              idx (inc (.indexOf root active-id))]
-                          (-> state
-                              (assoc-in [:blocks active-id :content] (subs content 0 soff))
-                              (assoc-in [:blocks active-id :content-spans] sb)
-                              (assoc-in [:blocks nid] nb)
-                              (assoc :root (vec (concat (subvec root 0 idx) [nid] (subvec root idx))))
-                              (assoc :active-block-id nid))))))))
+  (swap! !state
+         (fn [state]
+           (let [state (history/push-history state false)
+                 block (get-in state [:blocks active-id])
+                 content (:content block "")
+                 spans (:content-spans block [])
+                 b-type (:type block)
+                 is-empty? (and (contains? #{:list-item :blockquote} b-type) (empty? content))]
+             (if is-empty?
+               (assoc-in state [:blocks active-id :type] :paragraph)
+               (let [soff (max 0 (min offset (count content)))
+                     [sb sa] (divide-spans-for-block spans soff)
+                     nid (str "b-" (random-uuid))
+                     parent (node/find-parent-id state active-id)
+                     nb (cond-> {:id nid
+                                 :type (if (contains? #{:list-item :blockquote} b-type) b-type :paragraph)
+                                 :content (subs content soff)
+                                 :content-spans sa
+                                 :children []}
+                          (and parent (not= parent :root)) (assoc :parent parent))]
+                 (-> state
+                     (assoc-in [:blocks active-id :content] (subs content 0 soff))
+                     (assoc-in [:blocks active-id :content-spans] sb)
+                     (assoc-in [:blocks nid] nb)
+                     (node/insert-sibling-after active-id nid)
+                     (assoc :active-block-id nid))))))))
