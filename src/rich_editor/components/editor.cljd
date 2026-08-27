@@ -313,6 +313,7 @@
                             (fn [has-focus?]
                               (if has-focus?
                                 (do
+                                  (ime/bind-focus-node! !state editor-focus-node)
                                   (swap! !state assoc :external-keyboard-delegate nil :cursor-visible true)
 
                                   (when-let [target-id (or (:active-block-id @!state) (last (:root @!state)))]

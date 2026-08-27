@@ -26,7 +26,7 @@
 
 (defn blur-all [!state]
   (swap! !state (fn [s] (-> s (assoc :active-block-id nil :cursor-visible false) (dissoc :typing-attributes))))
-  (ime/detach!))
+  (ime/detach! !state))
 
 (defn- ensure-history
   "Push a structural snapshot unless the caller just recorded the same document."

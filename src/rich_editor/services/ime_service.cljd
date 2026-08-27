@@ -15,8 +15,13 @@
       (.scheduleFrame binding))
     (catch Exception _ nil)))
 
-;; Current IME connection
-(defonce !connection (atom nil))
+;; Per-editor IME session. Flutter still allows only one live TextInput
+;; connection; this table keeps each editor's conn/flags from clobbering others.
+;; Keyed by the editor's !state atom.
+(defonce !sessions (atom {}))
+
+;; Which editor currently owns the live Flutter TextInput (at most one).
+(defonce !owner (atom nil))
 
 ;; Callbacks injected by main to avoid cyclic dependencies
 (defonce !merge-focus-callback (atom nil))
@@ -25,7 +30,20 @@
 ;; callback to request caret global offset from outside, breaks cyclic dependency
 (defonce !get-caret-offset-callback (atom nil))
 
-(defonce !handled-newline-in-delta (atom false))
+(defn- session [!state]
+  (get @!sessions !state {}))
+
+(defn- update-session! [!state f]
+  (swap! !sessions update !state (fn [s] (f (or s {})))))
+
+(defn- connection-of [!state]
+  (:conn (session !state)))
+
+(defn bind-focus-node!
+  "Remember the editor FocusNode so re-attach can refuse if this editor is unfocused."
+  [!state focus-node]
+  (when (and !state focus-node)
+    (update-session! !state #(assoc % :focus-node focus-node))))
 
 (defn- split-block-at-cursor! [!state block-id]
   (when-let [f (get-in @!state [:editor-config :block-ops :split-block-at-cursor!])]
@@ -91,32 +109,56 @@
       (s/TextSelection. .baseOffset (max 0 (min (.-baseOffset selection) n))
                         .extentOffset (max 0 (min (.-extentOffset selection) n))))))
 
-(defonce !reattach-attempts (atom 0))
-(defonce !reattach-in-progress (atom false))
+(defn- our-shared-ime-client? [!state]
+  (identical? (:owner @ime-ctrl/!active-client) !state))
+
+(defn- wants-ime? [!state]
+  (let [sess (session !state)
+        focus-node (:focus-node sess)]
+    (and (identical? @!owner !state)
+         (:wants-ime? sess false)
+         (not (:attaching? sess false))
+         (:cursor-visible @!state)
+         (or (nil? focus-node) (.-hasFocus focus-node)))))
+
+(defn- close-connection!
+  "Close this editor's TextInputConnection. Does not change owner or shared-ime."
+  [!state]
+  (when-let [conn (connection-of !state)]
+    (update-session! !state #(assoc % :conn nil :closing? true))
+    (when (.-attached conn)
+      (.close conn))
+    (update-session! !state #(assoc % :closing? false))))
 
 (defn schedule-detach-if-unfocused!
   "Detach IME only after a frame, so a rebuild that briefly unfocuses
    the editor does not drop the caret and kill typing."
   [focus-node !state]
+  (bind-focus-node! !state focus-node)
+  ;; Drop ownership immediately so connectionClosed cannot steal IME back
+  ;; from a sibling field (e.g. mail header) before the post-frame detach.
+  (update-session! !state #(assoc % :wants-ime? false))
   (w/WidgetsBinding.instance.addPostFrameCallback
    (fn [_]
-     (when-not (and focus-node (.-hasFocus focus-node))
-       (detach!)
-       (swap! !state assoc :cursor-visible false)))))
+     (if (and focus-node (.-hasFocus focus-node))
+       (update-session! !state #(assoc % :wants-ime? true))
+       (do (detach! !state)
+           (swap! !state assoc :cursor-visible false))))))
 
 (defn ensure-attached!
   "Re-open the system IME if emptying the field closed the connection."
   [!state block-id]
   (w/WidgetsBinding.instance.addPostFrameCallback
    (fn [_]
-     (when (and (nil? @!connection)
-                (= block-id (:active-block-id @!state))
-                (:cursor-visible @!state)
-                (< @!reattach-attempts 2))
-       (swap! !reattach-attempts inc)
-       (reset! !reattach-in-progress true)
-       (attach! !state block-id)
-       (reset! !reattach-in-progress false)))))
+     (let [sess (session !state)]
+       (when (and (wants-ime? !state)
+                  (nil? (:conn sess))
+                  (= block-id (:active-block-id @!state))
+                  (< (:reattach-attempts sess 0) 2))
+         (update-session! !state #(assoc % :reattach-attempts (inc (:reattach-attempts % 0))
+                                         :reattach-in-progress true))
+         (attach! !state block-id)
+         (update-session! !state #(assoc % :reattach-in-progress false)))))))
 
 (defn sync-block!
   "Push the block's current text/selection to the IME and re-attach if empty."
@@ -124,7 +166,7 @@
   (let [block (get-in @!state [:blocks block-id])
         content (:content block "")
         sel (clamp-text-selection content (:selection block))]
-    (update-state! content sel)
+    (update-state! !state content sel)
     (when (empty? content)
       (ensure-attached! !state block-id))))
 
@@ -142,164 +184,197 @@
 ;; --- 1. DeltaTextInputClient ---
 
 (defn- create-input-client [!state block-id]
-  (reify s/DeltaTextInputClient
-    (^void updateEditingValueWithDeltas [this textEditingDeltas]
-      (doseq [delta textEditingDeltas]
-        (cond
-          (dart/is? delta s/TextEditingDeltaInsertion)
-          (let [text (.-textInserted delta)]
-            (if (or (= text "\n") (= text "\r\n"))
-              (do (reset! !handled-newline-in-delta true)
-                  (if-let [new-id (split-block-at-cursor! !state block-id)]
-                    (do (if-let [f @!split-focus-callback]
-                          (f !state new-id 0)
-                          (focus-block-internal! !state new-id 0))
-                        (request-frame!))
-                    ;; No block-ops: insert newline in current block (single-block mode)
-                    (do (text-cmd/insert-string !state block-id (.-insertionOffset delta) "\n")
-                        (update-state! (get-in @!state [:blocks block-id :content])
-                                       (get-in @!state [:blocks block-id :selection]))
-                        (request-frame!))))
-              (do (text-cmd/insert-string !state block-id (.-insertionOffset delta) text)
-                  (update-state! (get-in @!state [:blocks block-id :content])
-                                 (get-in @!state [:blocks block-id :selection]))
+  (let [!handled-newline (atom false)]
+    (reify s/DeltaTextInputClient
+      (^void updateEditingValueWithDeltas [this textEditingDeltas]
+        (doseq [delta textEditingDeltas]
+          (cond
+            (dart/is? delta s/TextEditingDeltaInsertion)
+            (let [text (.-textInserted delta)]
+              (if (or (= text "\n") (= text "\r\n"))
+                (do (reset! !handled-newline true)
+                    (if-let [new-id (split-block-at-cursor! !state block-id)]
+                      (do (if-let [f @!split-focus-callback]
+                            (f !state new-id 0)
+                            (focus-block-internal! !state new-id 0))
+                          (request-frame!))
+                      ;; No block-ops: insert newline in current block (single-block mode)
+                      (do (text-cmd/insert-string !state block-id (.-insertionOffset delta) "\n")
+                          (update-state! !state
+                                         (get-in @!state [:blocks block-id :content])
+                                         (get-in @!state [:blocks block-id :selection]))
+                          (request-frame!))))
+                (do (text-cmd/insert-string !state block-id (.-insertionOffset delta) text)
+                    (update-state! !state
+                                   (get-in @!state [:blocks block-id :content])
+                                   (get-in @!state [:blocks block-id :selection]))
+                    (request-frame!))))
+
+            (dart/is? delta s/TextEditingDeltaDeletion)
+            (let [dr (.-deletedRange delta)
+                  offset (.-start dr)
+                  len (count (.-textDeleted delta))]
+              ;; offset=0 len=1 is "delete the first character", not "backspace at start".
+              ;; Merge-with-previous is handled by performSelector / the editor keyboard path
+              ;; when the caret is already at 0. An empty deletion at 0 is the only delta
+              ;; that should try to merge.
+              (if (and (zero? offset) (zero? len))
+                (when-let [{:keys [prev-id new-offset]} (merge-with-previous! !state block-id)]
+                  (if-let [f @!merge-focus-callback]
+                    (f !state prev-id new-offset)
+                    (focus-block-internal! !state prev-id new-offset))
+                  (request-frame!))
+                (when (pos? len)
+                  (text-cmd/delete-range !state block-id offset len)
+                  (sync-block! !state block-id)
                   (request-frame!))))
 
-          (dart/is? delta s/TextEditingDeltaDeletion)
-          (let [dr (.-deletedRange delta)
-                offset (.-start dr)
-                len (count (.-textDeleted delta))]
-            ;; offset=0 len=1 is "delete the first character", not "backspace at start".
-            ;; Merge-with-previous is handled by performSelector / the editor keyboard path
-            ;; when the caret is already at 0. An empty deletion at 0 is the only delta
-            ;; that should try to merge.
-            (if (and (zero? offset) (zero? len))
-              (when-let [{:keys [prev-id new-offset]} (merge-with-previous! !state block-id)]
-                (if-let [f @!merge-focus-callback]
-                  (f !state prev-id new-offset)
-                  (focus-block-internal! !state prev-id new-offset))
-                (request-frame!))
-              (when (pos? len)
-                (text-cmd/delete-range !state block-id offset len)
-                (sync-block! !state block-id)
-                (request-frame!))))
-
-          (dart/is? delta s/TextEditingDeltaReplacement)
-          (let [rr (.-replacedRange delta)]
-            (text-cmd/replace-text !state block-id (.-start rr) (.-textReplaced delta) (.-replacementText delta))
-            (sync-block! !state block-id)
-            (request-frame!))
-
-          (dart/is? delta s/TextEditingDeltaNonTextUpdate)
-          (let [content (get-in @!state [:blocks block-id :content] "")
-                sel (clamp-text-selection content (.-selection delta))]
-            (swap! !state assoc-in [:blocks block-id :selection] sel)
-            (bump-after-update!))
-          :else nil)))
-
-    (^void performAction [this ^s/TextInputAction action]
-      (when (or (= action s.TextInputAction/newline) (= action s.TextInputAction/done))
-        (if @!handled-newline-in-delta
-          (reset! !handled-newline-in-delta false)
-          (if-let [new-id (split-block-at-cursor! !state block-id)]
-            (if-let [f @!split-focus-callback]
-              (f !state new-id 0)
-              (focus-block-internal! !state new-id 0))
-            ;; Fallback: insert newline at caret
-            (let [sel (get-in @!state [:blocks block-id :selection])
-                  offset (if sel (max 0 (.-extentOffset sel)) 0)]
-              (text-cmd/insert-string !state block-id offset "\n")
-              (update-state! (get-in @!state [:blocks block-id :content])
-                             (get-in @!state [:blocks block-id :selection]))
-              (request-frame!))))))
-
-    (^void performSelector [this ^String selectorName]
-      (let [block (get-in @!state [:blocks block-id])
-            content (:content block "")
-            selection (:selection block)
-            base (if selection (.-baseOffset selection) 0)
-            ext (if selection (.-extentOffset selection) 0)
-            start (min base ext)
-            end (max base ext)]
-        (cond
-          (= selectorName "deleteBackward:")
-          (if-let [g-sel (:global-selection @!state)]
-            (when-let [focus-info (delete-cross-block-selection! !state g-sel)]
-              (swap! !state dissoc :global-selection)
-              (if-let [f @!merge-focus-callback]
-                (f !state (:focus-block focus-info) (:offset focus-info))
-                (focus-block-internal! !state (:focus-block focus-info) (:offset focus-info)))
+            (dart/is? delta s/TextEditingDeltaReplacement)
+            (let [rr (.-replacedRange delta)]
+              (text-cmd/replace-text !state block-id (.-start rr) (.-textReplaced delta) (.-replacementText delta))
+              (sync-block! !state block-id)
               (request-frame!))
+
+            (dart/is? delta s/TextEditingDeltaNonTextUpdate)
+            (let [content (get-in @!state [:blocks block-id :content] "")
+                  sel (clamp-text-selection content (.-selection delta))]
+              (swap! !state assoc-in [:blocks block-id :selection] sel)
+              (bump-after-update!))
+            :else nil)))
+
+      (^void performAction [this ^s/TextInputAction action]
+        (when (or (= action s.TextInputAction/newline) (= action s.TextInputAction/done))
+          (if @!handled-newline
+            (reset! !handled-newline false)
+            (if-let [new-id (split-block-at-cursor! !state block-id)]
+              (if-let [f @!split-focus-callback]
+                (f !state new-id 0)
+                (focus-block-internal! !state new-id 0))
+              ;; Fallback: insert newline at caret
+              (let [sel (get-in @!state [:blocks block-id :selection])
+                    offset (if sel (max 0 (.-extentOffset sel)) 0)]
+                (text-cmd/insert-string !state block-id offset "\n")
+                (update-state! !state
+                               (get-in @!state [:blocks block-id :content])
+                               (get-in @!state [:blocks block-id :selection]))
+                (request-frame!))))))
+
+      (^void performSelector [this ^String selectorName]
+        (let [block (get-in @!state [:blocks block-id])
+              content (:content block "")
+              selection (:selection block)
+              base (if selection (.-baseOffset selection) 0)
+              ext (if selection (.-extentOffset selection) 0)
+              start (min base ext)
+              end (max base ext)]
+          (cond
+            (= selectorName "deleteBackward:")
+            (if-let [g-sel (:global-selection @!state)]
+              (when-let [focus-info (delete-cross-block-selection! !state g-sel)]
+                (swap! !state dissoc :global-selection)
+                (if-let [f @!merge-focus-callback]
+                  (f !state (:focus-block focus-info) (:offset focus-info))
+                  (focus-block-internal! !state (:focus-block focus-info) (:offset focus-info)))
+                (request-frame!))
+              (if (< start end)
+                (do (text-cmd/delete-range !state block-id start (- end start))
+                    (sync-block! !state block-id)
+                    (request-frame!))
+                (if (<= ext 0)
+                  (when-let [{:keys [prev-id new-offset]} (merge-with-previous! !state block-id)]
+                    (if-let [f @!merge-focus-callback] (f !state prev-id new-offset) (focus-block-internal! !state prev-id new-offset)))
+                  (do (text-cmd/delete-range !state block-id (dec ext) 1)
+                      (sync-block! !state block-id)
+                      (request-frame!)))))
+
+            (= selectorName "deleteForward:")
             (if (< start end)
               (do (text-cmd/delete-range !state block-id start (- end start))
                   (sync-block! !state block-id)
                   (request-frame!))
-              (if (<= ext 0)
-                (when-let [{:keys [prev-id new-offset]} (merge-with-previous! !state block-id)]
-                  (if-let [f @!merge-focus-callback] (f !state prev-id new-offset) (focus-block-internal! !state prev-id new-offset)))
-                (do (text-cmd/delete-range !state block-id (dec ext) 1)
-                    (sync-block! !state block-id)
-                    (request-frame!)))))
-
-          (= selectorName "deleteForward:")
-          (if (< start end)
-            (do (text-cmd/delete-range !state block-id start (- end start))
+              (when (< ext (count content))
+                (text-cmd/delete-range !state block-id ext 1)
                 (sync-block! !state block-id)
-                (request-frame!))
-            (when (< ext (count content))
-              (text-cmd/delete-range !state block-id ext 1)
-              (sync-block! !state block-id)
-              (request-frame!)))
-
-          (or (= selectorName "insertNewline:") (= selectorName "insertNewlineIgnoringFieldEditor:"))
-          (if-let [new-id (split-block-at-cursor! !state block-id)]
-            (if-let [f @!split-focus-callback] (f !state new-id 0) (focus-block-internal! !state new-id 0))
-            (do (text-cmd/insert-string !state block-id ext "\n")
-                (update-state! (get-in @!state [:blocks block-id :content])
-                               (get-in @!state [:blocks block-id :selection]))
                 (request-frame!)))
-          :else nil)))
 
-    (^void updateEditingValue [this ^s/TextEditingValue value]
-      (let [new-text (.-text value)
-            sel (.-selection value)]
-        ;; Some virtual keyboards send full-state updates via updateEditingValue
-        ;; even when delta model is enabled. Diff the middle so spans outside
-        ;; the change are kept.
-        (apply-editing-value-text! !state block-id new-text)
-        (when sel
-          (let [content (get-in @!state [:blocks block-id :content] "")]
-            (swap! !state assoc-in [:blocks block-id :selection]
-                   (clamp-text-selection content sel))))
-        (when (empty? (get-in @!state [:blocks block-id :content] ""))
-          (ensure-attached! !state block-id))
-        (bump-after-update!)))
-    (^void updateFloatingCursor [this ^s/RawFloatingCursorPoint point] nil)
-    (^void connectionClosed [this]
-      (reset! !connection nil)
-      (ensure-attached! !state block-id))
-    (^void showToolbar [this] nil)
-    (^void insertTextPlaceholder [this ^m/Size size] nil)
-    (^void removeTextPlaceholder [this] nil)
-    (^void performPrivateCommand [this ^String action ^Map data] nil)
-    (^void showAutocorrectionPromptRect [_ start end] nil)))
+            (or (= selectorName "insertNewline:") (= selectorName "insertNewlineIgnoringFieldEditor:"))
+            (if-let [new-id (split-block-at-cursor! !state block-id)]
+              (if-let [f @!split-focus-callback] (f !state new-id 0) (focus-block-internal! !state new-id 0))
+              (do (text-cmd/insert-string !state block-id ext "\n")
+                  (update-state! !state
+                                 (get-in @!state [:blocks block-id :content])
+                                 (get-in @!state [:blocks block-id :selection]))
+                  (request-frame!)))
+            :else nil)))
+
+      (^void updateEditingValue [this ^s/TextEditingValue value]
+        (let [new-text (.-text value)
+              sel (.-selection value)]
+          ;; Some virtual keyboards send full-state updates via updateEditingValue
+          ;; even when delta model is enabled. Diff the middle so spans outside
+          ;; the change are kept.
+          (apply-editing-value-text! !state block-id new-text)
+          (when sel
+            (let [content (get-in @!state [:blocks block-id :content] "")]
+              (swap! !state assoc-in [:blocks block-id :selection]
+                     (clamp-text-selection content sel))))
+          (when (empty? (get-in @!state [:blocks block-id :content] ""))
+            (ensure-attached! !state block-id))
+          (bump-after-update!)))
+      (^void updateFloatingCursor [this ^s/RawFloatingCursorPoint point] nil)
+      (^void connectionClosed [this]
+        ;; Ignore closes that happen while we are replacing this editor's
+        ;; connection. If a newer connection is already attached, this
+        ;; callback is stale and must not nil it out.
+        (let [sess (session !state)
+              conn (:conn sess)]
+          (when-not (or (:attaching? sess false) (:closing? sess false))
+            (when (or (nil? conn) (not (.-attached conn)))
+              (update-session! !state #(assoc % :conn nil))
+              (ensure-attached! !state block-id)))))
+      (^void showToolbar [this] nil)
+      (^void insertTextPlaceholder [this ^m/Size size] nil)
+      (^void removeTextPlaceholder [this] nil)
+      (^void performPrivateCommand [this ^String action ^Map data] nil)
+      (^void showAutocorrectionPromptRect [_ start end] nil))))
 
 ;; --- 2. Connection ---
 
-(defn detach! []
-  (when-let [conn @!connection]
-    (when (.-attached conn)
-      (.close conn))
-    (reset! !connection nil))
-  (ime-ctrl/unregister-client!))
+(defn detach!
+  "Close this editor's IME connection. Zero-arity detaches the current owner."
+  ([]
+   (when-let [s @!owner]
+     (detach! s)))
+  ([!state]
+   (when !state
+     (close-connection! !state)
+     (let [focus-node (:focus-node (session !state))]
+       (swap! !sessions dissoc !state)
+       (when focus-node
+         (bind-focus-node! !state focus-node)))
+     (when (identical? @!owner !state)
+       (reset! !owner nil))
+     (when (our-shared-ime-client? !state)
+       (ime-ctrl/unregister-client!)))))
 
 (defn attach! [!state block-id]
-  (when-not @!reattach-in-progress
-    (reset! !reattach-attempts 0))
-  (detach!)
-  
+  (let [sess (session !state)]
+    (when-not (:reattach-in-progress sess false)
+      (update-session! !state #(assoc % :reattach-attempts 0))))
+
+  (update-session! !state #(assoc % :attaching? true :wants-ime? true))
+
+  ;; Claim ownership first so the previous editor's connectionClosed
+  ;; cannot steal the IME back.
+  (let [prev @!owner]
+    (reset! !owner !state)
+    (when (and prev (not (identical? prev !state)))
+      (detach! prev)))
+
+  (close-connection! !state)
+
   (ime-ctrl/register-client!
-   {:owner [:block block-id]
+   {:owner !state
     :replace-text!
     (fn [delete-len insert-str]
       (let [state @!state
@@ -313,15 +388,16 @@
                        "")]
         ;; Dispatch command to update rich text block content
         (text-cmd/replace-text !state block-id start-idx old-text insert-str)
-        
+
         (let [new-offset (+ start-idx (count insert-str))
               new-content (:content (get-in @!state [:blocks block-id]) "")
               new-sel (s/TextSelection.collapsed .offset new-offset)]
-          
+
           (swap! !state assoc-in [:blocks block-id :selection] new-sel)
-          
-          (when-let [conn @!connection]
-            (.setEditingState conn (s/TextEditingValue. .text new-content .selection new-sel)))
+
+          (when-let [conn (connection-of !state)]
+            (when (.-attached conn)
+              (.setEditingState conn (s/TextEditingValue. .text new-content .selection new-sel))))
           (when (empty? new-content)
             (ensure-attached! !state block-id)))))
 
@@ -345,22 +421,28 @@
                 .inputType s.TextInputType/multiline
                 .enableDeltaModel true)
         conn (s/TextInput.attach (create-input-client !state block-id) config)]
-    (reset! !connection conn)
-    
+    (update-session! !state #(assoc % :conn conn :attaching? false))
+
     (let [raw-sel (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))
           safe-base (min content-len (max 0 (.-baseOffset raw-sel)))
           safe-extent (min content-len (max 0 (.-extentOffset raw-sel)))
           safe-sel (s/TextSelection. .baseOffset safe-base .extentOffset safe-extent)]
       (.setEditingState conn (s/TextEditingValue. .text content .selection safe-sel)))
-      
+
     (.show conn)))
 
-(defn update-state! [content selection]
-  (let [content-len (count (or content ""))
-        safe-base (if selection (max 0 (min (.-baseOffset selection) content-len)) 0)
-        safe-ext  (if selection (max 0 (min (.-extentOffset selection) content-len)) 0)
-        safe-sel  (s/TextSelection. .baseOffset safe-base .extentOffset safe-ext)]
-    (when-let [conn @!connection]
-      (.setEditingState conn 
-        (s/TextEditingValue. .text (or content "") .selection safe-sel)))
-    (bump-after-update!)))
+(defn update-state!
+  ([content selection]
+   (when-let [s @!owner]
+     (update-state! s content selection)))
+  ([!state content selection]
+   (let [content-len (count (or content ""))
+         safe-base (if selection (max 0 (min (.-baseOffset selection) content-len)) 0)
+         safe-ext  (if selection (max 0 (min (.-extentOffset selection) content-len)) 0)
+         safe-sel  (s/TextSelection. .baseOffset safe-base .extentOffset safe-ext)]
+     (when-let [conn (connection-of !state)]
+       (when (.-attached conn)
+         (.setEditingState conn
+           (s/TextEditingValue. .text (or content "") .selection safe-sel))))
+     (when (identical? @!owner !state)
+       (bump-after-update!)))))

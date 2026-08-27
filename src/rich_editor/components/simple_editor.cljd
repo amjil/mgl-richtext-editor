@@ -178,6 +178,7 @@
             (fn [has-focus?]
               (if has-focus?
                 (do
+                  (ime/bind-focus-node! !state editor-focus-node)
                   (swap! !state assoc :external-keyboard-delegate nil :cursor-visible true)
                   (request-focus! !state))
                 (ime/schedule-detach-if-unfocused! editor-focus-node !state)))
