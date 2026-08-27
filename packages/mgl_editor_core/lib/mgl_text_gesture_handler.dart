@@ -5,7 +5,7 @@ import 'm_render_paragraph.dart';
 
 /// Gesture handler for Mongol vertical text selection
 class MglTextGestureHandler {
-  final MongolRenderParagraph Function() getRenderParagraph;
+  final MongolRenderParagraph? Function() getRenderParagraph;
   final TextSelection? Function() getSelection;
   ValueChanged<TextSelection> onSelectionChanged;
 
@@ -25,8 +25,9 @@ class MglTextGestureHandler {
     required this.onSelectionChanged,
   });
 
-  Offset _getLocalOffset(Offset globalPosition) {
-    final RenderBox renderBox = getRenderParagraph();
+  Offset? _getLocalOffset(Offset globalPosition) {
+    final renderBox = getRenderParagraph();
+    if (renderBox == null) return null;
     return renderBox.globalToLocal(globalPosition);
   }
 
@@ -37,6 +38,7 @@ class MglTextGestureHandler {
   void handleTapDown(TapDownDetails details) {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
+    if (renderBox == null || localOffset == null) return;
     final position = renderBox.getPositionForOffset(localOffset);
     onSelectionChanged(TextSelection.fromPosition(position));
   }
@@ -44,6 +46,7 @@ class MglTextGestureHandler {
   void handleDoubleTapDown(TapDownDetails details) {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
+    if (renderBox == null || localOffset == null) return;
     final position = renderBox.getPositionForOffset(localOffset);
     final TextRange wordRange = renderBox.getWordBoundary(position);
 
@@ -56,6 +59,7 @@ class MglTextGestureHandler {
   void handlePanStart(DragStartDetails details) {
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
+    if (renderBox == null || localOffset == null) return;
     final position = renderBox.getPositionForOffset(localOffset);
     _dragStartOffset = position.offset;
     onSelectionChanged(TextSelection(
@@ -66,6 +70,7 @@ class MglTextGestureHandler {
     if (_dragStartOffset == null) return;
     final renderBox = getRenderParagraph();
     final localOffset = _getLocalOffset(details.globalPosition);
+    if (renderBox == null || localOffset == null) return;
     final position = renderBox.getPositionForOffset(localOffset);
     onSelectionChanged(TextSelection(
         baseOffset: _dragStartOffset!, extentOffset: position.offset));
@@ -83,6 +88,7 @@ class MglTextGestureHandler {
     final currentSelection = getSelection();
     if (currentSelection == null) return;
     final renderBox = getRenderParagraph();
+    if (renderBox == null) return;
 
     final caretOffsetLocal = renderBox.getOffsetForCaret(
         TextPosition(offset: currentSelection.baseOffset), Rect.zero);
@@ -94,6 +100,7 @@ class MglTextGestureHandler {
   void handleCaretPanUpdate(DragUpdateDetails details) {
     if (_virtualDragPos == null) return;
     final renderBox = getRenderParagraph();
+    if (renderBox == null) return;
 
     _virtualDragPos = _virtualDragPos! + details.delta;
 
@@ -122,6 +129,7 @@ class MglTextGestureHandler {
     if (currentSelection == null) return;
 
     final renderBox = getRenderParagraph();
+    if (renderBox == null) return;
     final boxes = renderBox.getBoxesForSelection(currentSelection);
     if (boxes.isEmpty) return;
 
@@ -145,6 +153,7 @@ class MglTextGestureHandler {
         _activeDragEnd == null) return;
 
     final renderBox = getRenderParagraph();
+    if (renderBox == null) return;
     _virtualDragPos = _virtualDragPos! + details.delta;
 
     final double clampedX =

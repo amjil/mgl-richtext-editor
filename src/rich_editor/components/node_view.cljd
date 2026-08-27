@@ -8,7 +8,6 @@
             [shared-ime.controller :as ime-ctrl]
             [rich-editor.rendering.text-renderer :as text-renderer]
             [rich-editor.commands.editor-commands :as editor-cmd]
-            [rich-editor.model.delta :as delta]
             [rich-editor.model.selection :as sel]
             [rich-editor.config :as config]))
 
@@ -19,6 +18,16 @@
         (= platform foundation.TargetPlatform/iOS))))
 
 (defonce !block-text-keys (atom {}))
+
+(defn sync-text-keys!
+  "Drop GlobalKeys for blocks that no longer exist."
+  [state]
+  (let [live (set (keys (:blocks state {})))]
+    (swap! !block-text-keys
+           (fn [m]
+             (if (every? #(contains? live %) (keys m))
+               m
+               (into {} (filter (fn [[k _]] (contains? live k)) m)))))))
 
 (defn get-caret-global-offset
   "Return global Offset for the caret at character offset in the block identified by text-key, or nil."
@@ -110,11 +119,18 @@
                          safe-off (if (< local-y (/ height 2.0)) 0 1)]
                      (reduced {:id id :offset safe-off}))))
                acc))
-           (catch Exception _ acc))
+           (catch Exception _ _st
+             acc))
          acc)
        acc))
    nil
    (flatten-block-ids state)))
+
+(defn- clamp-selection [content-len selection]
+  (if (or (nil? selection) (not (.-isValid selection)))
+    (m/TextSelection.collapsed .offset 0)
+    (m/TextSelection. .baseOffset (max 0 (min (.-baseOffset selection) content-len))
+                      .extentOffset (max 0 (min (.-extentOffset selection) content-len)))))
 
 (defn- compute-selection [state id cfg]
   (let [g-sel (:global-selection state)
@@ -130,14 +146,57 @@
             ;; Atomic blocks conceptually have length 1 for selection purposes
             content-len (if (config/text-block-type? cfg (:type (get-in state [:blocks id])))
                           (count (get-in state [:blocks id :content] ""))
-                          1)] 
+                          1)]
         (cond
           (or (< cmp-start 0) (> cmp-end 0)) nil
-          (and (= cmp-start 0) (= cmp-end 0)) (m/TextSelection. .baseOffset start-off .extentOffset end-off)
-          (= cmp-start 0) (m/TextSelection. .baseOffset start-off .extentOffset content-len)
-          (= cmp-end 0) (m/TextSelection. .baseOffset 0 .extentOffset end-off)
-          :else (m/TextSelection. .baseOffset 0 .extentOffset content-len)))
-      local-sel)))
+          (and (= cmp-start 0) (= cmp-end 0)) (clamp-selection content-len (m/TextSelection. .baseOffset start-off .extentOffset end-off))
+          (= cmp-start 0) (clamp-selection content-len (m/TextSelection. .baseOffset start-off .extentOffset content-len))
+          (= cmp-end 0) (clamp-selection content-len (m/TextSelection. .baseOffset 0 .extentOffset end-off))
+          :else (clamp-selection content-len (m/TextSelection. .baseOffset 0 .extentOffset content-len))))
+      (clamp-selection (if (config/text-block-type? cfg (:type (get-in state [:blocks id])))
+                         (count (get-in state [:blocks id :content] ""))
+                         1)
+                       local-sel))))
+
+(defonce !ordered-ids-cache (atom nil))
+
+(defn- cached-ordered-ids [state]
+  (let [c @!ordered-ids-cache]
+    (if (identical? (:state c) state)
+      (:ids c)
+      (let [ids (vec (sel/get-all-ordered-ids state))]
+        (reset! !ordered-ids-cache {:state state :ids ids})
+        ids))))
+
+(defn- block-in-selection? [ordered-ids id start-id end-id]
+  (let [idx (.indexOf ordered-ids id)
+        sidx (.indexOf ordered-ids start-id)
+        eidx (.indexOf ordered-ids end-id)]
+    (and (>= idx 0) (>= sidx 0) (>= eidx 0)
+         (>= idx (min sidx eidx))
+         (<= idx (max sidx eidx)))))
+
+(defn- block-render-snapshot
+  "Slice of editor state that this block's widget actually paints.
+   Typing in another block leaves this map equal, so :watch skips rebuild."
+  [state id root-index]
+  (let [block (get-in state [:blocks id])
+        g-sel (:global-selection state)
+        start-id (get-in g-sel [:start :id])
+        end-id (get-in g-sel [:end :id])
+        active? (= (:active-block-id state) id)
+        in-sel? (boolean
+                 (and start-id end-id
+                      (block-in-selection? (cached-ordered-ids state) id start-id end-id)))]
+    {:block block
+     :in-sel? in-sel?
+     :is-sel-start? (boolean (= id start-id))
+     :is-sel-end? (boolean (= id end-id))
+     :g-start-off (when (= id start-id) (get-in g-sel [:start :offset]))
+     :g-end-off (when (= id end-id) (get-in g-sel [:end :offset]))
+     :is-active active?
+     :cursor-visible (boolean (and active? (:cursor-visible state) (nil? g-sel)))
+     :list-num (ordered-list-number state id root-index)}))
 
 (defn block-node
   "Main rendering function for an individual block node (Text or Atomic)."
@@ -146,33 +205,30 @@
   ([id !state root-index editor-config]
    (let [cfg (or editor-config config/default-config)
          text-key (get-text-key id)]
+     (sync-text-keys! @!state)
      (f/widget
-      ;; NOTE: To further optimize rendering in massive documents, you can use a custom selector here 
-      ;; to only re-render this block if (:blocks id) or global-selection changes.
       :watch [state !state]
-      (let [block (get-in state [:blocks id])
+      (let [snap (block-render-snapshot state id root-index)
+            block (:block snap)
             block-type (:type block)
             is-text? (config/text-block-type? cfg block-type)
             selection (compute-selection state id cfg)
 
             is-active (boolean
-                       (or (= (:active-block-id state) id)
-                           (and (:global-selection state) selection (not (.-isCollapsed selection)))))
-            cursor-visible (boolean
-                            (and (= (:active-block-id state) id)
-                                 (:cursor-visible state)
-                                 (nil? (:global-selection state))))
+                       (or (:is-active snap)
+                           (and (:in-sel? snap) selection (not (.-isCollapsed selection)))))
+            cursor-visible (boolean (:cursor-visible snap))
 
             is-mobile-env (boolean (is-mobile?))
             has-valid-sel (boolean (and selection (not (.-isCollapsed selection))))
 
             show-caret-handle (boolean (and is-mobile-env cursor-visible))
             show-start-handle (boolean (and is-mobile-env has-valid-sel
-                                            (or (nil? (:global-selection state))
-                                                (= id (get-in state [:global-selection :start :id])))))
+                                            (or (not (:in-sel? snap))
+                                                (:is-sel-start? snap))))
             show-end-handle (boolean (and is-mobile-env has-valid-sel
-                                          (or (nil? (:global-selection state))
-                                              (= id (get-in state [:global-selection :end :id])))))
+                                          (or (not (:in-sel? snap))
+                                              (:is-sel-end? snap))))
 
             style (config/get-block-style cfg block-type)
             indent-level (get-in block [:attributes :indent] 0)
@@ -267,7 +323,9 @@
                                       (when (= id end-id)
                                         (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))
                                     (do
-                                      (swap! !state assoc-in [:blocks id :selection] new-selection)
+                                      (let [len (count (get-in @!state [:blocks id :content] ""))]
+                                        (swap! !state assoc-in [:blocks id :selection]
+                                               (clamp-selection len new-selection)))
                                       (when (not is-active)
                                         ;; Do NOT call focus-block for range sels — it collapses the selection.
                                         (if (.-isCollapsed new-selection)
@@ -287,7 +345,7 @@
                    .children
                    [(m/Padding
                      .padding (m.EdgeInsets/only .top 4.0 .right 8.0)
-                     .child (m/Text (if-let [n (ordered-list-number state id root-index)]
+                     .child (m/Text (if-let [n (:list-num snap)]
                                       (str n ". ")
                                       "• ")
                                     .style (m/TextStyle. .fontSize 20.0 .height 2.0 .color m.Colors/white)))
@@ -309,7 +367,10 @@
           (let [atomic-content (if-let [custom-render (get-in cfg [:custom-block-renderers block-type])]
                                  (custom-render id !state root-index block style cfg)
                                  (if (= block-type :image)
-                                   (m/Image.network (get-in block [:data :url] ""))
+                                   (let [url (get-in block [:data :url] "")]
+                                     (if (seq url)
+                                       (m/Image.network url)
+                                       (m/SizedBox. .width 120.0 .height 80.0)))
                                    (m/SizedBox.shrink)))
                 sel-offset (if selection (.-extentOffset selection) 0)]
             (m/GestureDetector

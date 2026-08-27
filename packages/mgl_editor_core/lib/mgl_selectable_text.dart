@@ -139,11 +139,8 @@ class _MglSelectableTextState extends State<MglSelectableText>
 
   void _initGestureHandler() {
     _gestureHandler = MglTextGestureHandler(
-      getRenderParagraph: () {
-        final rb = MglSelectableText._safeRenderParagraph(widget.textKey);
-        if (rb == null) throw Exception("RenderBox not ready");
-        return rb;
-      },
+      getRenderParagraph: () =>
+          MglSelectableText._safeRenderParagraph(widget.textKey),
       getSelection: () => widget.selection,
       onSelectionChanged: widget.onSelectionChanged ?? (_) {},
     );
@@ -323,9 +320,6 @@ class _MglSelectableTextState extends State<MglSelectableText>
 
   @override
   Widget build(BuildContext context) {
-    final MongolRenderParagraph? renderBox =
-        MglSelectableText._safeRenderParagraph(widget.textKey);
-
     // Keep the GlobalKey text widget as a stable Stack sibling instead of
     // nesting it inside CustomPaint. Nesting caused RenderCustomPaint to be
     // mutated during SliverList.performLayout when elements were retaken.
@@ -341,7 +335,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
         Positioned.fill(
           child: CustomPaint(
             painter: LineDividerPainter(
-              renderBox: renderBox,
+              textKey: widget.textKey,
               text: widget.textSpan.toPlainText(),
               extendToLineEnd: true,
             ),
@@ -386,14 +380,22 @@ class _MglSelectableTextState extends State<MglSelectableText>
             children: [text, ...overlays],
           );
 
+    final double fontSize = widget.textSpan.style?.fontSize ?? 20.0;
+    final double heightMultiplier =
+        widget.textSpan.style?.height ?? _kBlockLineHeight;
+    final double minColumn = fontSize * heightMultiplier;
+
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: _handlePointerDown,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 0.0),
-        child: CompositedTransformTarget(
-          link: _layerLink,
-          child: RepaintBoundary(child: body),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minWidth: minColumn, minHeight: fontSize),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 0.0),
+          child: CompositedTransformTarget(
+            link: _layerLink,
+            child: RepaintBoundary(child: body),
+          ),
         ),
       ),
     );

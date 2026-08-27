@@ -86,11 +86,27 @@
 ;; --- Compose: merge two deltas (e.g. batch input into one transaction)
 
 (defn compose
-  "Compose [a, b]; b is applied on top of a."
+  "Concatenate ops of a then b and pack. This is sequential batching, not
+   Operational Transform compose (insert/delete do not cancel across a and b)."
   [delta-a delta-b]
   (make-delta (pack (concat (:ops delta-a) (:ops delta-b)))))
 
 ;; --- Content spans: inline format ranges [{:start 0 :end 5 :attrs {:bold true}}] ---
+
+(defn- sever-spans-at [spans point]
+  (mapcat (fn [{:keys [start end attrs] :as span}]
+            (if (and (< start point) (> end point))
+              [{:start start :end point :attrs attrs}
+               {:start point :end end :attrs attrs}]
+              [span]))
+          spans))
+
+(defn- merge-attrs-in-range [spans from to attrs]
+  (mapv (fn [span]
+          (if (and (>= (:start span) from) (<= (:end span) to))
+            (update span :attrs #(merge (or % {}) attrs))
+            span))
+        (sever-spans-at (sever-spans-at spans from) to)))
 
 (defn- shift-spans
   "Shift span start/end >= from by amount (positive = right)."
@@ -157,7 +173,7 @@
             (let [attrs (get op :attributes)
                   end-pos (+ pos op-len)]
               (if (and (map? attrs) (not (empty? attrs)))
-                (recur end-pos len (conj acc {:start pos :end end-pos :attrs attrs}) (rest remaining))
+                (recur end-pos len (merge-attrs-in-range acc pos end-pos attrs) (rest remaining))
                 (recur end-pos len acc (rest remaining))))))))))
 
 (defn content+spans->segments
@@ -200,14 +216,18 @@
               len (op-length op)]
           (cond
             (insert? op)
-            (recur (rest ops) 
-                   (str (subs text 0 pos) (:insert op) (subs text pos))
-                   (+ pos len))
+            (let [pos (max 0 (min pos (count text)))]
+              (recur (rest ops)
+                     (str (subs text 0 pos) (:insert op) (subs text pos))
+                     (+ pos len)))
 
             (delete? op)
-            (recur (rest ops)
-                   (str (subs text 0 pos) (subs text (+ pos len)))
-                   pos)
+            (let [n (count text)
+                  start (max 0 (min pos n))
+                  end (max start (min (+ pos len) n))]
+              (recur (rest ops)
+                     (str (subs text 0 start) (subs text end))
+                     start))
 
             (retain? op)
-            (recur (rest ops) text (+ pos len))))))))
+            (recur (rest ops) text (min (count text) (+ pos len)))))))))

@@ -64,6 +64,16 @@
     (when (not-empty text)
       (s/Clipboard.setData (s/ClipboardData. .text text)))))
 
+(defn- delete-selection!
+  "Delete global selection via :block-ops when present, otherwise fallback-delete!."
+  [!state fallback-delete!]
+  (if-let [del! (get-in @!state [:editor-config :block-ops :delete-cross-block-selection!])]
+    (when-let [g-sel (:global-selection @!state)]
+      (del! !state g-sel)
+      (swap! !state dissoc :global-selection))
+    (when (and fallback-delete! (:global-selection @!state))
+      (fallback-delete! !state))))
+
 ;; --- 3. Paste ---
 
 (defn- paste-into-active-block!
@@ -82,21 +92,24 @@
       (text-cmd/insert-string !state active-id safe-start raw-text))))
 
 (defn paste!
-  "Read clipboard and insert at caret, replacing any local selection.
+  "Read clipboard and insert at caret, replacing any local or cross-block selection.
    Future resolves to {:focus-block id :offset 0} when new block created (no focus); caller focus-block.
-   Cross-block selection should be deleted by the caller before invoking this."
-  [!state]
-  (let [f (s/Clipboard.getData s.Clipboard/kTextPlain)
-        f2 (.then f (fn [data]
-                      (when-let [raw-text (and data (.-text data))]
-                        (let [state @!state
-                              active-id (:active-block-id state)]
-                          (if active-id
-                            (do (paste-into-active-block! !state active-id raw-text)
-                                nil)
-                            (when-let [paste-no-focus! (get-in state [:editor-config :block-ops :paste-when-no-focus!])]
-                              (paste-no-focus! !state raw-text)))))))]
-    (.catchError f2 (fn [_err] nil))))
+   fallback-delete! is used when :block-ops :delete-cross-block-selection! is absent."
+  ([!state]
+   (paste! !state nil))
+  ([!state fallback-delete!]
+   (delete-selection! !state fallback-delete!)
+   (let [f (s/Clipboard.getData s.Clipboard/kTextPlain)
+         f2 (.then f (fn [data]
+                       (when-let [raw-text (and data (.-text data))]
+                         (let [state @!state
+                               active-id (:active-block-id state)]
+                           (if active-id
+                             (do (paste-into-active-block! !state active-id raw-text)
+                                 nil)
+                             (when-let [paste-no-focus! (get-in state [:editor-config :block-ops :paste-when-no-focus!])]
+                               (paste-no-focus! !state raw-text)))))))]
+     (.catchError f2 (fn [_err] nil)))))
 
 ;; --- 4. Cut ---
 
@@ -104,14 +117,9 @@
   "Copy and delete selection."
   [!state delete-global-fn]
   (let [state @!state]
-    ;; 1. Always copy the text first
     (copy! state)
-
-    ;; 2. Delete the text based on selection type
     (if (:global-selection state)
-      (delete-global-fn !state)
-
-      ;; 3. Single block cut (Made robust against selection direction)
+      (delete-selection! !state delete-global-fn)
       (when-let [active-id (:active-block-id state)]
         (let [sel (get-in state [:blocks active-id :selection])]
           (when (and sel (not (.-isCollapsed sel)))

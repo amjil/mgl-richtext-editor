@@ -1,59 +1,11 @@
 (ns rich-editor.defaults
   "Contains default configurations, styling logic, and core command handlers for the editor."
-  (:require ["package:flutter/services.dart" :as s]
-            [rich-editor.config :as config]
+  (:require [rich-editor.config :as config]
             [rich-editor.services.history-service :as history]
             [rich-editor.services.clipboard-service :as clipboard]
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.commands.text-commands :as text-cmd]
             [rich-editor.model.selection :as sel]))
-
-;; =============================================================
-;; Style detector (production-grade): checks if selection is 100% covered by target style
-;; =============================================================
-
-(defn- calc-overlap 
-  "Calculate total overlap character count of a style in the given range [start-off, end-off]"
-  [start-off end-off spans attr-key]
-  (reduce (fn [acc span]
-            (if (get-in span [:attrs attr-key])
-              ;; Calculate the intersection length of two ranges
-              (let [overlap-start (max start-off (:start span))
-                    overlap-end   (min end-off (:end span))]
-                (if (< overlap-start overlap-end)
-                  (+ acc (- overlap-end overlap-start))
-                  acc))
-              acc))
-          0
-          spans))
-
-(defn- is-active-style? 
-  "Check if current selection has fully applied this style"
-  [state attr-key]
-  (if-let [g-sel (:global-selection state)]
-    ;; Cross-block case: for performance and intuition, check if selected portion of start block is 100% covered
-    (let [start-id (get-in g-sel [:start :id])
-          start-off (get-in g-sel [:start :offset])
-          content-len (count (get-in state [:blocks start-id :content] ""))
-          spans (get-in state [:blocks start-id :content-spans] [])
-          target-len (- content-len start-off)]
-      (if (<= target-len 0) 
-        false
-        (>= (calc-overlap start-off content-len spans attr-key) target-len)))
-
-    ;; Single-block case: exact calculation
-    (when-let [active-id (:active-block-id state)]
-      (when-let [sel (get-in state [:blocks active-id :selection])]
-        (let [start-off (min (.-baseOffset sel) (.-extentOffset sel))
-              end-off (max (.-baseOffset sel) (.-extentOffset sel))
-              spans (get-in state [:blocks active-id :content-spans] [])]
-          (if (= start-off end-off)
-            ;; No text selected, cursor only: detect style of character before cursor
-            (> (calc-overlap (max 0 (dec start-off)) start-off spans attr-key) 0)
-            
-            ;; Text selected: check if 100% covered by this style
-            (let [target-len (- end-off start-off)]
-              (>= (calc-overlap start-off end-off spans attr-key) target-len))))))))
 
 (defn- toggle-or-apply-style!
   "Range selection: smart toggle via 100% coverage.
@@ -62,12 +14,12 @@
   (let [state @!state]
     (if-let [g-sel (:global-selection state)]
       (text-cmd/apply-style-cross-block! !state g-sel attr-key
-                                         (if (is-active-style? state attr-key) nil true))
+                                         (if (text-cmd/style-active? state attr-key) nil true))
       (when-let [active-id (:active-block-id state)]
         (let [sel (get-in state [:blocks active-id :selection])]
           (if (and sel (< (.-start sel) (.-end sel)))
             (text-cmd/apply-style !state active-id (.-start sel) (.-end sel) attr-key
-                                  (if (is-active-style? state attr-key) nil true))
+                                  (if (text-cmd/style-active? state attr-key) nil true))
             (text-cmd/toggle-style! !state attr-key)))))))
 
 ;; =============================================================
@@ -92,18 +44,9 @@
    
    :copy (fn [!state] (clipboard/copy! @!state))
    :cut (fn [!state]
-          (clipboard/cut!
-           !state
-           (fn [!s]
-             (if-let [del! (get-in @!s [:editor-config :block-ops :delete-cross-block-selection!])]
-               (when-let [g-sel (:global-selection @!s)]
-                 (del! !s g-sel)
-                 (swap! !s dissoc :global-selection))
-               (editor-cmd/delete-global-selection! !s)))))
+          (clipboard/cut! !state editor-cmd/delete-global-selection!))
    :paste (fn [!state]
-            (when (:global-selection @!state)
-              (editor-cmd/delete-global-selection! !state))
-            (-> (clipboard/paste! !state)
+            (-> (clipboard/paste! !state editor-cmd/delete-global-selection!)
                 (.then (fn [focus-info]
                          (when focus-info
                            (editor-cmd/focus-block !state (:focus-block focus-info) (:offset focus-info)))))))

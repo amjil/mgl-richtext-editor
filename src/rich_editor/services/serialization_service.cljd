@@ -7,16 +7,24 @@
   [state]
   (select-keys state [:blocks :root :selection :active-block-id]))
 
+(defn- document-data?
+  [data]
+  (and (map? data)
+       (map? (:blocks data))
+       (or (nil? (:root data)) (vector? (:root data)))))
+
 (defn import-from-map
-  "Merge parsed data map (EDN/JSON) into state. Returns merged state; does not modify !state."
+  "Merge parsed document keys into state. Ignores maps that are not a document."
   [state data]
-  (merge state data))
+  (if (document-data? data)
+    (merge state (select-keys data [:blocks :root :selection :active-block-id]))
+    state))
 
 (defn load-state!
-  "Merge data into !state (keeps :history etc. not in export)."
+  "Merge document data into !state (keeps :history etc. not in export)."
   [!state data]
-  (when (map? data)
-    (swap! !state (fn [curr] (merge curr data)))
+  (when (document-data? data)
+    (swap! !state (fn [curr] (merge curr (select-keys data [:blocks :root :selection :active-block-id]))))
     true))
 
 (defn replace-state!

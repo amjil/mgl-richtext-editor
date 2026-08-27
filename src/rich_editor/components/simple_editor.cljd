@@ -76,9 +76,14 @@
         start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))
         end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))]
     (if (not= start end)
-      (text-cmd/delete-range !state id start (- end start))
+      (do
+        (text-cmd/delete-range !state id start (- end start))
+        (ime/sync-block! !state id))
       (when (pos? start)
-        (text-cmd/delete-range !state id (dec start) 1)))))
+        (text-cmd/delete-range !state id (dec start) 1)
+        (ime/sync-block! !state id)
+        (when (empty? (get-in @!state [:blocks id :content] ""))
+          (request-focus! !state))))))
 
 (defn insert-entity-at-cursor!
   "Public API: Inserts display text (e.g. '@Alice') and binds its entity ID."
@@ -131,7 +136,8 @@
      :managed [editor-focus-node (m/FocusNode)]
      :watch [state !state]
      
-     :let [main-content
+     :let [_ (node-view/sync-text-keys! state)
+           main-content
            (m/Container
             .padding (m/EdgeInsets.all 12.0)
             .color m.Colors/transparent
@@ -168,15 +174,13 @@
            core-input-area
            (m/Focus
             .focusNode editor-focus-node
-            .onFocusChange 
+            .onFocusChange
             (fn [has-focus?]
               (if has-focus?
                 (do
                   (swap! !state assoc :external-keyboard-delegate nil :cursor-visible true)
                   (request-focus! !state))
-                (do
-                  (ime/detach!)
-                  (swap! !state assoc :cursor-visible false))))
+                (ime/schedule-detach-if-unfocused! editor-focus-node !state)))
             .onKeyEvent (fn [node event] (handle-key-event !state event))
             .child clickable-content)
            

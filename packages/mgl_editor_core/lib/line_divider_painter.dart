@@ -3,14 +3,13 @@ import 'package:flutter/material.dart';
 import 'm_render_paragraph.dart';
 
 class LineDividerPainter extends CustomPainter {
-  final MongolRenderParagraph?
-      renderBox; // Pass RenderObject directly to avoid GlobalKey lookup
+  final GlobalKey textKey;
   final String text;
   final bool extendToLineEnd;
   final Color dividerColor;
 
   LineDividerPainter({
-    required this.renderBox,
+    required this.textKey,
     required this.text,
     this.extendToLineEnd = false,
     this.dividerColor = const Color(0x669E9E9E), // 0x66 = 0.4 opacity
@@ -21,8 +20,18 @@ class LineDividerPainter extends CustomPainter {
   double _maxY = 0.0;
   Size? _layoutSize;
 
+  MongolRenderParagraph? _renderParagraph() {
+    try {
+      final ro = textKey.currentContext?.findRenderObject();
+      if (ro is MongolRenderParagraph) return ro;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   void _ensureGeometry() {
-    final rb = renderBox;
+    final rb = _renderParagraph();
     if (rb == null || !rb.hasSize || text.isEmpty) {
       _columnsRightEdges = const [];
       _layoutSize = null;
@@ -61,7 +70,7 @@ class LineDividerPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final rb = renderBox;
+    final rb = _renderParagraph();
     if (rb == null || !rb.hasSize || text.isEmpty) return;
 
     _ensureGeometry();
@@ -96,12 +105,12 @@ class LineDividerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant LineDividerPainter old) {
-    final Size? newSize =
-        (renderBox != null && renderBox!.hasSize) ? renderBox!.size : null;
-    final Size? oldSize = (old.renderBox != null && old.renderBox!.hasSize)
-        ? old.renderBox!.size
-        : null;
-    return old.renderBox != renderBox ||
+    final rb = _renderParagraph();
+    final Size? newSize = (rb != null && rb.hasSize) ? rb.size : null;
+    final oldRb = old._renderParagraph();
+    final Size? oldSize =
+        (oldRb != null && oldRb.hasSize) ? oldRb.size : null;
+    return old.textKey != textKey ||
         old.text != text ||
         old.extendToLineEnd != extendToLineEnd ||
         old.dividerColor != dividerColor ||

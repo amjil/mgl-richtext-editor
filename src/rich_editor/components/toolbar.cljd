@@ -2,55 +2,17 @@
   (:require ["package:flutter/material.dart" :as m]
             [cljd.flutter :as f]
             [rich-editor.commands.text-commands :as text-cmd]
-            [rich-editor.services.history-service :as history]
-            [rich-editor.model.selection :as sel]))
+            [rich-editor.services.history-service :as history]))
 
 (defn mongol-toolbar [!state]
   (f/widget
    :watch [state !state]
-   :let [global-sel (:global-selection state)
-         active-id (:active-block-id state)
-         block (when active-id (get-in state [:blocks active-id]))
-         local-sel (when block (:selection block))
-
-         ;; 🌟 1. Extract history states to control button availability
-         hist (:history state)
+   :let [hist (:history state)
          can-undo? (boolean (seq (:undo-stack hist)))
          can-redo? (boolean (seq (:redo-stack hist)))
 
-         ;; Helper function to detect if a specific format is active in the current selection
          is-format-active? (fn [format-key]
-                             (if global-sel
-                               ;; Handle global (cross-block) selection
-                               (let [n-sel (sel/normalize state global-sel)
-                                     start-id (get-in n-sel [:start :id])
-                                     start-off (get-in n-sel [:start :offset])
-                                     spans (get-in state [:blocks start-id :content-spans] [])]
-                                 (boolean (some (fn [span]
-                                                  (and (<= (:start span) start-off)
-                                                       (> (:end span) start-off)
-                                                       (get-in span [:attrs format-key])))
-                                                spans)))
-
-                               ;; Handle local (single-block) selection or collapsed cursor
-                               (if (and local-sel (not (.-isCollapsed local-sel)))
-                                 (let [start (min (.-baseOffset local-sel) (.-extentOffset local-sel))
-                                       spans (:content-spans block [])]
-                                   (boolean (some (fn [span]
-                                                    (and (<= (:start span) start)
-                                                         (> (:end span) start)
-                                                         (get-in span [:attrs format-key])))
-                                                  spans)))
-
-                                 ;; Handle Collapsed Cursor: Check pending typing attributes or inherited styles
-                                 (let [offset (if local-sel (.-extentOffset local-sel) 0)
-                                       spans (if block (:content-spans block []) [])
-                                       ;; Use old-len = 0 to inherit format from the immediate left character
-                                       inherited (text-cmd/get-formats-at-offset spans offset 0)
-                                       current-attrs (if (contains? state :typing-attributes)
-                                                       (:typing-attributes state)
-                                                       inherited)]
-                                   (boolean (get current-attrs format-key))))))]
+                             (boolean (text-cmd/style-active? state format-key)))]
 
    (m/Container
     .height 48.0

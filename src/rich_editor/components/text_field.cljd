@@ -13,6 +13,29 @@
         (= p foundation.TargetPlatform/windows)
         (= p foundation.TargetPlatform/linux))))
 
+(defn- apply-controller-value!
+  [controller on-changed ^String new-text selection]
+  (set! (.-value controller)
+        (m/TextEditingValue .text new-text .selection selection))
+  (when on-changed (on-changed new-text)))
+
+(defn- delete-in-controller!
+  [controller on-changed]
+  (let [text (.-text controller)
+        sel (.-selection controller)
+        base (max 0 (.-baseOffset sel))
+        ext (max 0 (.-extentOffset sel))
+        start (min base ext)
+        end (max base ext)]
+    (if (not= start end)
+      (apply-controller-value! controller on-changed
+                               (str (subs text 0 start) (subs text end))
+                               (m/TextSelection.collapsed .offset start))
+      (when (> start 0)
+        (apply-controller-value! controller on-changed
+                                 (str (subs text 0 (dec start)) (subs text end))
+                                 (m/TextSelection.collapsed .offset (dec start)))))))
+
 (defn text-field
   "Autonomous Mongolian text field.
    Supports both Mobile virtual keyboard routing and Desktop physical keyboard IME injection."
@@ -61,17 +84,16 @@
               (s/SystemChannels.textInput.invokeMethod "TextInput.hide"))
 
             (ime-ctrl/register-client!
-             {:replace-text!
+             {:owner controller
+              :replace-text!
               (fn [delete-len insert-str]
                 (let [text (.-text controller)
                       sel (.-selection controller)
                       offset (max 0 (.-extentOffset sel))
                       start-idx (max 0 (- offset delete-len))
                       new-text (str (subs text 0 start-idx) insert-str (subs text offset))]
-                  (set! (.-value controller)
-                        (m/TextEditingValue 
-                         .text new-text
-                         .selection (m/TextSelection.collapsed .offset (+ start-idx (count insert-str)))))))
+                  (apply-controller-value! controller on-changed new-text
+                                           (m/TextSelection.collapsed .offset (+ start-idx (count insert-str))))))
               :update-caret! (fn [])
               :get-context-text! 
               (fn []
@@ -88,25 +110,11 @@
                         (when focus-node (.unfocus focus-node))))
                     
                     :on-backspace 
-                    (fn []
-                      (let [text (.-text controller)
-                            sel (.-selection controller)
-                            base (max 0 (.-baseOffset sel))
-                            ext (max 0 (.-extentOffset sel))
-                            start (min base ext)
-                            end (max base ext)]
-                        (if (not= start end)
-                          (set! (.-value controller)
-                                (m/TextEditingValue 
-                                 .text (str (subs text 0 start) (subs text end))
-                                 .selection (m/TextSelection.collapsed .offset start)))
-                          (when (> start 0)
-                            (set! (.-value controller)
-                                  (m/TextEditingValue 
-                                   .text (str (subs text 0 (dec start)) (subs text end))
-                                   .selection (m/TextSelection.collapsed .offset (dec start))))))))}))
+                    (fn [] (delete-in-controller! controller on-changed))}))
           
           (do
+            (when (identical? (:owner @ime-ctrl/!active-client) controller)
+              (ime-ctrl/unregister-client!))
             (swap! !shared-state assoc :external-keyboard-delegate nil))))
       
       .onKeyEvent 
@@ -128,30 +136,14 @@
                           ext (max 0 (.-extentOffset sel))
                           start (min base ext)
                           end (max base ext)]
-                      (set! (.-value controller)
-                            (m/TextEditingValue 
-                             .text (str (subs text 0 start) " " (subs text end))
-                             .selection (m/TextSelection.collapsed .offset (inc start)))))
+                      (apply-controller-value! controller on-changed
+                                               (str (subs text 0 start) " " (subs text end))
+                                               (m/TextSelection.collapsed .offset (inc start))))
                     m.KeyEventResult/handled)
 
                   (= logical-key s.LogicalKeyboardKey/backspace)
                   (do
-                    (let [text (.-text controller)
-                          sel (.-selection controller)
-                          base (max 0 (.-baseOffset sel))
-                          ext (max 0 (.-extentOffset sel))
-                          start (min base ext)
-                          end (max base ext)]
-                      (if (not= start end)
-                        (set! (.-value controller)
-                              (m/TextEditingValue 
-                               .text (str (subs text 0 start) (subs text end))
-                               .selection (m/TextSelection.collapsed .offset start)))
-                        (when (> start 0)
-                          (set! (.-value controller)
-                                (m/TextEditingValue 
-                                 .text (str (subs text 0 (dec start)) (subs text end))
-                                 .selection (m/TextSelection.collapsed .offset (dec start)))))))
+                    (delete-in-controller! controller on-changed)
                     m.KeyEventResult/handled)
                   
                   (= logical-key s.LogicalKeyboardKey/enter)

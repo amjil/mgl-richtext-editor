@@ -1,9 +1,7 @@
 (ns rich-editor.commands.text-commands
   "Handles text mutations, formatting, and block-level transformations for the rich text editor.
    Powered by a high-performance O(S) Interval Math Engine for rendering spans."
-  (:require ["package:flutter/services.dart" :as s]
-            ["package:flutter/material.dart" :as m]
-            ["dart:core" :as dc]
+  (:require ["package:flutter/material.dart" :as m]
             [rich-editor.model.delta :as delta]
             [rich-editor.model.transaction :as tx]
             [rich-editor.model.selection :as sel]
@@ -24,6 +22,45 @@
                 acc))
             {}
             spans)))
+
+(defn- style-overlap-len
+  [start-off end-off spans attr-key]
+  (reduce (fn [acc span]
+            (if (get-in span [:attrs attr-key])
+              (let [overlap-start (max start-off (:start span))
+                    overlap-end (min end-off (:end span))]
+                (if (< overlap-start overlap-end)
+                  (+ acc (- overlap-end overlap-start))
+                  acc))
+              acc))
+          0
+          spans))
+
+(defn style-active?
+  "True when the current selection is fully covered by attr-key.
+   Collapsed caret: true if the character before the caret has the style.
+   Shared by toolbar highlight and toggle-or-apply."
+  [state attr-key]
+  (if-let [g-sel (:global-selection state)]
+    (let [start-id (get-in g-sel [:start :id])
+          start-off (get-in g-sel [:start :offset])
+          content-len (count (get-in state [:blocks start-id :content] ""))
+          spans (get-in state [:blocks start-id :content-spans] [])
+          target-len (- content-len start-off)]
+      (if (<= target-len 0)
+        false
+        (>= (style-overlap-len start-off content-len spans attr-key) target-len)))
+    (when-let [active-id (:active-block-id state)]
+      (if (contains? state :typing-attributes)
+        (boolean (get (:typing-attributes state) attr-key))
+        (when-let [sel (get-in state [:blocks active-id :selection])]
+          (let [start-off (min (.-baseOffset sel) (.-extentOffset sel))
+                end-off (max (.-baseOffset sel) (.-extentOffset sel))
+                spans (get-in state [:blocks active-id :content-spans] [])]
+            (if (= start-off end-off)
+              (> (style-overlap-len (max 0 (dec start-off)) start-off spans attr-key) 0)
+              (let [target-len (- end-off start-off)]
+                (>= (style-overlap-len start-off end-off spans attr-key) target-len)))))))))
 
 (defn- normalize-spans
   "Merges adjacent spans with identical attributes and removes empty spans.

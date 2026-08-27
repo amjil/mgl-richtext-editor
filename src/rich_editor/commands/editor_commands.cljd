@@ -12,7 +12,9 @@
 (defn focus-block
   "The ONLY place to clear typing-attributes. This happens when the cursor is explicitly moved."
   [!state block-id offset]
-  (let [new-sel (s/TextSelection.collapsed .offset offset)]
+  (let [len (count (get-in @!state [:blocks block-id :content] ""))
+        off (max 0 (min (or offset 0) len))
+        new-sel (s/TextSelection.collapsed .offset off)]
     (swap! !state (fn [curr]
                     (-> curr
                         (dissoc :global-selection)
@@ -121,10 +123,8 @@
     (= intent :redo) (history/redo! !state)
     (= intent :copy) (clipboard/copy! @!state)
     (= intent :cut) (clipboard/cut! !state delete-global-selection!)
-    (= intent :paste) (do
-                        (when (:global-selection @!state)
-                          (delete-global-selection! !state))
-                        (-> (clipboard/paste! !state) (.then #(when % (focus-block !state (:focus-block %) (:offset %))))))
+    (= intent :paste) (-> (clipboard/paste! !state delete-global-selection!)
+                          (.then #(when % (focus-block !state (:focus-block %) (:offset %)))))
     (= intent :bold) (text-cmd/toggle-style! !state :bold)
     (= intent :italic) (text-cmd/toggle-style! !state :italic)
     (= intent :underline) (text-cmd/toggle-style! !state :underline)

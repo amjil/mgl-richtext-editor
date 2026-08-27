@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui show Gradient, Shader;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
@@ -185,11 +186,26 @@ class MongolRenderParagraph extends RenderBox
     }
   }
 
+  Size _emptyFallbackSize() {
+    final fontSize = (text.style?.fontSize ?? 14.0) * textScaleFactor;
+    final heightMult = text.style?.height ?? 1.0;
+    return Size(fontSize * heightMult, fontSize);
+  }
+
   @override
   void performLayout() {
     final constraints = this.constraints;
     _layoutTextWithConstraints(constraints);
-    final textSize = _textPainter.size;
+    var textSize = _textPainter.size;
+    // Empty vertical text lays out as 0×0. Keep one column so the caret
+    // and hit-testing still have a box after the last character is deleted.
+    if (text.toPlainText().isEmpty) {
+      final fallback = _emptyFallbackSize();
+      textSize = Size(
+        math.max(textSize.width, fallback.width),
+        math.max(textSize.height, fallback.height),
+      );
+    }
     final textDidExceedMaxLines = _textPainter.didExceedMaxLines;
     size = constraints.constrain(textSize);
 

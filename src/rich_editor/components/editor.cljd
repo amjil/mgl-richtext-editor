@@ -6,7 +6,6 @@
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.commands.text-commands :as text-cmd]
             [rich-editor.services.ime-service :as ime]
-            [rich-editor.services.clipboard-service :as clipboard]
             [rich-editor.services.history-service :as history]
             [rich-editor.config :as config]
             [rich-editor.defaults :as defaults]
@@ -68,6 +67,40 @@
                 (m/TextSelection.collapsed .offset (count (get-in state [:blocks prev-id :content] ""))))
       state)))
 
+(defn- split-block-at-cursor-impl! [!state block-id]
+  (let [sel (get-in @!state [:blocks block-id :selection])
+        offset (if sel (max 0 (.-extentOffset sel)) 0)]
+    (text-cmd/split-block! !state block-id offset)
+    (:active-block-id @!state)))
+
+(defn- merge-with-previous-impl! [!state block-id]
+  (let [state-val @!state
+        cfg (or (:editor-config state-val) defaults/full-default-config)
+        prev-id (sel/prev-id state-val block-id)
+        prev-block (when prev-id (get-in state-val [:blocks prev-id]))]
+    (when (and prev-id prev-block (config/text-block-type? cfg (:type prev-block)))
+      (let [new-offset (count (:content prev-block ""))]
+        (swap! !state (fn [s] (-> s (history/push-history false) (merge-text-blocks prev-id block-id))))
+        {:prev-id prev-id :new-offset new-offset}))))
+
+(defn- delete-cross-block-impl! [!state _g-sel]
+  (editor-cmd/delete-global-selection! !state)
+  (let [s @!state
+        id (:active-block-id s)
+        sel (when id (get-in s [:blocks id :selection]))]
+    {:focus-block id
+     :offset (if sel (.-extentOffset sel) 0)}))
+
+(def ^:private builtin-block-ops
+  {:split-block-at-cursor! split-block-at-cursor-impl!
+   :merge-with-previous! merge-with-previous-impl!
+   :delete-cross-block-selection! delete-cross-block-impl!})
+
+(defn- resolve-editor-config [editor-config]
+  (let [user (or editor-config {})
+        with-ops (if (:block-ops user) user (assoc user :block-ops builtin-block-ops))]
+    (config/merge-config defaults/full-default-config with-ops)))
+
 ;; =============================================================================
 ;; THE CORE ENGINE FOR BACKSPACE
 ;; =============================================================================
@@ -93,13 +126,19 @@
               (text-cmd/delete-range !state active-id start (- end start))
               (editor-cmd/focus-block !state active-id start))
             (if (> start 0)
-              (text-cmd/delete-range !state active-id (dec start) 1)
+              (do
+                (text-cmd/delete-range !state active-id (dec start) 1)
+                (ime/sync-block! !state active-id)
+                (when (empty? (get-in @!state [:blocks active-id :content] ""))
+                  (editor-cmd/focus-block !state active-id 0)))
               (when prev-id
-                (let [prev-block (get-in state-val [:blocks prev-id])
-                      prev-is-text? (config/text-block-type? cfg (:type prev-block))]
-                  (if prev-is-text?
-                    (swap! !state (fn [s] (-> s (history/push-history false) (merge-text-blocks prev-id active-id))))
-                    (editor-cmd/focus-block !state prev-id 1))))))
+                (if-let [{:keys [prev-id new-offset]} (merge-with-previous-impl! !state active-id)]
+                  (editor-cmd/focus-block !state prev-id new-offset)
+                  (let [prev-block (get-in @!state [:blocks prev-id])
+                        prev-off (if (config/text-block-type? cfg (:type prev-block))
+                                   (count (:content prev-block ""))
+                                   1)]
+                    (editor-cmd/focus-block !state prev-id prev-off))))))
           (if (> start 0)
             (swap! !state (fn [s] (-> s (history/push-history false) (delete-block active-id prev-id))))
             (when prev-id
@@ -119,10 +158,11 @@
             sel (:selection block)
             offset (if sel (.-extentOffset sel) 0)]
         (if is-text?
-          (do
-            (text-cmd/split-block! !state active-id offset)
-            (let [new-active-id (:active-block-id @!state)]
-              (editor-cmd/focus-block !state new-active-id 0)))
+          (let [split! (or (get-in @!state [:editor-config :block-ops :split-block-at-cursor!])
+                           split-block-at-cursor-impl!)
+                new-id (split! !state active-id)]
+            (when new-id
+              (editor-cmd/focus-block !state new-id 0)))
           (let [new-id (str (random-uuid))
                 parent (node/find-parent-id state-val active-id)]
             (swap! !state
@@ -148,26 +188,12 @@
       (let [logical-key (.-logicalKey event)
             is-down? (dart/is? event s/KeyDownEvent)
             hw-kb (.-instance s/HardwareKeyboard)
-            is-ctrl? (or (.-isControlPressed hw-kb) (.-isMetaPressed hw-kb))
             is-up? (= logical-key s.LogicalKeyboardKey/arrowUp)
             is-down-arrow? (= logical-key s.LogicalKeyboardKey/arrowDown)
             is-left? (= logical-key s.LogicalKeyboardKey/arrowLeft)
             is-right? (= logical-key s.LogicalKeyboardKey/arrowRight)
             is-arrow? (or is-up? is-down-arrow? is-left? is-right?)]
         (cond
-          (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyC))
-          (do (clipboard/copy! @!state) m.KeyEventResult/handled)
-
-          (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyV))
-          (do
-            (when (:global-selection @!state)
-              (editor-cmd/delete-global-selection! !state))
-            (clipboard/paste! !state)
-            m.KeyEventResult/handled)
-
-          (and is-down? is-ctrl? (= logical-key s.LogicalKeyboardKey/keyX))
-          (do (clipboard/cut! !state editor-cmd/delete-global-selection!) m.KeyEventResult/handled)
-
           (= logical-key s.LogicalKeyboardKey/escape) m.KeyEventResult/handled
 
           (= logical-key s.LogicalKeyboardKey/backspace)
@@ -228,12 +254,20 @@
 (defn mongol-editor
   "Highly encapsulated Mongolian rich text editor."
   [!state editor-config & {:keys [leading-widget toolbar]}]
-  (let [cfg (config/merge-config defaults/full-default-config editor-config)]
+  (let [cfg (resolve-editor-config editor-config)]
+    (when (nil? (get-in @!state [:editor-config :block-ops]))
+      (swap! !state assoc :editor-config cfg))
     (f/widget
      :managed [editor-focus-node (m/FocusNode)]
      :watch [state !state]
      
-     (let [content-list (m/ListView
+     (let [_ (node-view/sync-text-keys! state)
+           shortcut-child (fn [child]
+                            (m/CallbackShortcuts
+                             .bindings (config/shortcut-bindings cfg !state)
+                             .child child))
+
+           content-list (m/ListView
                          .scrollDirection m.Axis/horizontal
                          .padding (m.EdgeInsets/all 20.0)
                          .children (mapv (fn [i]
@@ -260,37 +294,41 @@
                               (m/GestureDetector
                                .behavior m.HitTestBehavior/translucent
                                .onTap (fn []
-                                        (when-not (:active-block-id @!state)
-                                          (when-let [last-id (last (:root @!state))]
-                                            (let [len (count (get-in @!state [:blocks last-id :content] ""))]
-                                              (editor-cmd/focus-block !state last-id len)))))
+                                        (let [s @!state
+                                              id (or (:active-block-id s) (last (:root s)))]
+                                          (when id
+                                            (let [sel (get-in s [:blocks id :selection])
+                                                  len (count (get-in s [:blocks id :content] ""))
+                                                  off (if (and sel (.-isValid sel))
+                                                        (max 0 (min (.-extentOffset sel) len))
+                                                        len)]
+                                              (editor-cmd/focus-block !state id off)))))
                                .child content-list))
            
            core-input-area (m/Focus
                             .focusNode editor-focus-node
-                            .onFocusChange 
+                            .onFocusChange
                             (fn [has-focus?]
                               (if has-focus?
                                 (do
                                   (swap! !state assoc :external-keyboard-delegate nil :cursor-visible true)
-                                  
+
                                   (when-let [target-id (or (:active-block-id @!state) (last (:root @!state)))]
                                     (let [sel (get-in @!state [:blocks target-id :selection])
                                           offset (if sel (.-extentOffset sel) (count (get-in @!state [:blocks target-id :content] "")))]
                                       (editor-cmd/focus-block !state target-id offset))))
-                                (do
-                                  (ime/detach!)
-                                  (swap! !state assoc :cursor-visible false))))
+                                (ime/schedule-detach-if-unfocused! editor-focus-node !state)))
                             .onKeyEvent (fn [node event] (handle-key-event cfg !state node event))
                             .child clickable-content)
 
-           combined-input-area (m/Row
-                                .crossAxisAlignment m.CrossAxisAlignment/start
-                                .children
-                                [(if leading-widget
-                                   leading-widget
-                                   (m/SizedBox.shrink))
-                                 (m/Expanded .child core-input-area)])]
+           combined-input-area (shortcut-child
+                                (m/Row
+                                 .crossAxisAlignment m.CrossAxisAlignment/start
+                                 .children
+                                 [(if leading-widget
+                                    leading-widget
+                                    (m/SizedBox.shrink))
+                                  (m/Expanded .child core-input-area)]))]
 
        (if (is-mobile?)
          (f/widget
@@ -342,10 +380,6 @@
          (overlay/ime-global-wrapper
           (m/Column
            .children
-           [(m/Expanded
-             .child
-             (m/CallbackShortcuts
-              .bindings (config/shortcut-bindings cfg !state)
-              .child combined-input-area))
+           [(m/Expanded .child combined-input-area)
             (if toolbar toolbar (m/SizedBox.shrink))])
           "main-page-ime-wrapper"))))))
