@@ -132,31 +132,27 @@
     (m/TextSelection. .baseOffset (max 0 (min (.-baseOffset selection) content-len))
                       .extentOffset (max 0 (min (.-extentOffset selection) content-len)))))
 
-(defn- compute-selection [state id cfg]
-  (let [g-sel (:global-selection state)
-        local-sel (get-in state [:blocks id :selection])]
-    (if (and g-sel (:start g-sel) (:end g-sel))
-      (let [n-sel (sel/normalize state g-sel)
-            start-id (get-in n-sel [:start :id])
-            end-id (get-in n-sel [:end :id])
-            start-off (get-in n-sel [:start :offset])
-            end-off (get-in n-sel [:end :offset])
-            cmp-start (sel/compare-block-order state id start-id)
-            cmp-end (sel/compare-block-order state id end-id)
-            ;; Atomic blocks conceptually have length 1 for selection purposes
-            content-len (if (config/text-block-type? cfg (:type (get-in state [:blocks id])))
-                          (count (get-in state [:blocks id :content] ""))
-                          1)]
-        (cond
-          (or (< cmp-start 0) (> cmp-end 0)) nil
-          (and (= cmp-start 0) (= cmp-end 0)) (clamp-selection content-len (m/TextSelection. .baseOffset start-off .extentOffset end-off))
-          (= cmp-start 0) (clamp-selection content-len (m/TextSelection. .baseOffset start-off .extentOffset content-len))
-          (= cmp-end 0) (clamp-selection content-len (m/TextSelection. .baseOffset 0 .extentOffset end-off))
-          :else (clamp-selection content-len (m/TextSelection. .baseOffset 0 .extentOffset content-len))))
-      (clamp-selection (if (config/text-block-type? cfg (:type (get-in state [:blocks id])))
-                         (count (get-in state [:blocks id :content] ""))
-                         1)
-                       local-sel))))
+(defn- selection-from-snap
+  "Paint selection from the per-block snapshot (no full editor state)."
+  [snap cfg]
+  (let [block (:block snap)
+        content-len (if (config/text-block-type? cfg (:type block))
+                      (count (:content block ""))
+                      1)]
+    (if (:in-sel? snap)
+      (cond
+        (and (:is-sel-start? snap) (:is-sel-end? snap))
+        (clamp-selection content-len (m/TextSelection. .baseOffset (or (:g-start-off snap) 0)
+                                                       .extentOffset (or (:g-end-off snap) 0)))
+        (:is-sel-start? snap)
+        (clamp-selection content-len (m/TextSelection. .baseOffset (or (:g-start-off snap) 0)
+                                                       .extentOffset content-len))
+        (:is-sel-end? snap)
+        (clamp-selection content-len (m/TextSelection. .baseOffset 0
+                                                       .extentOffset (or (:g-end-off snap) 0)))
+        :else
+        (clamp-selection content-len (m/TextSelection. .baseOffset 0 .extentOffset content-len)))
+      (clamp-selection content-len (:selection block)))))
 
 (defonce !ordered-ids-cache (atom nil))
 
@@ -178,22 +174,30 @@
 
 (defn- block-render-snapshot
   "Slice of editor state that this block's widget actually paints.
-   Typing in another block leaves this map equal, so :watch skips rebuild."
+   Typing in another block leaves this map equal, so f/$ skips rebuild."
   [state id root-index]
   (let [block (get-in state [:blocks id])
         g-sel (:global-selection state)
         start-id (get-in g-sel [:start :id])
         end-id (get-in g-sel [:end :id])
+        ordered (when (and start-id end-id)
+                  (cached-ordered-ids state))
+        ;; Document order, so backwards drags paint the same as sel/normalize.
+        [from-id from-off to-id to-off]
+        (when ordered
+          (let [si (.indexOf ordered start-id)
+                ei (.indexOf ordered end-id)]
+            (if (<= si ei)
+              [start-id (get-in g-sel [:start :offset]) end-id (get-in g-sel [:end :offset])]
+              [end-id (get-in g-sel [:end :offset]) start-id (get-in g-sel [:start :offset])])))
         active? (= (:active-block-id state) id)
-        in-sel? (boolean
-                 (and start-id end-id
-                      (block-in-selection? (cached-ordered-ids state) id start-id end-id)))]
+        in-sel? (boolean (and from-id to-id (block-in-selection? ordered id from-id to-id)))]
     {:block block
      :in-sel? in-sel?
-     :is-sel-start? (boolean (= id start-id))
-     :is-sel-end? (boolean (= id end-id))
-     :g-start-off (when (= id start-id) (get-in g-sel [:start :offset]))
-     :g-end-off (when (= id end-id) (get-in g-sel [:end :offset]))
+     :is-sel-start? (boolean (= id from-id))
+     :is-sel-end? (boolean (= id to-id))
+     :g-start-off (when (= id from-id) from-off)
+     :g-end-off (when (= id to-id) to-off)
      :is-active active?
      :cursor-visible (boolean (and active? (:cursor-visible state) (nil? g-sel)))
      :list-num (ordered-list-number state id root-index)}))
@@ -207,12 +211,14 @@
          text-key (get-text-key id)]
      (sync-text-keys! @!state)
      (f/widget
-      :watch [state !state]
-      (let [snap (block-render-snapshot state id root-index)
-            block (:block snap)
+      ;; Shopper-style derived watch: rebuild only when this block's paint slice changes.
+      :watch [snap (f/$ (block-render-snapshot (f/<! !state) id root-index))]
+      (if-not (:block snap)
+        (m/SizedBox.shrink)
+        (let [block (:block snap)
             block-type (:type block)
             is-text? (config/text-block-type? cfg block-type)
-            selection (compute-selection state id cfg)
+            selection (selection-from-snap snap cfg)
 
             is-active (boolean
                        (or (:is-active snap)
@@ -426,4 +432,4 @@
                     .top (if (== sel-offset 0) -2.0 nil)
                     .bottom (if (> sel-offset 0) -2.0 nil)
                     .child (m/Container .height 2.0 .color m.Colors/blue))
-                   (m/SizedBox.shrink))])))))))))))
+                   (m/SizedBox.shrink))]))))))))))))
