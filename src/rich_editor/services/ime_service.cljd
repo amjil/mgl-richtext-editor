@@ -3,7 +3,8 @@
             ["package:flutter/material.dart" :as m]
             ["package:flutter/widgets.dart" :as w]
             [rich-editor.commands.text-commands :as text-cmd]
-            [shared-ime.controller :as ime-ctrl]))
+            [shared-ime.controller :as ime-ctrl]
+            [virtual-keyboard.keyboard-action :as vk-action]))
 
 (declare update-state! attach! detach!)
 
@@ -44,6 +45,11 @@
   [!state focus-node]
   (when (and !state focus-node)
     (update-session! !state #(assoc % :focus-node focus-node))))
+
+(defn- dismiss-candidates! []
+  (ime-ctrl/clear-candidates!)
+  (vk-action/clear-candidates)
+  nil)
 
 (defn- split-block-at-cursor! [!state block-id]
   (when-let [f (get-in @!state [:editor-config :block-ops :split-block-at-cursor!])]
@@ -192,7 +198,8 @@
             (dart/is? delta s/TextEditingDeltaInsertion)
             (let [text (.-textInserted delta)]
               (if (or (= text "\n") (= text "\r\n"))
-                (do (reset! !handled-newline true)
+                (do (dismiss-candidates!)
+                    (reset! !handled-newline true)
                     (if-let [new-id (split-block-at-cursor! !state block-id)]
                       (do (if-let [f @!split-focus-callback]
                             (f !state new-id 0)
@@ -246,18 +253,20 @@
         (when (or (= action s.TextInputAction/newline) (= action s.TextInputAction/done))
           (if @!handled-newline
             (reset! !handled-newline false)
-            (if-let [new-id (split-block-at-cursor! !state block-id)]
-              (if-let [f @!split-focus-callback]
-                (f !state new-id 0)
-                (focus-block-internal! !state new-id 0))
-              ;; Fallback: insert newline at caret
-              (let [sel (get-in @!state [:blocks block-id :selection])
-                    offset (if sel (max 0 (.-extentOffset sel)) 0)]
-                (text-cmd/insert-string !state block-id offset "\n")
-                (update-state! !state
-                               (get-in @!state [:blocks block-id :content])
-                               (get-in @!state [:blocks block-id :selection]))
-                (request-frame!))))))
+            (do
+              (dismiss-candidates!)
+              (if-let [new-id (split-block-at-cursor! !state block-id)]
+                (if-let [f @!split-focus-callback]
+                  (f !state new-id 0)
+                  (focus-block-internal! !state new-id 0))
+                ;; Fallback: insert newline at caret
+                (let [sel (get-in @!state [:blocks block-id :selection])
+                      offset (if sel (max 0 (.-extentOffset sel)) 0)]
+                  (text-cmd/insert-string !state block-id offset "\n")
+                  (update-state! !state
+                                 (get-in @!state [:blocks block-id :content])
+                                 (get-in @!state [:blocks block-id :selection]))
+                  (request-frame!))))))
 
       (^void performSelector [this ^String selectorName]
         (let [block (get-in @!state [:blocks block-id])
@@ -298,13 +307,15 @@
                 (request-frame!)))
 
             (or (= selectorName "insertNewline:") (= selectorName "insertNewlineIgnoringFieldEditor:"))
-            (if-let [new-id (split-block-at-cursor! !state block-id)]
-              (if-let [f @!split-focus-callback] (f !state new-id 0) (focus-block-internal! !state new-id 0))
-              (do (text-cmd/insert-string !state block-id ext "\n")
-                  (update-state! !state
-                                 (get-in @!state [:blocks block-id :content])
-                                 (get-in @!state [:blocks block-id :selection]))
-                  (request-frame!)))
+            (do
+              (dismiss-candidates!)
+              (if-let [new-id (split-block-at-cursor! !state block-id)]
+                (if-let [f @!split-focus-callback] (f !state new-id 0) (focus-block-internal! !state new-id 0))
+                (do (text-cmd/insert-string !state block-id ext "\n")
+                    (update-state! !state
+                                   (get-in @!state [:blocks block-id :content])
+                                   (get-in @!state [:blocks block-id :selection]))
+                    (request-frame!))))
             :else nil)))
 
       (^void updateEditingValue [this ^s/TextEditingValue value]
