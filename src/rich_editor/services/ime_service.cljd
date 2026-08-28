@@ -266,7 +266,7 @@
                   (update-state! !state
                                  (get-in @!state [:blocks block-id :content])
                                  (get-in @!state [:blocks block-id :selection]))
-                  (request-frame!))))))
+                  (request-frame!)))))))
 
       (^void performSelector [this ^String selectorName]
         (let [block (get-in @!state [:blocks block-id])

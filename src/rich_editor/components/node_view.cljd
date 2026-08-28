@@ -8,6 +8,7 @@
             [shared-ime.controller :as ime-ctrl]
             [rich-editor.rendering.text-renderer :as text-renderer]
             [rich-editor.commands.editor-commands :as editor-cmd]
+            [rich-editor.services.ime-service :as ime]
             [rich-editor.model.selection :as sel]
             [rich-editor.config :as config]))
 
@@ -16,6 +17,19 @@
   (let [platform foundation/defaultTargetPlatform]
     (or (= platform foundation.TargetPlatform/android)
         (= platform foundation.TargetPlatform/iOS))))
+
+(defn- run-sel-cmd!
+  "Run a selection command (copy/cut/paste/select-all) and keep IME in sync."
+  [cfg !state id intent]
+  (let [sync! (fn []
+                (when-let [aid (or (:active-block-id @!state) id)]
+                  (ime/sync-block! !state aid)))
+        result (config/run-command cfg !state intent)]
+    (if (= intent :paste)
+      (when result
+        (.then result (fn [_] (sync!))))
+      (sync!))
+    nil))
 
 (defonce !block-text-keys (atom {}))
 
@@ -274,27 +288,51 @@
                  (editor-cmd/focus-block !state id offset))))
 
            .onLongPressStart
-           (fn [^m/LongPressStartDetails details] 
-             (swap! !state dissoc :global-selection)
+           (fn [^m/LongPressStartDetails details]
              (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
                    text (get-in @!state [:blocks id :content] "")
-                   [start end] (get-word-boundaries text offset)]
+                   [start end] (get-word-boundaries text offset)
+                   len (count text)]
                (if (= start end)
                  (editor-cmd/focus-block !state id offset)
-                 (swap! !state assoc :global-selection {:start {:id id :offset start}
-                                                        :end   {:id id :offset end}}))))
+                 (swap! !state
+                        (fn [s]
+                          (-> s
+                              (assoc :global-selection {:start {:id id :offset start}
+                                                        :end   {:id id :offset end}}
+                                     :active-block-id id
+                                     :cursor-visible true)
+                              (assoc-in [:blocks id :selection]
+                                        (clamp-selection len (m/TextSelection. .baseOffset start .extentOffset end)))))))))
 
            .onPanStart
            (fn [^m/DragStartDetails details]
-             (swap! !state dissoc :global-selection)
-             (let [offset (get-safe-offset @!state id text-key (.globalPosition details))]
-               (swap! !state assoc :global-selection {:start {:id id :offset offset}
-                                                      :end   {:id id :offset offset}})))
+             (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
+                   len (count (get-in @!state [:blocks id :content] ""))]
+               (swap! !state
+                      (fn [s]
+                        (-> s
+                            (assoc :global-selection {:start {:id id :offset offset}
+                                                      :end   {:id id :offset offset}}
+                                   :active-block-id id
+                                   :cursor-visible true)
+                            (assoc-in [:blocks id :selection]
+                                      (clamp-selection len (m/TextSelection.collapsed .offset offset))))))))
 
            .onPanUpdate
            (fn [^m/DragUpdateDetails details]
              (when-let [target (find-block-at-offset @!state (.globalPosition details) cfg)]
-               (swap! !state assoc-in [:global-selection :end] target)))
+               (swap! !state
+                      (fn [s]
+                        (let [s (assoc-in s [:global-selection :end] target)
+                              start (get-in s [:global-selection :start])
+                              content-len (count (get-in s [:blocks id :content] ""))]
+                          (if (and start (= (:id start) id) (= (:id target) id))
+                            (assoc-in s [:blocks id :selection]
+                                      (clamp-selection content-len
+                                                       (m/TextSelection. .baseOffset (:offset start)
+                                                                         .extentOffset (:offset target))))
+                            s))))))
 
            .child
            (m/Padding
@@ -318,27 +356,33 @@
                                 .showCaretHandle show-caret-handle
                                 .showStartHandle show-start-handle
                                 .showEndHandle show-end-handle
+                                .showToolbar (boolean (and is-mobile-env has-valid-sel))
+                                .onPaste (fn [] (run-sel-cmd! cfg !state id :paste))
+                                .onCopy (fn [] (run-sel-cmd! cfg !state id :copy))
+                                .onSelectAll (fn [] (run-sel-cmd! cfg !state id :select-all))
+                                .onCut (fn [] (run-sel-cmd! cfg !state id :cut))
 
                                 .onSelectionChanged
                                 (fn [^m/TextSelection new-selection]
-                                  (if (:global-selection @!state)
-                                    (let [start-id (get-in @!state [:global-selection :start :id])
-                                          end-id (get-in @!state [:global-selection :end :id])]
-                                      (when (= id start-id)
-                                        (swap! !state assoc-in [:global-selection :start :offset] (.-baseOffset new-selection)))
-                                      (when (= id end-id)
-                                        (swap! !state assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))
-                                    (do
-                                      (let [len (count (get-in @!state [:blocks id :content] ""))]
-                                        (swap! !state assoc-in [:blocks id :selection]
-                                               (clamp-selection len new-selection)))
-                                      (when (not is-active)
-                                        ;; Do NOT call focus-block for range sels — it collapses the selection.
-                                        (if (.-isCollapsed new-selection)
-                                          (editor-cmd/focus-block !state id (.-extentOffset new-selection))
-                                          (swap! !state assoc
-                                                 :active-block-id id
-                                                 :cursor-visible true))))))))]
+                                  (let [len (count (get-in @!state [:blocks id :content] ""))]
+                                    (swap! !state
+                                           (fn [s]
+                                             (let [s (assoc-in s [:blocks id :selection]
+                                                               (clamp-selection len new-selection))]
+                                               (if-not (:global-selection s)
+                                                 s
+                                                 (cond-> s
+                                                   (= id (get-in s [:global-selection :start :id]))
+                                                   (assoc-in [:global-selection :start :offset] (.-baseOffset new-selection))
+                                                   (= id (get-in s [:global-selection :end :id]))
+                                                   (assoc-in [:global-selection :end :offset] (.-extentOffset new-selection))))))))
+                                  (when (not is-active)
+                                    ;; Do NOT call focus-block for range sels — it collapses the selection.
+                                    (if (.-isCollapsed new-selection)
+                                      (editor-cmd/focus-block !state id (.-extentOffset new-selection))
+                                      (swap! !state assoc
+                                             :active-block-id id
+                                             :cursor-visible true))))))]
               
               ;; TEXT BLOCK WRAPPERS (for warning boxes, quote blocks etc)
               (if-let [wrapper-fn (get-in cfg [:text-block-wrappers block-type])]

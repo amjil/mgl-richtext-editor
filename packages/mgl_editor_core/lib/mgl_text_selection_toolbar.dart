@@ -3,87 +3,111 @@ import 'package:mongol/mongol.dart';
 
 class MglTextSelectionToolbar extends StatelessWidget {
   final LayerLink layerLink;
-  final VoidCallback onCopy;
+  final Offset offset;
+  final double fontSize;
   final VoidCallback onPaste;
+  final VoidCallback onCopy;
   final VoidCallback onSelectAll;
-  final VoidCallback onDelete;
+  final VoidCallback onCut;
 
   const MglTextSelectionToolbar({
     super.key,
     required this.layerLink,
-    required this.onCopy,
+    this.offset = const Offset(12, 0),
+    this.fontSize = 10.0,
     required this.onPaste,
+    required this.onCopy,
     required this.onSelectAll,
-    required this.onDelete,
+    required this.onCut,
   });
 
   @override
   Widget build(BuildContext context) {
+    const double iconSize = 16.0;
+    const double padH = 8.0;
+    const double padV = 6.0;
+
     return CompositedTransformFollower(
       link: layerLink,
       showWhenUnlinked: false,
-      // Mongol selection is usually on the left; place toolbar 30px to the right
-      offset: const Offset(30, 0), 
+      offset: offset,
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0.0, end: 1.0),
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutBack,
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOut,
         builder: (context, value, child) {
           return Opacity(
-            opacity: value,
+            opacity: value.clamp(0.0, 1.0),
             child: Transform.scale(
-              scale: 0.8 + (0.2 * value),
-              alignment: Alignment.centerLeft,
+              scale: 0.92 + (0.08 * value),
+              alignment: Alignment.topLeft,
               child: child,
             ),
           );
         },
-        child: Material(
-          elevation: 12,
-          shadowColor: Colors.black54,
-          borderRadius: BorderRadius.circular(12),
-          clipBehavior: Clip.antiAlias,
-          child: Container(
-            width: 56,
-            color: const Color(0xFF2C2C2C),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildMenuItem(Icons.copy, 'ᠪᠠᠭᠠᠪᠤᠷᠯᠠᠬᠤ', onCopy),
-                _buildDivider(),
-                _buildMenuItem(Icons.paste, 'ᠨᠠᠭᠠᠬᠤ', onPaste),
-                _buildDivider(),
-                _buildMenuItem(Icons.select_all, 'ᠪᠦᠭᠦᠳᠡ ᠶᠢ ᠰᠣᠩᠭᠣᠬᠤ', onSelectAll),
-                _buildDivider(),
-                _buildMenuItem(Icons.delete_outline, 'ᠤᠰᠠᠳᠬᠠᠬᠤ', onDelete, color: Colors.redAccent),
-              ],
+        // Follower fills the overlay; pin a content-sized bar so it does not
+        // stretch to the bottom/right of the screen.
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned(
+              left: 0,
+              top: 0,
+              child: Material(
+                elevation: 8,
+                shadowColor: Colors.black45,
+                borderRadius: BorderRadius.circular(8),
+                clipBehavior: Clip.antiAlias,
+                color: const Color(0xFF2C2C2C),
+                child: IntrinsicHeight(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildMenuItem(
+                          Icons.paste, 'ᠨᠠᠭᠠᠬᠤ', onPaste, iconSize, padH, padV),
+                      _buildDivider(),
+                      _buildMenuItem(
+                          Icons.copy, 'ᠬᠠᠭᠤᠯᠬᠤ', onCopy, iconSize, padH, padV),
+                      _buildDivider(),
+                      _buildMenuItem(Icons.select_all, 'ᠪᠦᠭᠦᠳᠡ', onSelectAll,
+                          iconSize, padH, padV),
+                      _buildDivider(),
+                      _buildMenuItem(Icons.content_cut, 'ᠬᠠᠢᠴᠢᠯᠠᠬᠤ', onCut,
+                          iconSize, padH, padV),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap, {Color color = Colors.white}) {
+  Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap,
+      double iconSize, double padH, double padV) {
     return InkWell(
       onTap: onTap,
-      splashColor: color.withOpacity(0.15),
-      highlightColor: color.withOpacity(0.1),
+      canRequestFocus: false,
+      splashColor: Colors.white.withOpacity(0.12),
+      highlightColor: Colors.white.withOpacity(0.08),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
+        padding: EdgeInsets.symmetric(horizontal: padH, vertical: padV),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 22, color: color),
-            const SizedBox(height: 8),
-            // Vertical menu labels via MongolText
+            Icon(icon, size: iconSize, color: Colors.white),
+            const SizedBox(height: 4),
             MongolText(
               label,
               style: TextStyle(
-                color: color,
-                fontSize: 14,
+                color: Colors.white,
+                fontSize: fontSize,
                 fontWeight: FontWeight.w500,
                 height: 1.1,
+                fontFamily: 'OyunQaganTig',
               ),
             ),
           ],
@@ -94,9 +118,9 @@ class MglTextSelectionToolbar extends StatelessWidget {
 
   Widget _buildDivider() {
     return Container(
-      height: 1,
-      width: 36,
-      color: Colors.white.withOpacity(0.1),
+      width: 1,
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      color: Colors.white.withOpacity(0.12),
     );
   }
 }

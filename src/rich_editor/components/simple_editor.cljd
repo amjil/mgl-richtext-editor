@@ -13,6 +13,7 @@
             [rich-editor.defaults :as defaults]
             [rich-editor.services.ime-service :as ime]
             [rich-editor.commands.text-commands :as text-cmd]
+            [rich-editor.commands.editor-commands :as editor-cmd]
             
             ;; Custom Virtual Keyboard & IME
             [virtual-keyboard.keyboard :as keyboard]
@@ -62,28 +63,70 @@
                                    #(or % (m/TextSelection.collapsed .offset content-len))))))
     (ime/attach! !state POST_ID)))
 
+(defn- selected-range
+  "Non-collapsed [id start end] from global-selection or the local block selection."
+  [!state]
+  (let [state @!state
+        id (first (:root state))
+        g-sel (:global-selection state)]
+    (if (and g-sel (:start g-sel) (:end g-sel))
+      (let [start (min (int (or (get-in g-sel [:start :offset]) 0))
+                       (int (or (get-in g-sel [:end :offset]) 0)))
+            end (max (int (or (get-in g-sel [:start :offset]) 0))
+                     (int (or (get-in g-sel [:end :offset]) 0)))]
+        (when (not= start end) [id start end]))
+      (let [sel (get-in state [:blocks id :selection])]
+        (when (and sel (not (.-isCollapsed sel)))
+          (let [start (min (.-baseOffset sel) (.-extentOffset sel))
+                end (max (.-baseOffset sel) (.-extentOffset sel))]
+            (when (not= start end) [id start end])))))))
+
+(defn- delete-selected-range!
+  "Deletes the current range selection and syncs IME. Returns true if a range was deleted."
+  [!state]
+  (if-let [[id start end] (selected-range !state)]
+    (do
+      (if (:global-selection @!state)
+        (editor-cmd/delete-global-selection! !state)
+        (text-cmd/delete-range !state id start (- end start)))
+      (ime/sync-block! !state id)
+      true)
+    false))
+
 (defn- insert-text-at-cursor! [!state text-to-insert]
-  (let [id (first (:root @!state))
-        block (get-in @!state [:blocks id])
-        sel (:selection block)
-        offset (if sel (.-extentOffset sel) (count (:content block "")))]
-    (text-cmd/insert-string !state id offset text-to-insert)))
+  (let [id (first (:root @!state))]
+    (if-let [[id start end] (selected-range !state)]
+      (let [old (subs (get-in @!state [:blocks id :content] "") start end)]
+        (swap! !state dissoc :global-selection)
+        (text-cmd/replace-text !state id start old text-to-insert)
+        (ime/sync-block! !state id))
+      (let [block (get-in @!state [:blocks id])
+            sel (:selection block)
+            offset (if sel (.-extentOffset sel) (count (:content block "")))]
+        (text-cmd/insert-string !state id offset text-to-insert)))))
 
 (defn- delete-backward-at-cursor! [!state]
-  (let [id (first (:root @!state))
-        block (get-in @!state [:blocks id])
-        sel (:selection block)
-        start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))
-        end (if sel (max (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))]
-    (if (not= start end)
-      (do
-        (text-cmd/delete-range !state id start (- end start))
-        (ime/sync-block! !state id))
+  (when-not (delete-selected-range! !state)
+    (let [id (first (:root @!state))
+          block (get-in @!state [:blocks id])
+          sel (:selection block)
+          start (if sel (min (.-baseOffset sel) (.-extentOffset sel)) (count (:content block "")))]
       (when (pos? start)
         (text-cmd/delete-range !state id (dec start) 1)
         (ime/sync-block! !state id)
         (when (empty? (get-in @!state [:blocks id :content] ""))
           (request-focus! !state))))))
+
+(defn- delete-forward-at-cursor! [!state]
+  (when-not (delete-selected-range! !state)
+    (let [id (first (:root @!state))
+          block (get-in @!state [:blocks id])
+          sel (:selection block)
+          offset (if sel (max (.-baseOffset sel) (.-extentOffset sel)) 0)
+          content-len (count (:content block ""))]
+      (when (< offset content-len)
+        (text-cmd/delete-range !state id offset 1)
+        (ime/sync-block! !state id)))))
 
 (defn insert-entity-at-cursor!
   "Public API: Inserts display text (e.g. '@Alice') and binds its entity ID."
@@ -110,6 +153,15 @@
                   (if-let [cb (:on-backspace (:external-keyboard-delegate @!state))]
                     (cb)
                     (delete-backward-at-cursor! !state))))
+              m.KeyEventResult/handled)
+            m.KeyEventResult/handled)
+
+          (= logical-key s.LogicalKeyboardKey/delete)
+          (if is-down?
+            (do
+              (if-let [cb (:on-backspace (:external-keyboard-delegate @!state))]
+                (cb)
+                (delete-forward-at-cursor! !state))
               m.KeyEventResult/handled)
             m.KeyEventResult/handled)
 

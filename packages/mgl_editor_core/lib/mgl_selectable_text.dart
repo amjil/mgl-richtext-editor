@@ -10,6 +10,7 @@ import 'line_divider_painter.dart';
 
 import 'mgl_text_gesture_handler.dart';
 import 'mgl_drag_handle.dart';
+import 'mgl_text_selection_toolbar.dart';
 
 const double _kBlockLineHeight = 2.0;
 const double _kCaretWidth = 2.0;
@@ -45,6 +46,13 @@ class MglSelectableText extends StatefulWidget {
   final bool showStartHandle;
   final bool showEndHandle;
 
+  /// Mobile-only: show the Mongolian paste/copy/select-all/cut menu.
+  final bool showToolbar;
+  final VoidCallback? onPaste;
+  final VoidCallback? onCopy;
+  final VoidCallback? onSelectAll;
+  final VoidCallback? onCut;
+
   final ValueChanged<TextSelection>? onSelectionChanged;
   final GlobalKey textKey;
 
@@ -58,6 +66,11 @@ class MglSelectableText extends StatefulWidget {
     this.showCaretHandle = false,
     this.showStartHandle = false,
     this.showEndHandle = false,
+    this.showToolbar = false,
+    this.onPaste,
+    this.onCopy,
+    this.onSelectAll,
+    this.onCut,
     this.onSelectionChanged,
     super.key,
   });
@@ -115,6 +128,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
 
   final LayerLink _layerLink = LayerLink();
   OverlayEntry? _handleOverlayEntry;
+  OverlayEntry? _toolbarOverlayEntry;
 
   int _tapCount = 0;
   Timer? _tapResetTimer;
@@ -135,6 +149,9 @@ class _MglSelectableTextState extends State<MglSelectableText>
       _blinkController.repeat();
     }
     _initGestureHandler();
+    if (widget.showToolbar) {
+      _showToolbar();
+    }
   }
 
   void _initGestureHandler() {
@@ -281,6 +298,69 @@ class _MglSelectableTextState extends State<MglSelectableText>
     }
   }
 
+  OverlayEntry _createToolbarOverlay() {
+    return OverlayEntry(builder: (context) {
+      if (!widget.showToolbar ||
+          widget.selection == null ||
+          widget.selection!.isCollapsed) {
+        return const SizedBox.shrink();
+      }
+
+      Offset offset = const Offset(12, 0);
+      final double textSize = widget.textSpan.style?.fontSize ?? 20.0;
+      final double menuFontSize = (textSize * 0.5).clamp(9.0, 11.0);
+      final renderBox = MglSelectableText._safeRenderParagraph(widget.textKey);
+      if (renderBox != null) {
+        final boxes = renderBox.getBoxesForSelection(widget.selection!);
+        if (boxes.isNotEmpty) {
+          final box = boxes.first;
+          offset = Offset(box.right + 8.0, box.top);
+        }
+      }
+
+      return MglTextSelectionToolbar(
+        layerLink: _layerLink,
+        offset: offset,
+        fontSize: menuFontSize,
+        onPaste: () => _runToolbarAction(widget.onPaste),
+        onCopy: () => _runToolbarAction(widget.onCopy),
+        onSelectAll: () => _runToolbarAction(widget.onSelectAll),
+        onCut: () => _runToolbarAction(widget.onCut),
+      );
+    });
+  }
+
+  void _showToolbar() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!widget.showToolbar) {
+        _hideToolbar();
+        return;
+      }
+      if (_toolbarOverlayEntry == null) {
+        _toolbarOverlayEntry = _createToolbarOverlay();
+        Overlay.maybeOf(context)?.insert(_toolbarOverlayEntry!);
+      } else {
+        _toolbarOverlayEntry!.markNeedsBuild();
+      }
+    });
+  }
+
+  void _hideToolbar() {
+    if (_toolbarOverlayEntry != null) {
+      _toolbarOverlayEntry!.remove();
+      _toolbarOverlayEntry = null;
+    }
+  }
+
+  void _runToolbarAction(VoidCallback? action) {
+    // Finish the overlay tap before mutating editor state / removing this overlay.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      action?.call();
+    });
+  }
+
   @override
   void didUpdateWidget(covariant MglSelectableText oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -293,6 +373,12 @@ class _MglSelectableTextState extends State<MglSelectableText>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _handleOverlayEntry?.markNeedsBuild();
       });
+    }
+
+    if (widget.showToolbar) {
+      _showToolbar();
+    } else {
+      _hideToolbar();
     }
 
     _gestureHandler.onSelectionChanged = widget.onSelectionChanged ?? (_) {};
@@ -312,6 +398,7 @@ class _MglSelectableTextState extends State<MglSelectableText>
 
   @override
   void dispose() {
+    _hideToolbar();
     _hideHandle();
     _tapResetTimer?.cancel();
     _blinkController.dispose();
