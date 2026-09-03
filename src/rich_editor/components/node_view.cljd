@@ -10,13 +10,39 @@
             [rich-editor.commands.editor-commands :as editor-cmd]
             [rich-editor.services.ime-service :as ime]
             [rich-editor.model.selection :as sel]
-            [rich-editor.config :as config]))
+            [rich-editor.config :as config]
+            ["dart:async" :as async]
+            ["dart:core" :as dart]))
 
 ;; Helper to detect mobile environment
 (defn is-mobile? []
   (let [platform foundation/defaultTargetPlatform]
     (or (= platform foundation.TargetPlatform/android)
         (= platform foundation.TargetPlatform/iOS))))
+
+;; Single tap on [[link]] / #tag / ((ref)) navigates. A second tap on the same
+;; block within this window cancels navigation and focuses for editing — needed
+;; when the whole block is a wiki token (no plain text to tap).
+(def ^:private wiki-double-tap-ms 300)
+(defonce ^:private !pending-wiki-tap (atom nil))
+
+(defn- now-ms []
+  (.-millisecondsSinceEpoch (dart/DateTime.now)))
+
+(defn- cancel-pending-wiki-tap! []
+  (when-let [t (:timer @!pending-wiki-tap)]
+    (.cancel ^async/Timer t))
+  (reset! !pending-wiki-tap nil))
+
+(defn- schedule-wiki-tap!
+  "Fire on-link after the double-tap window, unless a second tap cancels it."
+  [id on-link target]
+  (cancel-pending-wiki-tap!)
+  (let [timer (async/Timer. (dart/Duration. .milliseconds wiki-double-tap-ms)
+                            (fn []
+                              (reset! !pending-wiki-tap nil)
+                              (on-link target)))]
+    (reset! !pending-wiki-tap {:timer timer :id id :at (now-ms)})))
 
 (defn- run-sel-cmd!
   "Run a selection command (copy/cut/paste/select-all) and keep IME in sync."
@@ -282,13 +308,26 @@
                    content (get-in @!state [:blocks id :content] "")
                    wiki-target (when-let [f (:wiki-target-at cfg)]
                                  (f content offset))
-                   on-link (:on-link-tap cfg)]
-               (if (and wiki-target on-link)
-                 (on-link wiki-target)
-                 (editor-cmd/focus-block !state id offset))))
+                   on-link (:on-link-tap cfg)
+                   pending @!pending-wiki-tap
+                   double-tap? (and pending
+                                    (= (:id pending) id)
+                                    (< (- (now-ms) (:at pending)) wiki-double-tap-ms))]
+               (cond
+                 double-tap?
+                 (do (cancel-pending-wiki-tap!)
+                     (editor-cmd/focus-block !state id offset))
+
+                 (and wiki-target on-link)
+                 (schedule-wiki-tap! id on-link wiki-target)
+
+                 :else
+                 (do (cancel-pending-wiki-tap!)
+                     (editor-cmd/focus-block !state id offset)))))
 
            .onLongPressStart
            (fn [^m/LongPressStartDetails details]
+             (cancel-pending-wiki-tap!)
              (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
                    text (get-in @!state [:blocks id :content] "")
                    [start end] (get-word-boundaries text offset)
@@ -307,6 +346,7 @@
 
            .onPanStart
            (fn [^m/DragStartDetails details]
+             (cancel-pending-wiki-tap!)
              (let [offset (get-safe-offset @!state id text-key (.globalPosition details))
                    len (count (get-in @!state [:blocks id :content] ""))]
                (swap! !state
