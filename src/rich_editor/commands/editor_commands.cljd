@@ -64,20 +64,23 @@
               (text-cmd/delete-range !state sid soff (- eoff soff)))
 
           ;; Tree-level deletion across multiple blocks.
-          ;; Intermediate ids in document order (including children of sid that sit
-          ;; between sid and eid) are fully selected and removed. Survivors whose
-          ;; parent was removed are adopted by sid.
           (let [s-idx (.indexOf flat-ids sid)
                 e-idx (.indexOf flat-ids eid)]
             (when (and (>= s-idx 0) (>= e-idx 0))
-              (let [ids-to-remove (set (subvec flat-ids (inc s-idx) (inc e-idx)))
-                    sb (get-in state-val [:blocks sid])
-                    eb (get-in state-val [:blocks eid])
+              (let [[real-s-idx real-e-idx real-sid real-eid real-soff real-eoff]
+                    (if (< s-idx e-idx)
+                      [s-idx e-idx sid eid soff eoff]
+                      [e-idx s-idx eid sid eoff soff])
+
+                    ids-to-remove (set (subvec flat-ids (inc real-s-idx) (inc real-e-idx)))
+                    sb (get-in state-val [:blocks real-sid])
+                    eb (get-in state-val [:blocks real-eid])
                     sc (:content sb "")
                     ec (:content eb "")
-                    safe-soff (max 0 (min soff (count sc)))
-                    safe-eoff (max 0 (min eoff (count ec)))
+                    safe-soff (max 0 (min real-soff (count sc)))
+                    safe-eoff (max 0 (min real-eoff (count ec)))
                     new-c (str (subs sc 0 safe-soff) (subs ec safe-eoff))
+
                     [s-spans _] (text-cmd/divide-spans-for-block (:content-spans sb []) safe-soff)
                     [_ e-rest] (text-cmd/divide-spans-for-block (:content-spans eb []) safe-eoff)
                     shifted-e (mapv (fn [span]
@@ -85,6 +88,7 @@
                                           (update :start + safe-soff)
                                           (update :end + safe-soff)))
                                     e-rest)
+
                     orphan-ids (filterv (fn [id]
                                           (and (not (contains? ids-to-remove id))
                                                (descendant-of-removed? state-val ids-to-remove id)))
@@ -101,17 +105,17 @@
                                                        (:blocks s))
                                blocks-final (if (seq orphan-ids)
                                               (-> blocks-clean
-                                                  (update-in [sid :children] #(vec (concat (or % []) orphan-ids)))
-                                                  (#(reduce (fn [b-map oid] (assoc-in b-map [oid :parent] sid)) % orphan-ids)))
+                                                  (update-in [real-sid :children] #(vec (concat (or % []) orphan-ids)))
+                                                  (#(reduce (fn [b-map oid] (assoc-in b-map [oid :parent] real-sid)) % orphan-ids)))
                                               blocks-clean)]
                            (-> s
                                (dissoc :global-selection :typing-attributes)
                                (assoc :root new-root)
                                (assoc :blocks blocks-final)
-                               (assoc-in [:blocks sid :content] new-c)
-                               (assoc-in [:blocks sid :content-spans] (vec (concat s-spans shifted-e)))
-                               (assoc :active-block-id sid :cursor-visible true)
-                               (assoc-in [:blocks sid :selection] (s/TextSelection.collapsed .offset safe-soff))))))))))))))
+                               (assoc-in [:blocks real-sid :content] new-c)
+                               (assoc-in [:blocks real-sid :content-spans] (vec (concat s-spans shifted-e)))
+                               (assoc :active-block-id real-sid :cursor-visible true)
+                               (assoc-in [:blocks real-sid :selection] (s/TextSelection.collapsed .offset safe-soff))))))))))))))
 
 (defn handle-global-shortcut [!state intent]
   (cond
