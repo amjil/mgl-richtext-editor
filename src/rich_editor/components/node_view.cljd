@@ -80,6 +80,43 @@
         content-len (count (get-in state [:blocks id :content] ""))]
     (max 0 (min raw-offset content-len))))
 
+(defonce ^:private !block-hover-titles (atom {}))
+
+(defn- hover-title-atom [id]
+  (or (get @!block-hover-titles id)
+      (let [a (atom nil)]
+        (swap! !block-hover-titles assoc id a)
+        a)))
+
+(defn- dispatch-link-hover!
+  "Mouse hover over inactive wiki text → `:on-link-hover`.
+   Mongol RenderParagraph does not honor TextSpan.onEnter/onExit, so we resolve
+   the link via `:wiki-link-at` + character offset instead."
+  [!hover-title !state id text-key cfg ^m/Offset global-pos]
+  (when-let [on-hover (:on-link-hover cfg)]
+    (when-let [link-at (:wiki-link-at cfg)]
+      (let [content (get-in @!state [:blocks id :content] "")
+            offset (get-safe-offset @!state id text-key global-pos)
+            title (link-at content offset)
+            prev @!hover-title]
+        (cond
+          (= title prev) nil
+
+          (some? title)
+          (do (reset! !hover-title title)
+              (on-hover title global-pos true))
+
+          (some? prev)
+          (do (reset! !hover-title nil)
+              (on-hover prev global-pos false)))))))
+
+(defn- clear-link-hover!
+  [!hover-title cfg ^m/Offset global-pos]
+  (when-let [on-hover (:on-link-hover cfg)]
+    (when-let [prev @!hover-title]
+      (reset! !hover-title nil)
+      (on-hover prev (or global-pos (m/Offset 0.0 0.0)) false))))
+
 (defn- ordered-list-number
   [state id root-index]
   (when (= (get-in state [:blocks id :attributes :list-type]) :ordered)
@@ -296,9 +333,11 @@
           ;; ==========================================
           ;; 1. TEXT BLOCKS (Paragraphs, Headings, etc.)
           ;; ==========================================
-          (m/GestureDetector
-           .behavior m.HitTestBehavior/translucent
-           .dragStartBehavior g/DragStartBehavior.down
+          (let [!hover-title (hover-title-atom id)
+                text-gestures
+                (m/GestureDetector
+                 .behavior m.HitTestBehavior/translucent
+                 .dragStartBehavior g/DragStartBehavior.down
 
            .onTapUp
            (fn [^m/TapUpDetails details]
@@ -449,7 +488,16 @@
                    .child text-widget)
 
                   :else
-                  text-widget)))))
+                  text-widget)))))]
+            (if (and (:on-link-hover cfg) (:wiki-link-at cfg))
+              (m/MouseRegion
+               .onHover (fn [e]
+                          (dispatch-link-hover! !hover-title !state id text-key cfg
+                                                (.-position e)))
+               .onExit (fn [e]
+                         (clear-link-hover! !hover-title cfg (.-position e)))
+               .child text-gestures)
+              text-gestures))
 
           ;; ==========================================
           ;; 2. ATOMIC BLOCKS (Images, Custom Widgets)
