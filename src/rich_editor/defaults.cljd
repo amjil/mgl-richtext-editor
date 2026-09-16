@@ -55,7 +55,8 @@
    :italic (fn [!state] (toggle-or-apply-style! !state :italic))
    :underline (fn [!state] (toggle-or-apply-style! !state :underline))
                           
-   ;; Block indent (Tab / Shift+Tab) — delegated via :block-ops when provided (e.g. by block-editor)
+   ;; Block indent (Tab / Shift+Tab) — delegated via :block-ops when provided (e.g. by block-editor).
+   ;; Prefer ops mirrored onto :editor-config; fall back is a no-op if host has not attached yet.
    :indent (fn [!state]
              (when-let [indent! (get-in @!state [:editor-config :block-ops :indent-selection!])]
                (indent! !state 1)))

@@ -204,7 +204,12 @@
 
           (= logical-key s.LogicalKeyboardKey/tab)
           (if is-down?
-            (do (if (.-isShiftPressed hw-kb) (config/run-command cfg* !state :outdent) (config/run-command cfg* !state :indent)) m.KeyEventResult/handled)
+            (do (if-let [indent! (get-in cfg* [:block-ops :indent-selection!])]
+                  (indent! !state (if (.-isShiftPressed hw-kb) -1 1))
+                  (if (.-isShiftPressed hw-kb)
+                    (config/run-command cfg* !state :outdent)
+                    (config/run-command cfg* !state :indent)))
+                m.KeyEventResult/handled)
             m.KeyEventResult/handled)
 
           is-arrow?
