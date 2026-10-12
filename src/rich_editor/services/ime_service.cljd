@@ -1,5 +1,7 @@
 (ns rich-editor.services.ime-service
-  (:require ["package:flutter/services.dart" :as s]
+  (:require ["dart:core" :as dc]
+            ["package:flutter/foundation.dart" :as foundation]
+            ["package:flutter/services.dart" :as s]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/widgets.dart" :as w]
             [rich-editor.commands.text-commands :as text-cmd]
@@ -39,6 +41,44 @@
 
 (defn- connection-of [!state]
   (:conn (session !state)))
+
+(defn- next-input-gen! [!state]
+  (let [gen (inc (:input-gen (session !state) 0))]
+    (update-session! !state #(assoc % :input-gen gen))
+    gen))
+
+(defn- live-input?
+  "Ignore callbacks from a TextInput we already replaced.
+   On web those stale callbacks arrive with an empty string and erase the block."
+  [!state block-id gen]
+  (and (= gen (:input-gen (session !state)))
+       (= block-id (:active-block-id @!state))))
+
+(defn- mark-pushed! [!state text]
+  (update-session! !state
+                   #(assoc % :pushed-text (or text "")
+                           :pushed-ms (.-millisecondsSinceEpoch (dc/DateTime.now)))))
+
+(defn- spurious-empty-reset?
+  "Web recreates the DOM input (layout/transform) and reports text \"\".
+   That is not a user delete: the document still matches what we just pushed."
+  [!state old new-text]
+  (let [sess (session !state)
+        now (.-millisecondsSinceEpoch (dc/DateTime.now))]
+    (and foundation/kIsWeb
+         (= new-text "")
+         (not= old "")
+         (= old (:pushed-text sess))
+         (< (- now (:pushed-ms sess 0)) 1000))))
+
+(defn- desktop-web?
+  "Desktop browsers already type through shared-ime. Showing the DOM input
+   as well makes the browser echo a second edit that clears the block."
+  []
+  (and foundation/kIsWeb
+       (let [p foundation/defaultTargetPlatform]
+         (not (or (= p foundation.TargetPlatform/android)
+                  (= p foundation.TargetPlatform/iOS))))))
 
 (defn bind-focus-node!
   "Remember the editor FocusNode so re-attach can refuse if this editor is unfocused."
@@ -189,11 +229,17 @@
 
 ;; --- 1. DeltaTextInputClient ---
 
-(defn- create-input-client [!state block-id]
-  (let [!handled-newline (atom false)]
+(defn- create-input-client [!state block-id gen]
+  (let [!handled-newline (atom false)
+        !delta-applied (atom false)]
     (reify s/DeltaTextInputClient
       (^void updateEditingValueWithDeltas [this textEditingDeltas]
-        (doseq [delta textEditingDeltas]
+        (when (live-input? !state block-id gen)
+          (reset! !delta-applied true)
+          ;; If no full-value update follows in this frame, don't swallow the next one.
+          (w/WidgetsBinding.instance.addPostFrameCallback
+           (fn [_] (reset! !delta-applied false)))
+          (doseq [delta textEditingDeltas]
           (cond
             (dart/is? delta s/TextEditingDeltaInsertion)
             (let [text (.-textInserted delta)]
@@ -247,10 +293,11 @@
                   sel (clamp-text-selection content (.-selection delta))]
               (swap! !state assoc-in [:blocks block-id :selection] sel)
               (bump-after-update!))
-            :else nil)))
+            :else nil))))
 
       (^void performAction [this ^s/TextInputAction action]
-        (when (or (= action s.TextInputAction/newline) (= action s.TextInputAction/done))
+        (when (and (live-input? !state block-id gen)
+                   (or (= action s.TextInputAction/newline) (= action s.TextInputAction/done)))
           (if @!handled-newline
             (reset! !handled-newline false)
             (do
@@ -269,6 +316,7 @@
                   (request-frame!)))))))
 
       (^void performSelector [this ^String selectorName]
+        (when (live-input? !state block-id gen)
         (let [block (get-in @!state [:blocks block-id])
               content (:content block "")
               selection (:selection block)
@@ -316,33 +364,50 @@
                                    (get-in @!state [:blocks block-id :content])
                                    (get-in @!state [:blocks block-id :selection]))
                     (request-frame!))))
-            :else nil)))
+            :else nil))))
 
       (^void updateEditingValue [this ^s/TextEditingValue value]
-        (let [new-text (.-text value)
-              sel (.-selection value)]
-          ;; Some virtual keyboards send full-state updates via updateEditingValue
-          ;; even when delta model is enabled. Diff the middle so spans outside
-          ;; the change are kept.
-          (apply-editing-value-text! !state block-id new-text)
-          (when sel
-            (let [content (get-in @!state [:blocks block-id :content] "")]
-              (swap! !state assoc-in [:blocks block-id :selection]
-                     (clamp-text-selection content sel))))
-          (when (empty? (get-in @!state [:blocks block-id :content] ""))
-            (ensure-attached! !state block-id))
-          (bump-after-update!)))
+        (when (live-input? !state block-id gen)
+          (let [new-text (.-text value)
+                sel (.-selection value)
+                old (get-in @!state [:blocks block-id :content] "")]
+            (cond
+              ;; Deltas already applied this edit. A following full-value
+              ;; update is the DOM input's copy and must not replace the block.
+              @!delta-applied
+              (do
+                (reset! !delta-applied false)
+                (when sel
+                  (let [content (get-in @!state [:blocks block-id :content] "")]
+                    (swap! !state assoc-in [:blocks block-id :selection]
+                           (clamp-text-selection content sel))))
+                (bump-after-update!))
+
+              (spurious-empty-reset? !state old new-text)
+              nil
+
+              :else
+              (do
+                (apply-editing-value-text! !state block-id new-text)
+                (when sel
+                  (let [content (get-in @!state [:blocks block-id :content] "")]
+                    (swap! !state assoc-in [:blocks block-id :selection]
+                           (clamp-text-selection content sel))))
+                (when (empty? (get-in @!state [:blocks block-id :content] ""))
+                  (ensure-attached! !state block-id))
+                (bump-after-update!))))))
       (^void updateFloatingCursor [this ^s/RawFloatingCursorPoint point] nil)
       (^void connectionClosed [this]
         ;; Ignore closes that happen while we are replacing this editor's
         ;; connection. If a newer connection is already attached, this
         ;; callback is stale and must not nil it out.
-        (let [sess (session !state)
-              conn (:conn sess)]
-          (when-not (or (:attaching? sess false) (:closing? sess false))
-            (when (or (nil? conn) (not (.-attached conn)))
-              (update-session! !state #(assoc % :conn nil))
-              (ensure-attached! !state block-id)))))
+        (when (live-input? !state block-id gen)
+          (let [sess (session !state)
+                conn (:conn sess)]
+            (when-not (or (:attaching? sess false) (:closing? sess false))
+              (when (or (nil? conn) (not (.-attached conn)))
+                (update-session! !state #(assoc % :conn nil))
+                (ensure-attached! !state block-id))))))
       (^void showToolbar [this] nil)
       (^void insertTextPlaceholder [this ^m/Size size] nil)
       (^void removeTextPlaceholder [this] nil)
@@ -373,7 +438,9 @@
     (when-not (:reattach-in-progress sess false)
       (update-session! !state #(assoc % :reattach-attempts 0))))
 
-  (update-session! !state #(assoc % :attaching? true :wants-ime? true))
+  ;; Bump before closing the previous connection so its web echo is ignored.
+  (let [gen (next-input-gen! !state)]
+    (update-session! !state #(assoc % :attaching? true :wants-ime? true :input-gen gen)))
 
   ;; Claim ownership first so the previous editor's connectionClosed
   ;; cannot steal the IME back.
@@ -408,7 +475,8 @@
 
           (when-let [conn (connection-of !state)]
             (when (.-attached conn)
-              (.setEditingState conn (s/TextEditingValue. .text new-content .selection new-sel))))
+              (.setEditingState conn (s/TextEditingValue. .text new-content .selection new-sel))
+              (mark-pushed! !state new-content)))
           (when (empty? new-content)
             (ensure-attached! !state block-id)))))
 
@@ -431,16 +499,20 @@
         config (s/TextInputConfiguration.
                 .inputType s.TextInputType/multiline
                 .enableDeltaModel true)
-        conn (s/TextInput.attach (create-input-client !state block-id) config)]
+        conn (s/TextInput.attach (create-input-client !state block-id (:input-gen (session !state))) config)]
     (update-session! !state #(assoc % :conn conn :attaching? false))
 
     (let [raw-sel (or (:selection block) (s/TextSelection. .baseOffset 0 .extentOffset 0))
           safe-base (min content-len (max 0 (.-baseOffset raw-sel)))
           safe-extent (min content-len (max 0 (.-extentOffset raw-sel)))
           safe-sel (s/TextSelection. .baseOffset safe-base .extentOffset safe-extent)]
-      (.setEditingState conn (s/TextEditingValue. .text content .selection safe-sel)))
+      (.setEditingState conn (s/TextEditingValue. .text content .selection safe-sel))
+      (mark-pushed! !state content))
 
-    (.show conn)))
+    ;; Desktop web: shared-ime owns the keys. Showing the DOM input as well
+    ;; makes the browser send a second update that replaces the block with "".
+    (when-not (desktop-web?)
+      (.show conn))))
 
 (defn update-state!
   ([content selection]
@@ -454,6 +526,7 @@
      (when-let [conn (connection-of !state)]
        (when (.-attached conn)
          (.setEditingState conn
-           (s/TextEditingValue. .text (or content "") .selection safe-sel))))
+           (s/TextEditingValue. .text (or content "") .selection safe-sel))
+         (mark-pushed! !state content)))
      (when (identical? @!owner !state)
        (bump-after-update!)))))
