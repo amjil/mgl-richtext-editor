@@ -433,7 +433,19 @@
      (when (our-shared-ime-client? !state)
        (ime-ctrl/unregister-client!)))))
 
+(defn- use-builtin-ime? [!state]
+  "Block editor clears :external-keyboard-delegate on focus; use an explicit opt-out."
+  (not (true? (:prefer-system-ime? @!state))))
+
+(defn- system-ime-attached? [!state block-id]
+  (and (not (use-builtin-ime? !state))
+       (identical? @!owner !state)
+       (= block-id (:active-block-id @!state))
+       (let [conn (connection-of !state)]
+         (and conn (.-attached conn)))))
+
 (defn attach! [!state block-id]
+  (when-not (system-ime-attached? !state block-id)
   (let [sess (session !state)]
     (when-not (:reattach-in-progress sess false)
       (update-session! !state #(assoc % :reattach-attempts 0))))
@@ -451,7 +463,8 @@
 
   (close-connection! !state)
 
-  (ime-ctrl/register-client!
+  (when (use-builtin-ime? !state)
+    (ime-ctrl/register-client!
    {:owner !state
     :replace-text!
     (fn [delete-len insert-str]
@@ -490,7 +503,7 @@
             content (:content (get-in state [:blocks block-id]) "")]
         (if (>= (count content) offset)
           (subs content 0 offset)
-          content)))})
+          content)))}))
 
   ;; Standard System TextInput attach (Direct call, NO resolve!)
   (let [block (get-in @!state [:blocks block-id])
@@ -509,10 +522,24 @@
       (.setEditingState conn (s/TextEditingValue. .text content .selection safe-sel))
       (mark-pushed! !state content))
 
-    ;; Desktop web: shared-ime owns the keys. Showing the DOM input as well
-    ;; makes the browser send a second update that replaces the block with "".
-    (when-not (desktop-web?)
-      (.show conn))))
+    (when (and (use-builtin-ime? !state)
+               (not (desktop-web?)))
+      (.show conn))
+    (when-not (use-builtin-ime? !state)
+      (w/WidgetsBinding.instance.addPostFrameCallback
+       (fn [_]
+         (do
+           (when (and (identical? @!owner !state)
+                      (= block-id (:active-block-id @!state)))
+             (when-let [conn (connection-of !state)]
+               (when (.-attached conn)
+                 (.show conn)
+                 (try
+                   (do
+                     (s/SystemChannels.textInput.invokeMethod "TextInput.show")
+                     nil)
+                   (catch Exception _ nil)))))
+           nil)))))))
 
 (defn update-state!
   ([content selection]
@@ -523,10 +550,11 @@
          safe-base (if selection (max 0 (min (.-baseOffset selection) content-len)) 0)
          safe-ext  (if selection (max 0 (min (.-extentOffset selection) content-len)) 0)
          safe-sel  (s/TextSelection. .baseOffset safe-base .extentOffset safe-ext)]
-     (when-let [conn (connection-of !state)]
-       (when (.-attached conn)
-         (.setEditingState conn
-           (s/TextEditingValue. .text (or content "") .selection safe-sel))
-         (mark-pushed! !state content)))
+     (when (use-builtin-ime? !state)
+       (when-let [conn (connection-of !state)]
+         (when (.-attached conn)
+           (.setEditingState conn
+             (s/TextEditingValue. .text (or content "") .selection safe-sel))
+           (mark-pushed! !state content))))
      (when (identical? @!owner !state)
        (bump-after-update!)))))

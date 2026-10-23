@@ -75,14 +75,11 @@
      (m/Focus
       .onFocusChange 
       (fn [has-focus?]
-        (if has-focus?
+        (cond
+          (and has-focus? (not (true? (:prefer-system-ime? @!shared-state))))
           (do
-            ;; Desktop: hide the OS IME; physical keys go through shared-ime.
-            ;; Mobile: keep TextInput shown so virtual-keyboard.input-control
-            ;; can flip `visible` and the in-app keyboard appears.
             (when is-desktop?
               (s/SystemChannels.textInput.invokeMethod "TextInput.hide"))
-
             (ime-ctrl/register-client!
              {:owner controller
               :replace-text!
@@ -95,31 +92,34 @@
                   (apply-controller-value! controller on-changed new-text
                                            (m/TextSelection.collapsed .offset (+ start-idx (count insert-str))))))
               :update-caret! (fn [])
-              :get-context-text! 
+              :get-context-text!
               (fn []
                 (let [text (.-text controller)
                       sel (.-selection controller)
                       offset (max 0 (.-extentOffset sel))]
                   (subs text 0 offset)))})
-            
             (swap! !shared-state assoc :external-keyboard-delegate
-                   {:on-return 
+                   {:on-return
                     (fn []
                       (if on-submitted
                         (on-submitted (.-text controller))
                         (when focus-node (.unfocus focus-node))))
-                    
-                    :on-backspace 
+                    :on-backspace
                     (fn [] (delete-in-controller! controller on-changed))}))
-          
+
+          (not has-focus?)
           (do
             (when (identical? (:owner @ime-ctrl/!active-client) controller)
               (ime-ctrl/unregister-client!))
-            (swap! !shared-state assoc :external-keyboard-delegate nil))))
+            (swap! !shared-state assoc :external-keyboard-delegate nil))
+
+          :else nil))
       
       .onKeyEvent 
       (fn ^m/KeyEventResult [^m/FocusNode node ^s/KeyEvent event]
-        (let [res (ime-ctrl/handle-key-event event)]
+        (let [res (if (true? (:prefer-system-ime? @!shared-state))
+                    m.KeyEventResult/ignored
+                    (ime-ctrl/handle-key-event event))]
           (if (= res m.KeyEventResult/handled)
             res
             (if (and is-desktop? (dart/is? event s/KeyDownEvent))
